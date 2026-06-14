@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as resourcesApi from '../api/resources';
+import { useChatStore } from '../store/chatStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources() {
+  const currentSessionId = useChatStore((state) => state.currentSessionId);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -11,7 +13,7 @@ export function useResources() {
   const fetchResources = useCallback(async (f?: ResourceFilter) => {
     setLoading(true);
     try {
-      const res = await resourcesApi.getResources(f);
+      const res = await resourcesApi.getResources({ ...f, sessionId: currentSessionId });
       setResources(res?.resources || []);
       setTotal(res?.total || 0);
     } catch {
@@ -20,7 +22,7 @@ export function useResources() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [currentSessionId]);
 
   const applyFilter = useCallback(
     (updates: Partial<ResourceFilter>) => {
@@ -40,7 +42,7 @@ export function useResources() {
 
   useEffect(() => {
     fetchResources(filter);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [fetchResources, filter]);
 
   return { resources, total, loading, filter, applyFilter, toggleBookmark, refetch: () => fetchResources(filter) };
 }

@@ -7,13 +7,13 @@ export interface ResourceListResponse {
   page: number;
 }
 
-export async function getResources(filter?: ResourceFilter): Promise<ResourceListResponse> {
+export async function getResources(filter?: ResourceFilter & { sessionId?: string }): Promise<ResourceListResponse> {
   const { data } = await client.get('/resources', { params: filter });
   return data;
 }
 
-export async function getResourceById(id: string): Promise<{ resource: Resource }> {
-  const { data } = await client.get(`/resources/${id}`);
+export async function getResourceById(id: string, sessionId?: string): Promise<{ resource: Resource }> {
+  const { data } = await client.get(`/resources/${id}`, { params: { sessionId } });
   return data;
 }
 
@@ -26,6 +26,7 @@ export async function generateResource(params: {
   type: string;
   topic: string;
   difficulty?: string;
+  sessionId?: string;
 }): Promise<{ resource: Resource }> {
   const { data } = await client.post('/resources/generate', params);
   return data;

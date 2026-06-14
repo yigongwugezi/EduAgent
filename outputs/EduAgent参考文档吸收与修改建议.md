@@ -1,4 +1,4 @@
-# EduAgent 参考文档吸收与修改建议
+﻿# EduAgent 参考文档吸收与修改建议
 
 ## 结论
 
@@ -7,8 +7,8 @@
 但它和我们当前已经确定的执行口径有几处冲突，需要统一：
 
 - 原文档偏 4 周完整开发计划；我们当前按半个月推进。
-- 原文档里前端多处写 React；我们现在确定用 Vue 3 + Vite + Element Plus。
-- 原文档里 Python 写 3.11+；我们现在确定 Python 3.13+。
+- 原文档里前端多处写 React；我们现在确定用 React 19 + TypeScript + Vite。
+- 原文档里 Python 写 3.11+；我们现在确定 Python 3.13.x。
 - 原文档里 Node.js 写 22.x；我们当前建议 Node.js 24.x LTS。
 - 原文档里版本管理写 Gitee；我们已经创建 GitHub 仓库。
 - 原文档把 LangChain、Chroma、PostgreSQL、完整 RAG 都放得比较靠前；我们第一阶段先保证 Web 闭环，后续增强。
@@ -133,13 +133,13 @@ React + Vite + TailwindCSS
 现在统一改为：
 
 ```text
-Vue 3 + Vite + Element Plus + Pinia + Axios + Mermaid
+React 19 + TypeScript + Vite + React Router + Zustand + Axios + Tailwind CSS + Mermaid
 ```
 
 原因：
 
-- 组员已有 Vue 方向方案
-- Element Plus 适合快速搭后台/工作台式页面
+- 组员已有 React 方向方案
+- Tailwind CSS 适合快速搭后台/工作台式页面
 - 比赛第一阶段更看重快速落地和稳定演示
 
 ### 2. 后端 Python 版本
@@ -153,7 +153,7 @@ Python 3.11+
 现在统一改为：
 
 ```text
-Python 3.13+
+Python 3.13.x
 ```
 
 注意：
@@ -230,8 +230,8 @@ https://github.com/yigongwugezi/EduAgent
 ### 技术栈口径
 
 ```text
-前端：Vue 3 + Vite + Element Plus + Pinia + Axios + Mermaid
-后端：Python 3.13+ + FastAPI + Uvicorn + Pydantic
+前端：React 19 + TypeScript + Vite + React Router + Zustand + Axios + Tailwind CSS + Mermaid
+后端：Python 3.13.x + FastAPI + Uvicorn + Pydantic
 智能体：第一阶段自研轻量多智能体调度器，后续可扩展 LangGraph
 大模型：讯飞星火 API 优先，DeepSeek/Qwen 备用
 知识库：第一阶段 Markdown + JSON，第二阶段接 Chroma/Qdrant
@@ -265,14 +265,14 @@ https://github.com/yigongwugezi/EduAgent
 
 如果要把原文档改成我们团队正式方案，建议做这些替换：
 
-1. 全文 `React + Vite + TailwindCSS` 替换为 `Vue 3 + Vite + Element Plus`。
+1. 全文 `React + Vite + TailwindCSS` 替换为 `React 19 + TypeScript + Vite`。
 2. 全文 `React-Markdown` 替换为 `markdown-it / md-editor-v3`。
-3. 全文 `Python 3.11+` 替换为 `Python 3.13+`。
+3. 全文 `Python 3.11+` 替换为 `Python 3.13.x`。
 4. 全文 `Node.js 22.x LTS` 替换为 `Node.js 24.x LTS`。
 5. 全文 `Gitee` 替换为 `GitHub`。
 6. 把“4 周开发周期”改成“半个月完成 MVP，后续增强”。
 7. 把第一阶段中 Chroma、LangChain、PostgreSQL、Docker 相关任务标记为“后续增强”。
-8. 把文件结构中的 `frontend/src/pages/*.tsx` 改成 `frontend/src/views/*.vue`。
+8. 把文件结构中的 `frontend/src/pages/*.tsx` 改成 `frontend/src/pages/*.tsx`。
 9. 把接口设计统一到 `/api/agents/run` 主流程接口，其他接口作为第二阶段补充。
 10. 增加 `course_id`，确保系统支持多课程扩展。
 

@@ -1,4 +1,4 @@
-# EduAgent 第一阶段 4 天执行方案
+﻿# EduAgent 第一阶段 4 天执行方案
 
 ## 1. 第一阶段目标
 
@@ -172,7 +172,7 @@ Mermaid 思维导图能正常显示
 前端使用：
 
 ```text
-Vue 3 + Vite + Element Plus
+React 19 + TypeScript + Vite
 ```
 
 ## 9. 第一阶段不做什么
@@ -225,7 +225,7 @@ Docker
 第一阶段交付：
 
 ```text
-1. Vue 项目跑起来
+1. React 项目跑起来
 2. 首页学习工作台
 3. ChatPanel
 4. ProfilePanel
@@ -268,8 +268,8 @@ Docker
 前端：
 
 ```text
-Vue 项目跑起来
-Element Plus 接好
+React 项目跑起来
+Tailwind CSS 接好
 首页工作台静态布局出来
 ```
 
@@ -425,4 +425,5 @@ loading / error / empty 状态
 先能演示，再接真实 AI。
 先统一格式，再各自开发。
 ```
+
 

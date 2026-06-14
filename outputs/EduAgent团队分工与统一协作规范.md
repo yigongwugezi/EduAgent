@@ -1,4 +1,4 @@
-# EduAgent 团队分工与统一协作规范
+﻿# EduAgent 团队分工与统一协作规范
 
 ## 1. 项目定位
 
@@ -7,7 +7,7 @@ EduAgent 是一个 Web 软件系统，不是单独的聊天机器人，也不是
 系统形态：
 
 ```text
-前端 Vue 页面
+前端 React 页面
   -> 后端 FastAPI 接口
   -> 多智能体调度器
   -> 大模型 API + 课程知识库
@@ -32,9 +32,9 @@ EduAgent 是一个 Web 软件系统，不是单独的聊天机器人，也不是
 
 | 模块 | 技术 |
 | --- | --- |
-| 前端 | Vue 3 + Vite |
-| UI 组件 | Element Plus |
-| 前端状态管理 | Pinia |
+| 前端 | React 19 + TypeScript + Vite |
+| UI 组件 | Tailwind CSS |
+| 前端状态管理 | Zustand |
 | HTTP 请求 | Axios |
 | Markdown 渲染 | markdown-it 或 md-editor-v3 |
 | 思维导图/流程图 | Mermaid |
@@ -107,7 +107,7 @@ backend/app/mock/ 的 mock 内容
 
 组长不是只写规划，组长负责最贴合赛题的 AI 逻辑和最终演示质量。
 
-### 4.2 前端负责人：Vue 页面、交互和结果展示
+### 4.2 前端负责人：React 页面、交互和结果展示
 
 负责范围：
 
@@ -117,8 +117,8 @@ frontend/
 
 具体任务：
 
-1. 搭建 Vue 3 + Vite 项目。
-2. 接入 Element Plus、Pinia、Axios、Mermaid、Markdown 渲染。
+1. 搭建 React 19 + TypeScript + Vite 项目。
+2. 接入 Tailwind CSS、Zustand、Axios、Mermaid、Markdown 渲染。
 3. 实现首页学习工作台。
 4. 实现聊天输入区。
 5. 实现学生画像展示。
@@ -163,8 +163,8 @@ EduAgent/
     vite.config.js
     .env.example
     src/
-      main.js
-      App.vue
+      main.tsx
+      App.tsx
       router/
       stores/
       api/
@@ -787,8 +787,8 @@ LLM_PROVIDER=spark
 
 ```text
 frontend/src/
-  main.js
-  App.vue
+  main.tsx
+  App.tsx
   router/
     index.js
   stores/
@@ -797,14 +797,14 @@ frontend/src/
     client.js
     eduagent.js
   views/
-    HomeView.vue
+    Home.tsx
   components/
-    ChatPanel.vue
-    ProfilePanel.vue
-    LearningPathPanel.vue
-    ResourceCard.vue
-    AgentStatusPanel.vue
-    MindMapViewer.vue
+    ChatPage.tsx
+    ProfilePage.tsx
+    LearningPathPage.tsx
+    ResourceCard.tsx
+    AgentStatusPanel.tsx
+    MermaidDiagram.tsx
 ```
 
 ### 10.2 第一阶段页面结构
@@ -821,7 +821,7 @@ frontend/src/
 
 ### 10.3 前端状态统一
 
-Pinia store 统一维护：
+Zustand store 统一维护：
 
 ```js
 {
@@ -852,7 +852,7 @@ VITE_API_BASE_URL=http://localhost:8000
 
 - 中文标题从后端 `label` 或前端映射中读取。
 - Markdown 内容统一用 Markdown 渲染组件展示。
-- Mermaid 内容统一交给 `MindMapViewer.vue`。
+- Mermaid 内容统一交给 `MermaidDiagram.tsx`。
 - `resources.type` 决定资源卡片图标和样式。
 - 所有异步请求必须有 loading 状态。
 - 请求失败时不能白屏，要显示错误提示。
@@ -1078,8 +1078,8 @@ docs/development/open-source-license.md
 
 ```text
 1. 创建 frontend/
-2. 初始化 Vue 3 + Vite
-3. 安装 Element Plus、Pinia、Axios
+2. 初始化 React 19 + TypeScript + Vite
+3. 安装 Tailwind CSS、Zustand、Axios
 4. 跑通 npm run dev
 5. 做首页工作台静态布局
 ```
@@ -1112,3 +1112,4 @@ docs/development/open-source-license.md
 ```
 
 这些是前端、后端、智能体三方对接的地基，不能各自发挥。
+

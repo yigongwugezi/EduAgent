@@ -1,9 +1,15 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand } from '../types/chat';
 
+const createSessionId = () => {
+  const randomPart =
+    globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
+  return `session_${Date.now()}_${randomPart}`;
+};
+
 interface ChatStore {
   /** 当前会话 */
-  currentSessionId: string | null;
+  currentSessionId: string;
   sessions: ChatSession[];
   messages: ChatMessage[];
   /** 快捷指令 */
@@ -22,12 +28,13 @@ interface ChatStore {
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
   clearMessages: () => void;
+  newSession: () => void;
   /** 从消息末尾移除最后一条（用于撤回） */
   removeLastMessage: () => void;
 }
 
 export const useChatStore = create<ChatStore>((set) => ({
-  currentSessionId: null,
+  currentSessionId: createSessionId(),
   sessions: [],
   messages: [],
   quickCommands: [],
@@ -64,6 +71,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
   clearMessages: () => set({ messages: [] }),
+  newSession: () => set({ currentSessionId: createSessionId(), messages: [] }),
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
 }));

@@ -1,80 +1,157 @@
 # EduAgent
 
-EduAgent 是一个面向高等教育课程的多智能体个性化学习资源生成系统。
+EduAgent 是面向高等教育课程的个性化学习资源生成与学习多智能体系统。系统以《人工智能导论》作为第一阶段示例课程，通过对话式学生画像构建、多智能体协同分析、个性化学习路径规划、多模态学习资源生成和学习行为追踪，帮助学生获得更适合自身基础、目标和偏好的学习方案。
 
-项目以《人工智能导论》课程为样例场景，通过对话式学生画像构建、多智能体协同资源生成、个性化学习路径规划和学习效果反馈，帮助学生获得更适合自身基础、目标和学习偏好的课程资源。
+## 当前技术路线
 
-## 项目目标
+前端技术栈已统一调整为：
 
-- 通过自然语言对话自动构建学生画像
-- 基于课程知识库识别学生知识短板
-- 使用多智能体协同生成个性化学习资源
-- 为学生规划动态学习路径
-- 支持讲义、思维导图、题库、拓展阅读、代码案例和多模态教学资源生成
+- React 19 + TypeScript + Vite
+- React Router
+- Zustand
+- Axios
+- Tailwind CSS
+- Mermaid
+- React Markdown
+- ECharts
+- lucide-react
 
-## 样例课程
+后端技术栈：
 
-《人工智能导论》
+- Python 3.13.x
+- FastAPI
+- Uvicorn
+- Pydantic
+- 自研轻量多智能体调度器
+- 统一 LLM Client，支持 `mock` 与 `deepseek`，后续可扩展星火、Qwen、本地模型
 
-初始课程范围包括：
+## 当前功能
 
-- 人工智能概述与发展历史
-- 搜索算法与问题求解
-- 机器学习基础
-- 神经网络基础
-- 自然语言处理入门
-- 计算机视觉入门
-- 强化学习基础
-- 人工智能伦理与安全
+- 对话式学习入口
+- 学生画像智能体，已接入 DeepSeek，可从学生自然语言描述中抽取画像
+- 意图识别智能体，采用轻量 Semantic Router 思路，可区分闲聊、画像询问、学习规划、答疑、资源请求和学习反馈
+- 多智能体调度骨架
+- 知识库检索、学习诊断、路径规划、资源生成、质量审核智能体
+- 学习路径展示接口
+- 学习资源展示接口
+- 流式对话接口
+- 学习行为事件追踪接口
+- 学习分析接口雏形
 
-## 多智能体设计
+## 多智能体流程
 
-计划包含以下智能体：
+```text
+React 前端
+  -> FastAPI 接口
+  -> IntentAgent 意图识别
+  -> AgentOrchestrator
+  -> ProfileAgent
+  -> KnowledgeAgent
+  -> DiagnosisAgent
+  -> PlannerAgent
+  -> ResourceAgent
+  -> ReviewAgent
+  -> 返回画像、诊断、路径、资源、智能体状态和审核结果
+```
 
-- 对话画像智能体
-- 课程知识库智能体
-- 学习诊断智能体
-- 路径规划智能体
-- 内容讲解智能体
-- 题库生成智能体
-- 思维导图智能体
-- 实操案例智能体
-- 多模态资源智能体
-- 评估反馈智能体
+## 主要接口
 
-## 技术路线
+第一阶段保留底层主流程接口：
 
-初步技术选型：
+```text
+POST /api/agents/run
+```
 
-- 前端：Vue 3 + Vite + Element Plus
-- 后端：Python 3.13+ + FastAPI
-- 智能体：轻量自研编排，后续可扩展 LangGraph / CrewAI
-- 知识库：Markdown 文档 + Chroma / FAISS
-- 大模型：讯飞星火 API 优先，兼容其他大模型接口
-- 展示资源：Markdown、Mermaid、PPT、视频脚本、Python 实操案例
+React 前端正式使用产品化接口：
 
-## 小组分工建议
+```text
+POST /chat/stream
+POST /chat/send
+GET  /profile
+POST /profile/build
+GET  /learning-path
+GET  /resources
+POST /feedback/event
+GET  /learning-analytics
+```
 
-| 角色 | 主要职责 |
-| --- | --- |
-| 组长 | 需求分析、架构设计、任务拆分、文档、PPT、演示统筹 |
-| 前端成员 | Web 页面、对话交互、画像展示、资源卡片、学习路径页面 |
-| 后端成员 | FastAPI、模型调用、多智能体流程、知识库检索、资源生成 |
+## 快速启动
 
-## 当前产物
+### 后端
 
-- `outputs/EduAgent项目定义文档.md`：项目定义、课程范围、功能闭环、智能体架构和交付规划
-- `docs/api/api-contract.md`：第一阶段 API 契约
-- `docs/schemas/student-profile-schema.md`：学生画像 8 维 Schema
-- `docs/architecture/agent-collaboration-flow.md`：多智能体协作流程
-- `knowledge_base/courses/ai_intro/`：《人工智能导论》课程知识库初版
-- `backend/app/mock/demo_result.json`：第一阶段 mock 返回样例
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+uvicorn app.main:app --port 8001
+```
 
-## 第一阶段任务
+健康检查：
 
-1. 完成系统架构图和多智能体协作流程图
-2. 搭建前后端基础项目
-3. 准备《人工智能导论》课程知识库初版
-4. 实现对话式画像构建和学习路径生成 Demo
-5. 实现 5 类个性化资源生成
-6. 准备初赛 PPT 和 7 分钟演示视频脚本
+```text
+http://localhost:8001/api/health
+```
+
+### 前端
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+访问：
+
+```text
+http://localhost:5173
+```
+
+本地前端 `.env` 可配置：
+
+```env
+VITE_API_BASE_URL=http://localhost:8001
+```
+
+## 模型配置
+
+后端 `.env` 示例：
+
+```env
+APP_NAME=eduagent-backend
+APP_ENV=development
+FRONTEND_ORIGIN=http://localhost:5173
+LLM_PROVIDER=deepseek
+LLM_MODEL=deepseek-chat
+LLM_TEMPERATURE=0.2
+DEEPSEEK_API_KEY=你的key
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+```
+
+不想调用真实模型时：
+
+```env
+LLM_PROVIDER=mock
+```
+
+注意：真实 `.env` 不要提交到 GitHub。
+
+## 团队协作规则
+
+- 当前前端路线统一为 React + TypeScript + Vite。
+- 后端继续使用 FastAPI + Python 3.13.x。
+- 禁止对 `main` 分支执行 force push。
+- 接口变更必须先同步到文档。
+- 前端不得自行删除后端、文档和知识库目录。
+- 后端不得随意改前端字段结构，涉及接口需同步前端。
+
+## 第一阶段验收目标
+
+输入学生学习情况后，系统能够展示：
+
+- 学生画像
+- 学习诊断
+- 个性化学习路径
+- 至少 5 类学习资源
+- 多智能体运行过程
+- 学习行为追踪和基础学习分析

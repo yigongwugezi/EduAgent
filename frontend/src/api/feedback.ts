@@ -1,6 +1,7 @@
 import client from './client';
 
 export interface SubmitFeedbackParams {
+  sessionId?: string;
   resourceId: string;
   rating: number;          // 1-5
   comment?: string;
@@ -12,6 +13,7 @@ export async function submitFeedback(params: SubmitFeedbackParams): Promise<void
 }
 
 export interface StudyEventParams {
+  sessionId?: string;
   event: string;
   resourceId?: string;
   duration?: number;

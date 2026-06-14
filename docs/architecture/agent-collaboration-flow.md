@@ -1,4 +1,4 @@
-# EduAgent 多智能体协作流程
+﻿# EduAgent 多智能体协作流程
 
 ## 1. Stage 1 Agent List
 
@@ -19,7 +19,7 @@
 ```mermaid
 sequenceDiagram
   participant User as 学生
-  participant Frontend as Vue 前端
+  participant Frontend as React 前端
   participant API as FastAPI 后端
   participant Orchestrator as AgentOrchestrator
   participant Profile as ProfileAgent
@@ -110,4 +110,5 @@ QwenClient
 - 资源是否与学生画像匹配。
 - 是否存在明显敏感或不适合学习场景的内容。
 - 当知识库证据不足时，是否提示内容来源不充分。
+
 

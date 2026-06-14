@@ -1,98 +1,29 @@
 # EduAgent API Contract
 
-## 1. Base Information
+## 1. Base URLs
 
-Backend base URL:
-
-```text
-http://localhost:8000
-```
-
-Frontend dev URL:
+Frontend:
 
 ```text
 http://localhost:5173
 ```
 
-API prefix:
+Backend:
 
 ```text
-/api
+http://localhost:8001
 ```
 
-Field naming:
+The backend keeps two layers of APIs:
 
-```text
-snake_case
-```
+1. Core orchestration API for the multi-agent workflow.
+2. Product APIs used directly by the React frontend.
 
-All API responses must use the same response envelope:
+## 2. Core API
 
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {},
-  "request_id": "req_demo_001"
-}
-```
+### POST /api/agents/run
 
-Error response:
-
-```json
-{
-  "code": 400,
-  "message": "invalid request",
-  "data": null,
-  "request_id": "req_error_001"
-}
-```
-
-## 2. GET /api/health
-
-Purpose: check whether the backend service is running.
-
-Response:
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "status": "ok",
-    "service": "eduagent-backend"
-  },
-  "request_id": "req_health"
-}
-```
-
-## 3. GET /api/courses
-
-Purpose: return available courses. Stage 1 only returns one course, but the format must support multiple courses.
-
-Response:
-
-```json
-{
-  "code": 0,
-  "message": "success",
-  "data": {
-    "courses": [
-      {
-        "course_id": "ai_intro",
-        "course_name": "人工智能导论",
-        "difficulty": "introductory",
-        "description": "面向高校低年级学生的人工智能入门课程，覆盖 AI 概述、搜索算法、机器学习、神经网络、NLP、CV、强化学习与 AI 伦理。"
-      }
-    ]
-  },
-  "request_id": "req_courses"
-}
-```
-
-## 4. POST /api/agents/run
-
-Purpose: run the Stage 1 main flow. The frontend should call this API when the user clicks the generate button.
+Purpose: run the complete multi-agent workflow.
 
 Request:
 
@@ -100,11 +31,11 @@ Request:
 {
   "session_id": "demo_session_001",
   "course_id": "ai_intro",
-  "user_message": "我是电子信息专业大二学生，学过 Python，但机器学习基础比较薄弱。我想用两周时间入门人工智能，重点理解神经网络和自然语言处理，希望多给我一些图解、代码案例和练习题。"
+  "user_message": "我是软件工程大三学生，想十天学懂神经网络，希望多给代码实验和图解。"
 }
 ```
 
-Response:
+Response envelope:
 
 ```json
 {
@@ -113,7 +44,9 @@ Response:
   "data": {
     "session_id": "demo_session_001",
     "course_id": "ai_intro",
+    "user_message": "...",
     "profile": {},
+    "knowledge_context": {},
     "diagnosis": {},
     "learning_path": [],
     "resources": [],
@@ -124,197 +57,210 @@ Response:
 }
 ```
 
-## 5. Data Field Requirements
+This API is the backend source of truth. Product APIs may transform its result for frontend pages.
 
-### 5.1 profile
+## 3. Product APIs For React Frontend
 
-`profile` must include 8 dimensions:
+### POST /chat/stream
 
-```text
-major_background
-knowledge_base
-learning_goal
-cognitive_style
-weak_points
-programming_ability
-learning_progress
-interests
-```
+Purpose: streaming chat entry. The React chat page calls this API.
 
-Each dimension must use this structure:
+Request:
 
 ```json
 {
-  "label": "专业背景",
-  "value": "电子信息专业大二学生",
-  "confidence": 0.95,
-  "source": "user_input",
-  "evidence": "我是电子信息专业大二学生"
+  "sessionId": "frontend_session_001",
+  "message": "我是电子信息大二学生，Python基础一般，想两周入门人工智能。"
 }
 ```
 
-`source` allowed values:
+Response: Server-Sent Events.
 
 ```text
-user_input
-inferred
-diagnosis
-feedback
+data: {"content":"正在启动多智能体协同流程...\n","done":false}
+
+data: {"content":"## 个性化学习方案已生成\n","done":false}
+
+data: {"done":true}
 ```
 
-### 5.2 diagnosis
+### POST /chat/send
 
-Format:
+Purpose: non-streaming chat fallback.
+
+Response:
 
 ```json
 {
-  "summary": "学生具备 Python 基础，但机器学习和神经网络先修概念不足。",
-  "weak_knowledge_points": [
-    {
-      "point_id": "ml_basic",
-      "name": "机器学习基本概念",
-      "reason": "后续神经网络和 NLP 学习需要先理解监督学习、特征、损失函数等概念。",
-      "priority": "high"
-    }
-  ],
-  "recommended_strategy": "先补机器学习基础，再学习神经网络，最后通过 NLP 小项目整合应用。"
-}
-```
-
-`priority` allowed values:
-
-```text
-high
-medium
-low
-```
-
-### 5.3 learning_path
-
-Format:
-
-```json
-[
-  {
-    "stage_id": "stage_1",
-    "title": "补齐机器学习基础",
-    "duration": "第 1-3 天",
-    "goal": "理解监督学习、无监督学习、损失函数和模型训练流程。",
-    "tasks": [
-      "阅读机器学习基础讲义",
-      "完成概念辨析练习",
-      "运行一个简单分类案例"
-    ],
-    "resource_types": ["lecture", "quiz", "practice"]
+  "sessionId": "frontend_session_001",
+  "reply": {
+    "id": "assistant_msg_001",
+    "role": "assistant",
+    "content": "## 个性化学习方案已生成...",
+    "timestamp": 1781321459000
   }
-]
-```
-
-### 5.4 resources
-
-Stage 1 required resource types:
-
-```text
-lecture
-mindmap
-quiz
-reading
-practice
-```
-
-Optional resource type:
-
-```text
-multimodal
-```
-
-Common resource format:
-
-```json
-{
-  "resource_id": "res_lecture_001",
-  "type": "lecture",
-  "title": "神经网络基础个性化讲义",
-  "description": "面向具备 Python 基础但机器学习较薄弱的学生。",
-  "content_format": "markdown",
-  "content": "## 神经网络是什么\n...",
-  "related_stage_id": "stage_2",
-  "source": "mock",
-  "quality_status": "passed"
 }
 ```
 
-`content_format` allowed values:
+### GET /profile
 
-```text
-markdown
-mermaid
-json
-code
-text
-```
+Purpose: get the current student profile.
 
-`source` allowed values:
-
-```text
-mock
-llm
-knowledge_base
-mixed
-```
-
-`quality_status` allowed values:
-
-```text
-pending
-passed
-warning
-failed
-```
-
-### 5.5 agent_steps
-
-Format:
+Response:
 
 ```json
-[
-  {
-    "agent_id": "profile_agent",
-    "agent_name": "画像智能体",
-    "status": "completed",
-    "summary": "已完成 8 个维度学生画像抽取。",
-    "started_at": "2026-06-12T10:00:00+08:00",
-    "finished_at": "2026-06-12T10:00:02+08:00"
+{
+  "profile": {
+    "id": "frontend_session_001",
+    "nickname": "学习者",
+    "createdAt": 1781235059000,
+    "updatedAt": 1781321459000,
+    "dimensions": [],
+    "weaknesses": [],
+    "preferences": {},
+    "history": {}
   }
-]
-```
-
-`status` allowed values:
-
-```text
-pending
-running
-completed
-warning
-failed
-```
-
-### 5.6 review
-
-Format:
-
-```json
-{
-  "quality_status": "passed",
-  "checks": [
-    {
-      "check_id": "format_check",
-      "name": "格式完整性检查",
-      "status": "passed",
-      "message": "画像、路径、资源和智能体状态字段完整。"
-    }
-  ],
-  "summary": "生成结果结构完整，适合第一阶段演示。"
 }
 ```
 
+### POST /profile/build
+
+Purpose: build or refresh the student profile from a new message.
+
+Request:
+
+```json
+{
+  "message": "我是软件工程大三学生，线性代数比较弱，想十天学懂神经网络。"
+}
+```
+
+Response:
+
+```json
+{
+  "profile": {}
+}
+```
+
+### GET /learning-path
+
+Purpose: get the current personalized learning path.
+
+Response:
+
+```json
+{
+  "path": {
+    "id": "path_ai_intro",
+    "title": "人工智能导论个性化学习路径",
+    "courseName": "人工智能导论",
+    "stages": [],
+    "overallProgress": 18,
+    "estimatedDays": 14
+  }
+}
+```
+
+### GET /resources
+
+Purpose: get generated learning resources.
+
+Response:
+
+```json
+{
+  "resources": [],
+  "total": 6,
+  "page": 1
+}
+```
+
+### POST /feedback/event
+
+Purpose: record learning behavior events for tracking and evaluation.
+
+Request:
+
+```json
+{
+  "event": "resource_view",
+  "resourceId": "res_lecture_001",
+  "duration": 5,
+  "metadata": {
+    "page": "resources"
+  }
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true
+}
+```
+
+### GET /learning-analytics
+
+Purpose: return basic learning behavior analytics.
+
+Response:
+
+```json
+{
+  "eventCount": 1,
+  "totalStudyMinutes": 5,
+  "recentEvents": [],
+  "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。"
+}
+```
+
+## 4. Agent Workflow
+
+Current stage-1 workflow:
+
+```text
+IntentAgent
+-> route by user intent
+
+learning_plan:
+ProfileAgent
+-> KnowledgeAgent
+-> DiagnosisAgent
+-> PlannerAgent
+-> ResourceAgent
+-> ReviewAgent
+```
+
+`IntentAgent` classifies the user input before the system starts a workflow. It uses a lightweight semantic-router design:
+
+```text
+high-confidence rules
+-> route example similarity
+-> LLM JSON classification fallback
+-> low-confidence clarification
+```
+
+Supported intents:
+
+```text
+casual_chat
+profile_query
+learning_plan
+tutoring
+resource_request
+progress_feedback
+project_help
+unsafe
+unknown
+```
+
+`ProfileAgent` can call DeepSeek when `LLM_PROVIDER=deepseek`. `IntentAgent` uses rules, example-route similarity, and the same LLM client as a fallback. Other agents currently return structured stage-1 demo data and can be replaced one by one.
+
+## 5. Development Rules
+
+- React frontend calls Product APIs.
+- Backend agents keep `/api/agents/run` stable.
+- API changes must be updated here first.
+- Frontend and backend should not invent new fields independently.

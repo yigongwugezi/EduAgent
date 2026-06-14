@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useProfileStore } from '../store/profileStore';
+import { useChatStore } from '../store/chatStore';
 import * as profileApi from '../api/profile';
 import type { StudentProfile } from '../types/profile';
 
 export function useProfile() {
   const store = useProfileStore();
+  const currentSessionId = useChatStore((state) => state.currentSessionId);
   const [loading, setLoading] = useState(false);
-  const fetchedRef = useRef(false);
+  const fetchedSessionRef = useRef<string | null>(null);
 
   const fetchProfile = useCallback(async () => {
     setLoading(true);
     store.setLoading(true);
     try {
-      const res = await profileApi.getProfile();
+      const res = await profileApi.getProfile(currentSessionId);
       if (res?.profile) {
         store.setProfile(res.profile);
       }
@@ -22,13 +24,13 @@ export function useProfile() {
       setLoading(false);
       store.setLoading(false);
     }
-  }, []); // 只创建一次，避免循环触发
+  }, [currentSessionId, store]);
 
   const buildProfile = useCallback(
     async (message: string): Promise<StudentProfile | null> => {
       setLoading(true);
       try {
-        const res = await profileApi.buildProfile({ message });
+        const res = await profileApi.buildProfile({ message, sessionId: currentSessionId });
         if (res?.profile) {
           store.setProfile(res.profile);
         }
@@ -40,15 +42,15 @@ export function useProfile() {
         setLoading(false);
       }
     },
-    [store],
+    [currentSessionId, store],
   );
 
   useEffect(() => {
-    if (!store.profile && !fetchedRef.current) {
-      fetchedRef.current = true;
+    if (fetchedSessionRef.current !== currentSessionId) {
+      fetchedSessionRef.current = currentSessionId;
       fetchProfile();
     }
-  }, [store.profile, fetchProfile]);
+  }, [currentSessionId, fetchProfile]);
 
   return { ...store, loading, fetchProfile, buildProfile };
 }

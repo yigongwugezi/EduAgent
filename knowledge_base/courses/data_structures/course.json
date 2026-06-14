@@ -1,0 +1,52 @@
+{
+  "course_id": "data_structures",
+  "course_name": "数据结构",
+  "aliases": ["数据结构", "DS", "栈", "队列", "链表", "二叉树", "图算法", "查找排序"],
+  "target_students": ["计算机类专业", "软件工程", "人工智能", "准备课程考试的学生"],
+  "difficulty": "introductory",
+  "description": "面向高校计算机类专业学生的数据结构课程知识库，覆盖线性表、栈与队列、树、图、查找、排序和基础算法复杂度分析。",
+  "chapters": [
+    {
+      "chapter_id": "01",
+      "title": "数据结构与算法复杂度基础",
+      "file": "chapters/01-complexity.md",
+      "difficulty": "easy",
+      "prerequisites": ["C/Python/Java 基础语法"]
+    },
+    {
+      "chapter_id": "02",
+      "title": "线性表、链表与顺序表",
+      "file": "chapters/02-linear-list.md",
+      "difficulty": "medium",
+      "prerequisites": ["数组", "指针或引用"]
+    },
+    {
+      "chapter_id": "03",
+      "title": "栈、队列与递归",
+      "file": "chapters/03-stack-queue.md",
+      "difficulty": "medium",
+      "prerequisites": ["线性表"]
+    },
+    {
+      "chapter_id": "04",
+      "title": "树、二叉树与遍历",
+      "file": "chapters/04-tree.md",
+      "difficulty": "medium",
+      "prerequisites": ["递归", "栈与队列"]
+    },
+    {
+      "chapter_id": "05",
+      "title": "图结构与图算法入门",
+      "file": "chapters/05-graph.md",
+      "difficulty": "hard",
+      "prerequisites": ["树", "队列", "递归"]
+    },
+    {
+      "chapter_id": "06",
+      "title": "查找与排序",
+      "file": "chapters/06-search-sort.md",
+      "difficulty": "medium",
+      "prerequisites": ["数组", "复杂度分析"]
+    }
+  ]
+}

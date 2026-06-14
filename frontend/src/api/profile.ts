@@ -11,8 +11,8 @@ export async function buildProfile(params: BuildProfileParams): Promise<{ profil
   return data;
 }
 
-export async function getProfile(): Promise<{ profile: StudentProfile }> {
-  const { data } = await client.get('/profile');
+export async function getProfile(sessionId?: string): Promise<{ profile: StudentProfile }> {
+  const { data } = await client.get('/profile', { params: { sessionId } });
   return data;
 }
 
