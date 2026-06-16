@@ -4,9 +4,10 @@ import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
-  HelpCircle, Check, XCircle,
+  HelpCircle, Check, XCircle, Wrench,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
+import { useChatStore } from '../store/chatStore';
 import type { Resource } from '../types/resource';
 import type { ResourceType } from '../types/chat';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
@@ -17,6 +18,7 @@ import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
+import SourceBadge, { UpdateTimeRow, type DataSource } from '../components/common/SourceBadge';
 
 /* ===================================================================
  * 常量定义
@@ -97,6 +99,7 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
         </span>
         <div className="flex items-center gap-2">
           {resource.bookmarked && <BookmarkCheck className="w-3 h-3 text-brand-500" />}
+          <SourceBadge source={resource.source || 'mock_fallback'} size="xs" />
           <span className="flex items-center gap-1 text-brand-500 group-hover:translate-x-0.5 transition-transform">
             查看详情 <ChevronRight className="w-3 h-3" />
           </span>
@@ -110,12 +113,14 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
  * 筛选栏
  * =================================================================== */
 function FilterBar({
-  active, onFilter, onSelectDifficulty, activeDifficulty,
+  active, onFilter, onSelectDifficulty, activeDifficulty, dataSource, onSelectSource,
 }: {
   active: ResourceType | undefined;
   onFilter: (type: ResourceType | undefined) => void;
   onSelectDifficulty: (level: string | undefined) => void;
   activeDifficulty: string | undefined;
+  dataSource?: DataSource | undefined;
+  onSelectSource: (s: DataSource | undefined) => void;
 }) {
   return (
     <div className="space-y-2">
@@ -137,22 +142,40 @@ function FilterBar({
         ))}
       </div>
 
-      {/* 难度筛选 */}
-      <div className="flex items-center gap-1.5">
-        <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
-        {[undefined, 'easy', 'medium', 'hard'].map((level) => (
-          <button
-            key={level || 'all-diff'}
-            onClick={() => onSelectDifficulty(level)}
-            className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-              activeDifficulty === level
-                ? 'bg-gray-800 text-white'
-                : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-            }`}
-          >
-            {level ? difficultyLabel[level] : '不限'}
-          </button>
-        ))}
+      {/* 难度 + 数据来源 */}
+      <div className="flex items-center gap-4 flex-wrap">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
+          {[undefined, 'easy', 'medium', 'hard'].map((level) => (
+            <button
+              key={level || 'all-diff'}
+              onClick={() => onSelectDifficulty(level)}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                activeDifficulty === level
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              {level ? difficultyLabel[level] : '不限'}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <span className="text-[10px] text-gray-400 flex-shrink-0">来源：</span>
+          {([undefined, 'agent_generated', 'mock_fallback'] as (DataSource | undefined)[]).map((s) => (
+            <button
+              key={s || 'all-src'}
+              onClick={() => onSelectSource(s)}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                dataSource === s
+                  ? 'bg-gray-800 text-white'
+                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+              }`}
+            >
+              {s ? (s === 'agent_generated' ? '智能体生成' : '示例数据') : '不限'}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
@@ -407,10 +430,12 @@ function QuizAnswerer({ questions, resourceId }: {
 export default function ResourceLibrary() {
   const navigate = useNavigate();
   const { resources, total, loading, applyFilter, toggleBookmark } = useResources();
+  const dataVersion = useChatStore((state) => state.dataVersion);
   const [selected, setSelected] = useState<Resource | null>(null);
   const [search, setSearch] = useState('');
   const [activeType, setActiveType] = useState<ResourceType | undefined>();
   const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>();
+  const [activeSource, setActiveSource] = useState<DataSource | undefined>();
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
 
@@ -474,6 +499,8 @@ export default function ResourceLibrary() {
           onFilter={(type) => { setActiveType(type); applyFilter({ type }); }}
           onSelectDifficulty={(d) => { setActiveDifficulty(d); applyFilter({ difficulty: d }); }}
           activeDifficulty={activeDifficulty}
+          dataSource={activeSource}
+          onSelectSource={(s) => { setActiveSource(s); }}
         />
       </div>
 
@@ -523,6 +550,7 @@ export default function ResourceLibrary() {
               </span>
               <span className="text-xs text-gray-400">· {formatDuration(selected.estimatedMinutes)}</span>
               <span className="text-xs text-gray-400">· {timeAgo(selected.createdAt)}</span>
+              <SourceBadge source={selected.source || 'mock_fallback'} size="sm" />
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
                   ✅ 已完成
@@ -663,6 +691,17 @@ export default function ResourceLibrary() {
           </div>
         )}
       </Modal>
+
+      {/* ========== 底部说明 ========== */}
+      <div className="text-center py-6 mt-6 border-t border-gray-50">
+        <div className="flex items-center justify-center gap-3 mb-2">
+          <SourceBadge source="agent_generated" size="xs" />
+          <SourceBadge source="mock_fallback" size="xs" />
+        </div>
+        <p className="text-xs text-gray-400">
+          {dataVersion > 0 ? '已同步最新对话数据' : '等待新对话生成资源'} · 支持按来源筛选真实数据
+        </p>
+      </div>
     </div>
   );
 }

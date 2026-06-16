@@ -1,14 +1,16 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import * as resourcesApi from '../api/resources';
 import { useChatStore } from '../store/chatStore';
 import type { Resource, ResourceFilter } from '../types/resource';
 
 export function useResources() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<ResourceFilter>({});
+  const lastVersionRef = useRef<number>(0);
 
   const fetchResources = useCallback(async (f?: ResourceFilter) => {
     setLoading(true);
@@ -43,6 +45,14 @@ export function useResources() {
   useEffect(() => {
     fetchResources(filter);
   }, [fetchResources, filter]);
+
+  // 对话完成后自动刷新资源
+  useEffect(() => {
+    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion;
+      fetchResources(filter);
+    }
+  }, [dataVersion, fetchResources, filter]);
 
   return { resources, total, loading, filter, applyFilter, toggleBookmark, refetch: () => fetchResources(filter) };
 }

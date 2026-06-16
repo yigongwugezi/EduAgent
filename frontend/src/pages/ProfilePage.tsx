@@ -1,14 +1,16 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
+import { useChatStore } from '../store/chatStore';
 import { DIMENSION_LABELS, type ProfileDimension, type DimensionKey } from '../types/profile';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
   User, Clock, Target, TrendingUp, Zap, BookOpen, Brain, Shield,
-  Sparkles, AlertCircle, CheckCircle2, ArrowRight, Info, AlertTriangle,
+  Sparkles, AlertCircle, CheckCircle2, ArrowRight, Info, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
+import SourceBadge, { UpdateTimeRow, type DataSource } from '../components/common/SourceBadge';
 
 /* ===================================================================
  * 画像完整度常量
@@ -120,9 +122,7 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
  * =================================================================== */
 function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
-  // 尝试从 description 推断来源（简化版，实际应从后端 source 字段获取）
-  const inferredSource = dim.confidence >= 0.85 ? 'user_input' : dim.confidence >= 0.6 ? 'inferred' : 'inferred';
-  const sourceInfo = SOURCE_LABELS[inferredSource] || SOURCE_LABELS.inferred;
+  const source = (dim.source || (dim.confidence >= 0.85 ? 'user_input' : dim.confidence >= 0.6 ? 'system_inferred' : 'system_inferred')) as DataSource;
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-md transition-all duration-200">
@@ -132,9 +132,7 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
           <h4 className="text-sm font-semibold text-gray-800">{dim.label}</h4>
         </div>
         {/* 来源标记 */}
-        <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${sourceInfo.color}`}>
-          {sourceInfo.label}
-        </span>
+        <SourceBadge source={source} size="sm" />
       </div>
 
       {/* 掌握度 */}
@@ -163,6 +161,7 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
 export default function ProfilePage() {
   const navigate = useNavigate();
   const { profile, loading, error } = useProfile();
+  const dataVersion = useChatStore((state) => state.dataVersion);
 
   if (loading && !profile) return <Loading fullScreen text="加载画像..." />;
 
@@ -263,6 +262,10 @@ export default function ProfilePage() {
               <span className="flex items-center gap-1">
                 <Zap className="w-3.5 h-3.5" />
                 连续 {profile.history.streak} 天
+              </span>
+              <span className="flex items-center gap-1 text-brand-600">
+                <RefreshCw className="w-3 h-3" />
+                画像更新：{timeAgo(profile.updatedAt)}
               </span>
             </div>
           </div>
@@ -414,9 +417,20 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      <p className="text-center text-xs text-gray-400 mt-8">
-        画像更新时间：{timeAgo(profile.updatedAt)} · 数据来源包含用户对话、系统推断和诊断分析
-      </p>
+      <div className="text-center py-6 border-t border-gray-50">
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-xs text-gray-400">
+          <UpdateTimeRow label="画像更新" timestamp={profile.updatedAt} source="agent_generated" />
+        </div>
+        <p className="text-xs text-gray-400 mt-2">
+          {dataVersion > 0 ? '已同步最新对话数据' : '等待新对话触发数据更新'}
+        </p>
+        <div className="flex items-center justify-center gap-3 mt-3">
+          <SourceBadge source="user_input" size="xs" />
+          <SourceBadge source="agent_generated" size="xs" />
+          <SourceBadge source="system_inferred" size="xs" />
+        </div>
+        <p className="text-[10px] text-gray-300 mt-2">数据来源包含用户对话、智能体生成和系统推断</p>
+      </div>
     </div>
   );
 }

@@ -1,13 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import * as knowledgeApi from '../api/knowledge';
 import { useChatStore } from '../store/chatStore';
 import type { LearningPath } from '../types/learningPath';
 
 export function useLearningPath() {
   const currentSessionId = useChatStore((state) => state.currentSessionId);
+  const dataVersion = useChatStore((state) => state.dataVersion);
   const [path, setPath] = useState<LearningPath | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const lastVersionRef = useRef<number>(0);
 
   const fetchPath = useCallback(async () => {
     setLoading(true);
@@ -53,6 +55,14 @@ export function useLearningPath() {
   }, [currentSessionId, path]);
 
   useEffect(() => { fetchPath(); }, [fetchPath]);
+
+  // 对话完成后自动刷新路径
+  useEffect(() => {
+    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
+      lastVersionRef.current = dataVersion;
+      fetchPath();
+    }
+  }, [dataVersion, fetchPath]);
 
   return { path, loading, error, fetchPath, generatePath, updateNode };
 }
