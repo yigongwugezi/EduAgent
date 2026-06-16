@@ -1,12 +1,13 @@
 import { useNavigate, useLocation } from 'react-router-dom';
-import { Home, MessageSquare, Library, GitFork, User } from 'lucide-react';
+import { Home, MessageSquare, Library, GitFork, User, TrendingUp } from 'lucide-react';
 
 const tabs = [
   { path: '/', label: '首页', icon: Home },
   { path: '/chat', label: '对话', icon: MessageSquare },
   { path: '/resources', label: '资源库', icon: Library },
-  { path: '/path', label: '学习路径', icon: GitFork },
+  { path: '/path', label: '路径', icon: GitFork },
   { path: '/profile', label: '画像', icon: User },
+  { path: '/analytics', label: '分析', icon: TrendingUp },
 ];
 
 export default function BottomNav() {

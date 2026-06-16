@@ -4,6 +4,7 @@ import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
+  HelpCircle, Check, XCircle,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import type { Resource } from '../types/resource';
@@ -264,6 +265,143 @@ function FeedbackForm({
 }
 
 /* ===================================================================
+ * 做题交互组件
+ * =================================================================== */
+function QuizAnswerer({ questions, resourceId }: {
+  questions: NonNullable<Resource['questions']>;
+  resourceId: string;
+}) {
+  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [submitted, setSubmitted] = useState(false);
+  const [score, setScore] = useState<{ correct: number; total: number } | null>(null);
+
+  const handleChoose = (questionId: string, choice: string) => {
+    if (submitted) return;
+    setAnswers((prev) => ({ ...prev, [questionId]: choice }));
+  };
+
+  const handleSubmit = async () => {
+    const correct = questions.filter((q) => answers[q.id] === q.answer).length;
+    setScore({ correct, total: questions.length });
+    setSubmitted(true);
+    // 上报做题事件
+    await logStudyEvent({
+      event: 'quiz_submit',
+      resourceId,
+      metadata: { correct, total: questions.length, accuracy: Math.round((correct / questions.length) * 100) },
+    });
+  };
+
+  const handleReset = () => {
+    setAnswers({});
+    setSubmitted(false);
+    setScore(null);
+  };
+
+  if (questions.length === 0) return null;
+
+  return (
+    <div className="p-4 bg-amber-50/40 border border-amber-100 rounded-xl space-y-3">
+      <div className="flex items-center justify-between">
+        <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+          <HelpCircle className="w-4 h-4 text-amber-500" />
+          随堂练习 ({questions.length} 题)
+        </h4>
+        {submitted && score && (
+          <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
+            score.correct === score.total ? 'bg-green-100 text-green-600' : 'bg-amber-100 text-amber-600'
+          }`}>
+            {score.correct}/{score.total} 正确
+          </span>
+        )}
+      </div>
+
+      {questions.map((q, qi) => {
+        const chosen = answers[q.id];
+        const isCorrect = submitted && chosen === q.answer;
+        const isWrong = submitted && chosen && chosen !== q.answer;
+
+        return (
+          <div key={q.id} className={`p-3 rounded-xl border transition-all ${
+            isCorrect ? 'bg-green-50 border-green-200' : isWrong ? 'bg-red-50 border-red-200' : 'bg-white border-gray-100'
+          }`}>
+            <p className="text-xs font-medium text-gray-800 mb-2">{qi + 1}. {q.stem}</p>
+            {q.type === 'choice' && q.options ? (
+              <div className="space-y-1">
+                {q.options.map((opt, oi) => {
+                  const letter = String.fromCharCode(65 + oi);
+                  const selected = chosen === letter;
+                  return (
+                    <button
+                      key={oi}
+                      onClick={() => handleChoose(q.id, letter)}
+                      disabled={submitted}
+                      className={`w-full text-left px-3 py-1.5 rounded-lg text-xs transition-all ${
+                        submitted && letter === q.answer
+                          ? 'bg-green-100 text-green-700 font-medium'
+                          : submitted && selected && letter !== q.answer
+                            ? 'bg-red-100 text-red-600'
+                            : selected
+                              ? 'bg-brand-50 text-brand-600 ring-1 ring-brand-200'
+                              : 'bg-gray-50 text-gray-600 hover:bg-gray-100'
+                      }`}
+                    >
+                      <span className="font-semibold mr-1.5">{letter}.</span>
+                      {opt}
+                      {submitted && letter === q.answer && <Check className="w-3 h-3 inline ml-1.5 text-green-500" />}
+                      {isWrong && selected && <XCircle className="w-3 h-3 inline ml-1.5 text-red-400" />}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="space-y-1">
+                <input
+                  type="text"
+                  value={chosen || ''}
+                  onChange={(e) => handleChoose(q.id, e.target.value)}
+                  disabled={submitted}
+                  placeholder="输入你的答案…"
+                  className="w-full px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs outline-none focus:ring-2 focus:ring-brand-500 disabled:bg-gray-50"
+                />
+                {submitted && (
+                  <p className="text-[10px] text-gray-500">
+                    正确答案：{q.answer}
+                    {q.explanation && ` · ${q.explanation}`}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
+
+      <div className="flex items-center gap-2 pt-1">
+        {!submitted ? (
+          <button
+            onClick={handleSubmit}
+            disabled={Object.keys(answers).length < questions.length}
+            className="px-4 py-2 bg-amber-500 text-white rounded-xl text-xs font-semibold hover:bg-amber-600 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
+          >
+            提交答案
+          </button>
+        ) : (
+          <button
+            onClick={handleReset}
+            className="px-4 py-2 bg-gray-100 text-gray-600 rounded-xl text-xs font-semibold hover:bg-gray-200 transition-all"
+          >
+            重新作答
+          </button>
+        )}
+        <span className="text-[10px] text-gray-400">
+          已答 {Object.keys(answers).length}/{questions.length}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/* ===================================================================
  * 主页面
  * =================================================================== */
 export default function ResourceLibrary() {
@@ -457,6 +595,11 @@ export default function ResourceLibrary() {
                 <CheckCircle2 className="w-4 h-4" />
                 感谢你的反馈！系统将根据评价优化后续资源推荐
               </div>
+            )}
+
+            {/* 做题交互 (quiz 类型专属) */}
+            {selected.type === 'quiz' && selected.questions && selected.questions.length > 0 && (
+              <QuizAnswerer questions={selected.questions} resourceId={selected.id} />
             )}
 
             {/* 资源内容 */}

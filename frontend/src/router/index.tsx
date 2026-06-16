@@ -5,6 +5,7 @@ import ChatPage from '../pages/ChatPage';
 import ResourceLibrary from '../pages/ResourceLibrary';
 import LearningPathPage from '../pages/LearningPathPage';
 import ProfilePage from '../pages/ProfilePage';
+import LearningAnalyticsPage from '../pages/LearningAnalyticsPage';
 import NotFound from '../pages/NotFound';
 
 const router = createBrowserRouter([
@@ -18,6 +19,7 @@ const router = createBrowserRouter([
       { path: 'resources/:id', element: <ResourceLibrary /> },
       { path: 'path', element: <LearningPathPage /> },
       { path: 'profile', element: <ProfilePage /> },
+      { path: 'analytics', element: <LearningAnalyticsPage /> },
       { path: '*', element: <NotFound /> },
     ],
   },

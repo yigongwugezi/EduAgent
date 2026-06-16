@@ -7,6 +7,7 @@ const navItems = [
   { path: '/resources', label: '资源库' },
   { path: '/path', label: '学习路径' },
   { path: '/profile', label: '学习画像' },
+  { path: '/analytics', label: '学习分析' },
 ];
 
 export default function Header() {
