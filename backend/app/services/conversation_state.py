@@ -19,6 +19,8 @@ from app.db.repository import (
     get_latest_learning_path,
     get_resources as repo_get_resources,
 )
+from app.services.profile_extractor import extract_profile_facts
+from app.utils.profile_normalizer import normalize_profile_dimensions
 
 
 PROFILE_FIELD_DEFS: dict[str, dict[str, Any]] = {
@@ -68,7 +70,7 @@ SUPPLEMENTAL_FIELD_DEFS: dict[str, dict[str, str]] = {
 }
 
 CORE_FIELDS = {"background", "target_course", "knowledge_base"}
-PLAN_READY_FIELDS = {"background", "target_course", "knowledge_base"}
+PLAN_READY_FIELDS = {"background", "target_course"}
 LOW_VALUE_BACKGROUND_WORDS = {
     "男生",
     "女生",
@@ -175,19 +177,16 @@ class ConversationStore:
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
-                    # Reconstruct dict format from list-of-dict rows
-                    raw_dims = profile.dimensions or {}
-                    if isinstance(raw_dims, list):
-                        result["profile"] = {
-                            dim.get("key", f"dim_{idx}"): {
-                                "label": dim.get("label", ""),
-                                "value": dim.get("value", ""),
-                                "confidence": dim.get("confidence", 0.75),
-                            }
-                            for idx, dim in enumerate(raw_dims)
+                    # Normalize dimensions (handles old 8-dim and new 10-dim snapshots)
+                    normalized_dims = normalize_profile_dimensions(profile.dimensions)
+                    result["profile"] = {
+                        dim.get("key", f"dim_{idx}"): {
+                            "label": dim.get("label", ""),
+                            "value": dim.get("value", ""),
+                            "confidence": dim.get("confidence", 0.75),
                         }
-                    else:
-                        result["profile"] = raw_dims
+                        for idx, dim in enumerate(normalized_dims)
+                    }
                     result["diagnosis"] = {"weak_knowledge_points": profile.weaknesses or []}
                     result["session_id"] = state.session_id
                     result["preferences"] = profile.preferences or {}
@@ -219,10 +218,17 @@ class ConversationStore:
         finally:
             db.close()
 
-    # ── Public API (unchanged signatures) ─────────────────────────────
+    # ── Public API ────────────────────────────────────────────────────
+
+    _DEFAULT_SESSION = "frontend_session_001"
 
     def get(self, session_id: str | None) -> ConversationState:
-        sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
+        """Get or create the conversation state for *session_id*.
+
+        Falls back to ``frontend_session_001`` when *session_id* is empty
+        (backwards-compatible default for the single-user dev flow).
+        """
+        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
         if sid not in self._sessions:
             state = ConversationState(session_id=sid)
             self._sessions[sid] = state
@@ -230,8 +236,32 @@ class ConversationStore:
                 self._hydrate_from_db(state)
         return self._sessions[sid]
 
+    def get_state_or_none(self, session_id: str) -> ConversationState | None:
+        """Return the state for *session_id* if it exists, otherwise *None*.
+
+        Unlike ``get()``, this does **not** create a new state on demand.
+        Use this when you want to check whether a session already has data
+        without creating phantom sessions.
+        """
+        sid = session_id.strip()
+        if not sid:
+            return None
+        if sid in self._sessions:
+            return self._sessions[sid]
+        if self._db_enabled:
+            state = ConversationState(session_id=sid)
+            self._sessions[sid] = state
+            self._hydrate_from_db(state)
+            # If hydration produced no data, treat as non-existent
+            if not state.messages and not state.last_result:
+                del self._sessions[sid]
+                return None
+            return state
+        return None
+
     def reset(self, session_id: str | None) -> ConversationState:
-        sid = (session_id or "frontend_session_001").strip() or "frontend_session_001"
+        """Reset all state for a session (in-memory + DB)."""
+        sid = (session_id or self._DEFAULT_SESSION).strip() or self._DEFAULT_SESSION
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:
@@ -294,10 +324,19 @@ class ConversationStore:
                     for point in result.get("diagnosis", {}).get("weak_knowledge_points", [])
                 ]
                 readiness = self.readiness(state)
+                # Extract preferences from profile data or result
+                prefs = result.get("preferences") or {}
+                if not prefs:
+                    # Build from conversation state facts as fallback
+                    pref_fact = state.facts.get("preference", "")
+                    if pref_fact:
+                        prefs = {"preferredFormats": [pref_fact], "paceMinutes": 45, "difficulty": "beginner", "explainStyle": "diagram"}
+
                 save_profile_snapshot(
                     db, state.session_id,
                     dimensions=dimensions_list,
                     weaknesses=weaknesses_list,
+                    preferences=prefs if prefs else None,
                     readiness_score=readiness.get("score"),
                 )
 
@@ -313,15 +352,34 @@ class ConversationStore:
                     }
                     save_learning_path(db, state.session_id, path_data)
 
-                # Save resources if present
+                # Save resources if present — persist full structured data
                 for item in result.get("resources", []):
+                    # Determine format from content_format field
+                    content_fmt = item.get("content_format", "markdown")
+                    # Determine difficulty from item or default
+                    difficulty = item.get("difficulty", "easy")
+                    # Estimate minutes from content length
+                    content_text = item.get("content", "")
+                    estimated = max(10, len(content_text) // 200 * 5) if content_text else 20
+
                     save_resource(db, state.session_id, {
                         "id": item.get("resource_id", f"res_{time.time()}"),
                         "type": item.get("type", "lecture"),
                         "title": item.get("title", "学习资源"),
                         "description": item.get("description", ""),
-                        "content": item.get("content", ""),
-                        "tags": [item.get("content_format", "markdown"), item.get("source", "mock")],
+                        "content": content_text,
+                        "knowledge_points": [item.get("related_stage_id", "")] if item.get("related_stage_id") else [],
+                        "tags": [content_fmt, item.get("source", "mock")],
+                        "difficulty": difficulty,
+                        "estimated_minutes": estimated,
+                        "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
+                        "mermaid_def": content_text if content_fmt == "mermaid" else None,
+                        "code_blocks": item.get("code_blocks"),
+                        "questions": item.get("items"),  # quiz items
+                        "ppt_outline": item.get("ppt_outline"),
+                        "bookmarked": item.get("bookmarked", False),
+                        "study_status": item.get("study_status", "new"),
+                        "source": item.get("source", "mock"),
                     })
             finally:
                 db.close()
@@ -439,14 +497,25 @@ class ConversationStore:
                     formats.append(label)
             set_fact("preference", "、".join(dict.fromkeys(formats)) or text)
 
+        extracted_profile_facts = extract_profile_facts(text)
+        for key, value in extracted_profile_facts.facts.items():
+            set_fact(key, value)
+        for key, values in extracted_profile_facts.supplemental.items():
+            for value in values:
+                add_supplemental(key, value)
+
     def merge_result_profile(self, state: ConversationState, result: dict[str, Any]) -> None:
         profile = result.get("profile", {})
         mapping = {
-            "major": "background",
+            "major_background": "background",
             "knowledge_base": "knowledge_base",
             "learning_goal": "learning_goal",
             "cognitive_style": "preference",
-            "interests": "target_course",
+            "error_patterns": "weak_points",
+            "coding_ability": "knowledge_base",
+            "interest_direction": "target_course",
+            "learning_rhythm": "time_budget",
+            "self_efficacy": "preference",
         }
         for source_key, fact_key in mapping.items():
             item = profile.get(source_key)
@@ -473,7 +542,9 @@ class ConversationStore:
     def readiness(self, state: ConversationState) -> dict[str, Any]:
         filled = set(state.facts)
         missing_core = [key for key in CORE_FIELDS if key not in filled]
-        ready_to_plan = PLAN_READY_FIELDS.issubset(filled)
+        ready_to_plan = PLAN_READY_FIELDS.issubset(filled) and bool(
+            state.facts.get("knowledge_base") or state.facts.get("learning_goal")
+        )
         score = round(len(filled) / len(PROFILE_FIELD_DEFS), 2)
         return {
             "filledCount": len(filled),
