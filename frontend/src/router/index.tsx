@@ -1,4 +1,4 @@
-import { createBrowserRouter } from 'react-router-dom';
+import { createBrowserRouter, Navigate } from 'react-router-dom';
 import AppLayout from '../components/layout/AppLayout';
 import Home from '../pages/Home';
 import ChatPage from '../pages/ChatPage';
@@ -6,12 +6,31 @@ import ResourceLibrary from '../pages/ResourceLibrary';
 import LearningPathPage from '../pages/LearningPathPage';
 import ProfilePage from '../pages/ProfilePage';
 import LearningAnalyticsPage from '../pages/LearningAnalyticsPage';
+import LoginPage from '../pages/LoginPage';
 import NotFound from '../pages/NotFound';
+import { getCurrentLearner } from '../pages/LoginPage';
+
+/** 登录守卫：未登录跳转到 /login */
+function RequireAuth({ children }: { children: React.ReactNode }) {
+  const learner = getCurrentLearner();
+  if (!learner) {
+    return <Navigate to="/login" replace />;
+  }
+  return <>{children}</>;
+}
 
 const router = createBrowserRouter([
   {
+    path: '/login',
+    element: <LoginPage />,
+  },
+  {
     path: '/',
-    element: <AppLayout />,
+    element: (
+      <RequireAuth>
+        <AppLayout />
+      </RequireAuth>
+    ),
     children: [
       { index: true, element: <Home /> },
       { path: 'chat', element: <ChatPage /> },

@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
 import { useChatStore } from '../store/chatStore';
+import { getCurrentLearner } from './LoginPage';
 import { DIMENSION_LABELS, type ProfileDimension, type DimensionKey } from '../types/profile';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
@@ -205,6 +206,7 @@ export default function ProfilePage() {
   const completedCount = ALL_DIMENSION_KEYS.filter((k) => existingKeys.has(k)).length;
   const completeness = Math.round((completedCount / ALL_DIMENSION_KEYS.length) * 100);
   const missingDimensions = ALL_DIMENSION_KEYS.filter((k) => !existingKeys.has(k));
+  const learnerName = getCurrentLearner()?.name || profile.nickname || '学习者';
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-6 md:py-8">
@@ -222,7 +224,7 @@ export default function ProfilePage() {
           {/* 头像 + 完整度环 */}
           <div className="relative flex-shrink-0">
             <div className="w-20 h-20 rounded-2xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-2xl font-bold shadow-lg shadow-brand-200">
-              {profile.nickname?.[0] || '学'}
+              {learnerName?.[0] || '学'}
             </div>
             {/* 完整度环 */}
             <svg className="absolute -bottom-1 -right-1 w-10 h-10" viewBox="0 0 36 36">
@@ -240,7 +242,7 @@ export default function ProfilePage() {
 
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 mb-1">
-              <h1 className="text-2xl font-extrabold text-gray-900">{profile.nickname || '学习者'}</h1>
+              <h1 className="text-2xl font-extrabold text-gray-900">{learnerName}</h1>
               <span
                 className={`px-2.5 py-0.5 rounded-lg text-[11px] font-semibold border ${
                   completeness >= 80
