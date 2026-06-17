@@ -52,58 +52,83 @@ const FILTER_TYPES: (ResourceType | undefined)[] = [
  * 资源卡片
  * =================================================================== */
 function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () => void }) {
+  const colorMap: Record<string, string> = {
+    lecture:    'from-blue-400 to-blue-500',
+    mindmap:    'from-purple-400 to-purple-500',
+    quiz:       'from-amber-400 to-orange-500',
+    case_study: 'from-cyan-400 to-teal-500',
+    reading:    'from-emerald-400 to-green-500',
+    video:      'from-red-400 to-rose-500',
+    ppt:        'from-orange-400 to-amber-500',
+  };
+  const bgMap: Record<string, string> = {
+    lecture:    'bg-blue-50',
+    mindmap:    'bg-purple-50',
+    quiz:       'bg-amber-50',
+    case_study: 'bg-cyan-50',
+    reading:    'bg-emerald-50',
+    video:      'bg-red-50',
+    ppt:        'bg-orange-50',
+  };
+
   return (
     <button
       onClick={onClick}
-      className="group bg-white border border-gray-100 rounded-2xl p-5 text-left hover:shadow-lg hover:-translate-y-1 transition-all duration-300 w-full relative overflow-hidden"
+      className="group bg-white border border-gray-100 rounded-2xl text-left hover:shadow-xl hover:-translate-y-1.5 transition-all duration-300 w-full relative overflow-hidden"
     >
-      {/* 顶部彩色条 */}
-      <div className={`absolute top-0 left-0 right-0 h-1 ${
-        resource.type === 'lecture' ? 'bg-blue-400' :
-        resource.type === 'mindmap' ? 'bg-purple-400' :
-        resource.type === 'quiz' ? 'bg-amber-400' :
-        resource.type === 'case_study' ? 'bg-cyan-400' :
-        'bg-green-400'
-      }`} />
+      {/* 顶部渐变条 */}
+      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${colorMap[resource.type] || 'from-gray-400 to-gray-500'}`} />
 
-      <div className="flex items-start gap-3 mb-3 mt-1">
-        <div className="w-10 h-10 rounded-xl bg-gray-50 flex items-center justify-center flex-shrink-0">
-          {iconMap[resource.type]}
+      {/* 装饰光晕 */}
+      <div className={`absolute -bottom-8 -right-8 w-20 h-20 ${bgMap[resource.type] || 'bg-gray-50'} rounded-full opacity-60 group-hover:scale-150 transition-transform duration-500`} />
+
+      <div className="relative p-5 pt-4">
+        <div className="flex items-start gap-3 mb-3">
+          <div className={`w-11 h-11 rounded-xl ${bgMap[resource.type] || 'bg-gray-50'} flex items-center justify-center flex-shrink-0 shadow-sm group-hover:scale-110 group-hover:shadow-md transition-all duration-300`}>
+            {iconMap[resource.type]}
+          </div>
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-semibold text-gray-900 truncate group-hover:text-gray-700 transition-colors">{resource.title}</h3>
+            <p className="text-xs text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">{resource.description}</p>
+          </div>
+          {/* 学习状态标记 */}
+          {resource.studyStatus === 'completed' && (
+            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
+            </div>
+          )}
         </div>
-        <div className="flex-1 min-w-0">
-          <h3 className="text-sm font-semibold text-gray-900 truncate">{resource.title}</h3>
-          <p className="text-xs text-gray-400 mt-0.5 line-clamp-2">{resource.description}</p>
-        </div>
-        {/* 学习状态标记 */}
-        {resource.studyStatus === 'completed' && (
-          <CheckCircle2 className="w-5 h-5 text-green-500 flex-shrink-0" />
-        )}
-      </div>
 
-      {/* 标签 */}
-      <div className="flex flex-wrap items-center gap-1.5 mb-3">
-        <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${difficultyBadge[resource.difficulty]}`}>
-          {difficultyLabel[resource.difficulty]}
-        </span>
-        <span className="px-2 py-0.5 rounded-md text-[10px] text-gray-500 bg-gray-50 border border-gray-100">
-          {RESOURCE_TYPE_LABELS[resource.type]}
-        </span>
-        {resource.tags.slice(0, 2).map((tag) => (
-          <span key={tag} className="px-2 py-0.5 rounded-md text-[10px] text-gray-400 bg-gray-50">{tag}</span>
-        ))}
-      </div>
-
-      {/* 底部信息 */}
-      <div className="flex items-center justify-between text-[10px] text-gray-400">
-        <span className="flex items-center gap-1">
-          <Clock className="w-3 h-3" />{formatDuration(resource.estimatedMinutes)}
-        </span>
-        <div className="flex items-center gap-2">
-          {resource.bookmarked && <BookmarkCheck className="w-3 h-3 text-brand-500" />}
-          <SourceBadge source={resource.source || 'mock_fallback'} size="xs" />
-          <span className="flex items-center gap-1 text-brand-500 group-hover:translate-x-0.5 transition-transform">
-            查看详情 <ChevronRight className="w-3 h-3" />
+        {/* 标签 */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-3">
+          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${difficultyBadge[resource.difficulty]}`}>
+            {difficultyLabel[resource.difficulty]}
           </span>
+          <span className="px-2 py-0.5 rounded-md text-[10px] text-gray-500 bg-gray-50 border border-gray-100">
+            {RESOURCE_TYPE_LABELS[resource.type]}
+          </span>
+          {resource.tags.slice(0, 2).map((tag) => (
+            <span key={tag} className="px-2 py-0.5 rounded-md text-[10px] text-gray-400 bg-gray-50">{tag}</span>
+          ))}
+        </div>
+
+        {/* 底部信息 */}
+        <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
+          <span className="flex items-center gap-1">
+            <Clock className="w-3 h-3" />
+            {formatDuration(resource.estimatedMinutes)}
+          </span>
+          <div className="flex items-center gap-2">
+            {resource.bookmarked && (
+              <span className="flex items-center gap-0.5 text-brand-500">
+                <BookmarkCheck className="w-3 h-3" />
+              </span>
+            )}
+            <SourceBadge source={resource.source || 'mock_fallback'} size="xs" />
+            <span className="flex items-center gap-0.5 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
+              查看详情 <ChevronRight className="w-3 h-3" />
+            </span>
+          </div>
         </div>
       </div>
     </button>
