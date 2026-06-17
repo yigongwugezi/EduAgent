@@ -268,52 +268,77 @@ function Dashboard() {
   }
 
   return (
-    <section className="bg-gradient-to-b from-gray-50 to-white">
-      <div className="max-w-5xl mx-auto px-6 py-16">
+    <section className="relative overflow-hidden bg-gradient-to-b from-brand-50/30 via-white to-white">
+      {/* 装饰背景 */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <div className="absolute -top-40 -right-40 w-80 h-80 rounded-full bg-brand-100/40 blur-3xl" />
+        <div className="absolute -bottom-40 -left-40 w-80 h-80 rounded-full bg-purple-100/30 blur-3xl" />
+      </div>
+
+      <div className="relative max-w-5xl mx-auto px-6 py-12 md:py-16">
         <div className="text-center mb-8">
-          <span className="inline-block text-xs font-bold text-brand-500 uppercase tracking-[0.2em] bg-brand-50 px-4 py-1.5 rounded-full mb-3">
+          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-brand-600 uppercase tracking-[0.15em] bg-brand-50/80 backdrop-blur-sm border border-brand-100 px-4 py-1.5 rounded-full mb-3">
+            <Sparkles className="w-3 h-3" />
             My Workspace
           </span>
-          <h2 className="text-2xl font-extrabold text-gray-900">我的学习工作台</h2>
+          <h2 className="text-2xl md:text-3xl font-extrabold text-gray-900">
+            我的学习<span className="gradient-text">工作台</span>
+          </h2>
         </div>
 
-        {/* 顶层卡片 */}
+        {/* 顶层卡片网格 */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {/* 当前课程 */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/learning-path')}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center">
-                <BookOpen className="w-5 h-5 text-blue-500" />
+          <div
+            onClick={() => navigate('/path')}
+            className="group bg-white/80 backdrop-blur-sm border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 cursor-pointer relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-20 h-20 bg-blue-50/50 rounded-bl-[40px] -mr-8 -mt-8 group-hover:scale-110 transition-transform duration-500" />
+            <div className="relative flex items-center gap-3 mb-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform duration-300">
+                <BookOpen className="w-5.5 h-5.5 text-blue-600" />
               </div>
               <div>
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">当前课程</p>
-                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px]">
+                <p className="text-[9px] text-gray-400 uppercase tracking-widest font-semibold">当前课程</p>
+                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px] group-hover:text-blue-600 transition-colors">
                   {path?.courseName || profile?.dimensions?.find(d => d.key === 'knowledge_base')?.description || '待选择'}
                 </p>
               </div>
             </div>
-            {path && (
-              <p className="text-[10px] text-brand-500">进度 {path.overallProgress}% · {path.estimatedDays} 天</p>
+            {path ? (
+              <div className="relative flex items-center gap-2 text-[10px]">
+                <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+                  <div className="h-full bg-blue-500 rounded-full transition-all duration-700" style={{ width: `${path.overallProgress}%` }} />
+                </div>
+                <span className="text-blue-600 font-semibold">{path.overallProgress}%</span>
+                <span className="text-gray-400">· {path.estimatedDays}天</span>
+              </div>
+            ) : (
+              <p className="relative text-[10px] text-gray-400">去对话选择课程</p>
             )}
           </div>
 
           {/* 画像完整度 */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/profile')}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-purple-50 flex items-center justify-center">
-                <Target className="w-5 h-5 text-purple-500" />
+          <div
+            onClick={() => navigate('/profile')}
+            className="group bg-white/80 backdrop-blur-sm border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 cursor-pointer relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-20 h-20 bg-purple-50/50 rounded-bl-[40px] -mr-8 -mt-8 group-hover:scale-110 transition-transform duration-500" />
+            <div className="relative flex items-center gap-3 mb-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-purple-50 to-purple-100 flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform duration-300">
+                <Target className="w-5.5 h-5.5 text-purple-600" />
               </div>
               <div>
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">画像完整度</p>
+                <p className="text-[9px] text-gray-400 uppercase tracking-widest font-semibold">画像完整度</p>
                 <p className="text-sm font-bold text-gray-900">{completeness}%</p>
               </div>
             </div>
-            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+            <div className="relative h-2 bg-gray-100 rounded-full overflow-hidden">
               <div
-                className={`h-full rounded-full transition-all duration-700 ${
-                  completeness >= 80 ? 'bg-green-500' : completeness >= 50 ? 'bg-amber-500' : 'bg-red-400'
+                className={`h-full rounded-full transition-all duration-1000 ease-out ${
+                  completeness >= 80 ? 'bg-gradient-to-r from-green-400 to-emerald-500' :
+                  completeness >= 50 ? 'bg-gradient-to-r from-amber-400 to-orange-500' :
+                  'bg-gradient-to-r from-red-400 to-rose-500'
                 }`}
                 style={{ width: `${completeness}%` }}
               />
@@ -321,75 +346,91 @@ function Dashboard() {
           </div>
 
           {/* 当前学习阶段 */}
-          <div className="bg-white border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer"
-            onClick={() => navigate('/learning-path')}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-green-50 flex items-center justify-center">
-                <Play className="w-5 h-5 text-green-500" />
+          <div
+            onClick={() => navigate('/path')}
+            className="group bg-white/80 backdrop-blur-sm border border-gray-100 rounded-2xl p-5 shadow-sm hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 cursor-pointer relative overflow-hidden"
+          >
+            <div className="absolute top-0 right-0 w-20 h-20 bg-green-50/50 rounded-bl-[40px] -mr-8 -mt-8 group-hover:scale-110 transition-transform duration-500" />
+            <div className="relative flex items-center gap-3 mb-3">
+              <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-green-50 to-green-100 flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform duration-300">
+                <Play className="w-5.5 h-5.5 text-green-600" />
               </div>
               <div>
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">当前阶段</p>
-                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px]">
+                <p className="text-[9px] text-gray-400 uppercase tracking-widest font-semibold">当前阶段</p>
+                <p className="text-sm font-bold text-gray-900 truncate max-w-[120px] group-hover:text-green-600 transition-colors">
                   {currentStage?.title || '待生成'}
                 </p>
               </div>
             </div>
-            {currentStage && (
-              <p className="text-[10px] text-green-600">
-                约 {currentStage.estimatedDays} 天 · {currentStage.nodes.filter(n => n.status === 'mastered').length}/{currentStage.nodes.length} 节点
+            {currentStage ? (
+              <p className="relative text-[10px] text-green-600 font-medium">
+                约 {currentStage.estimatedDays} 天 · 进度 {currentStage.nodes.filter(n => n.status !== 'locked').length}/{currentStage.nodes.length}
               </p>
+            ) : (
+              <p className="relative text-[10px] text-gray-400">去对话生成路径</p>
             )}
           </div>
 
-          {/* 继续学习 */}
-          <div className="bg-white border border-brand-100 rounded-2xl p-5 shadow-sm hover:shadow-md transition-all cursor-pointer bg-gradient-to-br from-brand-50/30"
-            onClick={() => navigate('/chat')}>
-            <div className="flex items-center gap-3 mb-3">
-              <div className="w-10 h-10 rounded-xl bg-brand-100 flex items-center justify-center">
-                <Sparkles className="w-5 h-5 text-brand-600" />
+          {/* 继续学习 — 高亮卡片 */}
+          <div
+            onClick={() => navigate('/chat')}
+            className="group bg-gradient-to-br from-brand-500 to-brand-700 rounded-2xl p-5 shadow-md hover:shadow-xl hover:-translate-y-0.5 transition-all duration-300 cursor-pointer relative overflow-hidden"
+          >
+            <div className="absolute -top-10 -right-10 w-28 h-28 bg-white/10 rounded-full group-hover:scale-150 transition-transform duration-700" />
+            <div className="relative flex items-center gap-3 mb-3">
+              <div className="w-11 h-11 rounded-xl bg-white/20 backdrop-blur-sm flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform duration-300">
+                <Sparkles className="w-5.5 h-5.5 text-white" />
               </div>
               <div>
-                <p className="text-[10px] text-gray-400 uppercase tracking-wider">继续学习</p>
-                <p className="text-sm font-bold text-brand-700">进入对话</p>
+                <p className="text-[9px] text-white/70 uppercase tracking-widest font-semibold">继续学习</p>
+                <p className="text-sm font-bold text-white">进入对话</p>
               </div>
             </div>
-            <p className="text-[10px] text-brand-500">
-              {messages.filter(m => m.role === 'user').length} 轮对话 · {timeAgo(messages[messages.length - 1]?.timestamp || Date.now())}
+            <p className="relative text-[10px] text-white/80">
+              {messages.filter(m => m.role === 'user').length} 轮对话
+              <span className="mx-1.5">·</span>
+              {timeAgo(messages[messages.length - 1]?.timestamp || Date.now())}
             </p>
           </div>
         </div>
 
         {/* 今日推荐资源 */}
         {recommended.length > 0 && (
-          <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
-            <div className="flex items-center justify-between mb-4">
+          <div className="bg-white/80 backdrop-blur-sm border border-gray-100 rounded-2xl p-6 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between mb-5">
               <h3 className="text-sm font-bold text-gray-700 flex items-center gap-2">
-                <Star className="w-4 h-4 text-amber-400" />
+                <div className="w-6 h-6 rounded-lg bg-amber-50 flex items-center justify-center">
+                  <Star className="w-3.5 h-3.5 text-amber-500" />
+                </div>
                 今日推荐资源
               </h3>
               <button
                 onClick={() => navigate('/resources')}
-                className="text-xs text-brand-500 hover:underline inline-flex items-center gap-1"
+                className="text-xs text-brand-500 hover:text-brand-600 font-medium inline-flex items-center gap-1 transition-colors"
               >
                 查看全部 <ChevronRight className="w-3 h-3" />
               </button>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {recommended.map((r) => (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              {recommended.map((r, i) => (
                 <div
                   key={r.id}
-                  className="flex items-start gap-3 p-3.5 bg-gray-50 rounded-xl hover:bg-gray-100 transition-colors cursor-pointer"
+                  className="group flex items-start gap-3 p-3.5 bg-gradient-to-br from-gray-50 to-white rounded-xl hover:from-brand-50/50 hover:to-white border border-gray-100 hover:border-brand-100 transition-all duration-200 cursor-pointer"
                   onClick={() => navigate('/resources')}
+                  style={{ animationDelay: `${i * 0.1}s` }}
                 >
-                  <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center flex-shrink-0 shadow-sm">
-                    <BookOpen className="w-4 h-4 text-brand-500" />
+                  <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center flex-shrink-0 shadow-sm border border-gray-50 group-hover:border-brand-100 group-hover:shadow-md transition-all">
+                    <BookOpen className="w-4.5 h-4.5 text-brand-500" />
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-xs font-semibold text-gray-800 truncate">{r.title}</p>
+                    <p className="text-xs font-semibold text-gray-800 truncate group-hover:text-brand-600 transition-colors">{r.title}</p>
                     <p className="text-[10px] text-gray-400 mt-0.5">
-                      {RESOURCE_TYPE_LABELS[r.type] || r.type} · {formatDuration(r.estimatedMinutes)}
+                      {RESOURCE_TYPE_LABELS[r.type] || r.type}
+                      <span className="mx-1">·</span>
+                      {formatDuration(r.estimatedMinutes)}
                     </p>
                   </div>
+                  <ChevronRight className="w-3.5 h-3.5 text-gray-300 group-hover:text-brand-400 group-hover:translate-x-0.5 transition-all flex-shrink-0 mt-2" />
                 </div>
               ))}
             </div>

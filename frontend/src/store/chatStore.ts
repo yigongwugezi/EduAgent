@@ -1,7 +1,13 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
+import { getCurrentLearner } from '../pages/LoginPage';
 
-const STORAGE_KEY = 'eduagent_current_session_id';
+/** 基于 learnerId 生成 storage key，实现多用户 session 隔离 */
+const storageKey = () => {
+  const learner = getCurrentLearner();
+  const suffix = learner?.id || 'anonymous';
+  return `eduagent_session_${suffix}`;
+};
 
 const createSessionId = () => {
   const randomPart =
@@ -12,17 +18,17 @@ const createSessionId = () => {
 /** 从 localStorage 恢复或创建新的 sessionId */
 const loadSessionId = (): string => {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY);
+    const stored = localStorage.getItem(storageKey());
     if (stored) return stored;
   } catch { /* 无痕模式等环境 */ }
   const id = createSessionId();
-  try { localStorage.setItem(STORAGE_KEY, id); } catch { /* noop */ }
+  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
   return id;
 };
 
 /** 将 sessionId 写入 localStorage */
 const persistSessionId = (id: string) => {
-  try { localStorage.setItem(STORAGE_KEY, id); } catch { /* noop */ }
+  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
 };
 
 interface ChatStore {

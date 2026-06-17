@@ -2,6 +2,7 @@ import { Outlet } from 'react-router-dom';
 import Header from './Header';
 import BottomNav from './BottomNav';
 import { ToastProvider } from '../common/Toast';
+import DebugPanel from '../common/DebugPanel';
 
 export default function AppLayout() {
   return (
@@ -12,6 +13,7 @@ export default function AppLayout() {
           <Outlet />
         </main>
         <BottomNav />
+        <DebugPanel />
       </div>
     </ToastProvider>
   );
