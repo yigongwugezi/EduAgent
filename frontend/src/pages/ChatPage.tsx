@@ -8,9 +8,10 @@ import type { ChatMessage, GenerationProgress } from '../types/chat';
 import { timeAgo } from '../utils/format';
 import {
   Send, Sparkles, Square, Copy, Check, AlertCircle,
-  Bot, User, RefreshCw, ChevronDown, XCircle,
+  Bot, User, RefreshCw, ChevronDown, XCircle, History,
 } from 'lucide-react';
 import Markdown from '../utils/markdown';
+import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 
 /* ===================================================================
  * 多智能体管线定义
@@ -242,9 +243,11 @@ export default function ChatPage() {
   const [input, setInput] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
   const [messagesLoaded, setMessagesLoaded] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const msgRefs = useRef<(HTMLDivElement | null)[]>([]);
 
   // 自动滚动到底部
   const scrollToBottom = useCallback((smooth = false) => {
@@ -269,22 +272,18 @@ export default function ChatPage() {
     };
     el.addEventListener('scroll', handler);
     return () => el.removeEventListener('scroll', handler);
-  }, [messages]);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 挂载时从后端恢复已有消息（页面刷新后保留对话）
+  // 切换 session 时加载对应消息
   useEffect(() => {
     let cancelled = false;
-    async function restore() {
+    async function load() {
       setLoading(true);
       try {
         const res = await getSessionMessages(currentSessionId);
         if (cancelled) return;
         if (res.messages && res.messages.length > 0) {
-          useChatStore.setState((s) => {
-            // 避免重复加载（流式消息可能已在此 session 中）
-            if (s.messages.length > 0) return {};
-            return { messages: res.messages };
-          });
+          useChatStore.setState({ messages: res.messages });
         }
       } catch {
         // 新 session 或网络错误，静默处理
@@ -295,9 +294,15 @@ export default function ChatPage() {
         }
       }
     }
-    restore();
+    // 只在 user 主动切换 session 时加载（从 sidebar 点击触发）
+    if (useChatStore.getState().messages.length === 0) {
+      load();
+    } else {
+      setMessagesLoaded(true);
+      setLoading(false);
+    }
     return () => { cancelled = true; };
-  }, [currentSessionId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentSessionId]);
 
   // 从 Home 页跳转来的初始消息（仅在无历史消息时触发）
   useEffect(() => {
@@ -328,8 +333,25 @@ export default function ChatPage() {
 
   const hasError = messages.some((m) => m.error);
 
+  const jumpToMessage = useCallback((index: number) => {
+    const el = msgRefs.current[index];
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, []);
+
   return (
-    <div className="flex flex-col h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100vh-8rem)] md:h-[calc(100vh-4rem)] relative">
+      {/* 历史记录按钮 */}
+      {messages.length > 0 && (
+        <button
+          onClick={() => setHistoryOpen(true)}
+          className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:border-gray-300 shadow-sm transition-all"
+        >
+          <History className="w-3.5 h-3.5" />
+          历史
+        </button>
+      )}
       {/* 错误横幅 */}
       {hasError && (
         <div className="flex items-center justify-between px-4 py-2 bg-red-50 border-b border-red-100">
@@ -372,8 +394,10 @@ export default function ChatPage() {
           </div>
         )}
 
-        {messages.map((msg) => (
-          <MessageBubble key={msg.id} msg={msg} />
+        {messages.map((msg, idx) => (
+          <div key={msg.id} ref={el => { msgRefs.current[idx] = el; }}>
+            <MessageBubble msg={msg} />
+          </div>
         ))}
 
         {/* 多智能体进度管线 */}
@@ -393,6 +417,13 @@ export default function ChatPage() {
 
         <div ref={bottomRef} />
       </div>
+
+      {/* 历史记录侧边栏 */}
+      <ChatHistorySidebar
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onJump={jumpToMessage}
+      />
 
       {/* 滚到底部按钮 */}
       {showScrollBtn && (

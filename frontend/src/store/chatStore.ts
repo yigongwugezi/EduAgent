@@ -1,34 +1,47 @@
-import { create } from 'zustand';
+﻿import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
 import { getCurrentLearner } from '../pages/LoginPage';
 
-/** 基于 learnerId 生成 storage key，实现多用户 session 隔离 */
 const storageKey = () => {
   const learner = getCurrentLearner();
   const suffix = learner?.id || 'anonymous';
-  return `eduagent_session_${suffix}`;
+  return 'eduagent_session_' + suffix;
+};
+
+const sessionsKey = () => {
+  const learner = getCurrentLearner();
+  const suffix = learner?.id || 'anonymous';
+  return 'eduagent_sessions_' + suffix;
 };
 
 const createSessionId = () => {
-  const randomPart =
-    globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
-  return `session_${Date.now()}_${randomPart}`;
+  const randomPart = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(16).slice(2);
+  return 'session_' + Date.now() + '_' + randomPart;
 };
 
-/** 从 localStorage 恢复或创建新的 sessionId */
 const loadSessionId = (): string => {
   try {
     const stored = localStorage.getItem(storageKey());
     if (stored) return stored;
-  } catch { /* 无痕模式等环境 */ }
+  } catch {}
   const id = createSessionId();
-  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
+  try { localStorage.setItem(storageKey(), id); } catch {}
   return id;
 };
 
-/** 将 sessionId 写入 localStorage */
 const persistSessionId = (id: string) => {
-  try { localStorage.setItem(storageKey(), id); } catch { /* noop */ }
+  try { localStorage.setItem(storageKey(), id); } catch {}
+};
+
+const loadSessions = (): ChatSession[] => {
+  try {
+    const data = localStorage.getItem(sessionsKey());
+    return data ? JSON.parse(data) : [];
+  } catch { return []; }
+};
+
+const persistSessions = (sessions: ChatSession[]) => {
+  try { localStorage.setItem(sessionsKey(), JSON.stringify(sessions)); } catch {}
 };
 
 interface ChatStore {
@@ -39,9 +52,7 @@ interface ChatStore {
   isStreaming: boolean;
   loading: boolean;
   agentProgress: GenerationProgress | null;
-  /** 数据版本号：每次对话完成后 +1，页面监听此值触发自动刷新 */
   dataVersion: number;
-
   setCurrentSession: (id: string) => void;
   addMessage: (msg: ChatMessage) => void;
   updateLastAssistant: (updater: (msg: ChatMessage) => ChatMessage) => void;
@@ -54,13 +65,12 @@ interface ChatStore {
   clearMessages: () => void;
   newSession: () => void;
   removeLastMessage: () => void;
-  /** 对话完成后调用，触发画像/路径/资源页面刷新 */
   bumpDataVersion: () => void;
 }
 
-export const useChatStore = create<ChatStore>((set) => ({
+export const useChatStore = create<ChatStore>((set, get) => ({
   currentSessionId: loadSessionId(),
-  sessions: [],
+  sessions: loadSessions(),
   messages: [],
   quickCommands: [],
   isStreaming: false,
@@ -70,19 +80,41 @@ export const useChatStore = create<ChatStore>((set) => ({
 
   setCurrentSession: (id) => {
     persistSessionId(id);
-    set({ currentSessionId: id });
+    set({ currentSessionId: id, messages: [] });
   },
 
   addMessage: (msg) =>
-    set((s) => ({ messages: [...s.messages, msg] })),
+    set((s) => {
+      const msgs = [...s.messages, msg];
+      if (msg.role === 'user' && msgs.filter(m => m.role === 'user').length === 1) {
+        const sessions = loadSessions();
+        const existing = sessions.find(ses => ses.id === s.currentSessionId);
+        if (!existing) {
+          sessions.unshift({
+            id: s.currentSessionId,
+            title: msg.content.slice(0, 60),
+            messages: [],
+            createdAt: msg.timestamp,
+            updatedAt: msg.timestamp,
+          });
+          persistSessions(sessions);
+        }
+      }
+      const sessions = loadSessions();
+      const sesIdx = sessions.findIndex(ses => ses.id === s.currentSessionId);
+      if (sesIdx >= 0) {
+        sessions[sesIdx].updatedAt = msg.timestamp;
+        sessions[sesIdx].title = sessions[sesIdx].title || msg.content.slice(0, 60);
+        persistSessions(sessions);
+      }
+      return { messages: msgs, sessions };
+    }),
 
   updateLastAssistant: (updater) =>
     set((s) => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (last?.role === 'assistant') {
-        msgs[msgs.length - 1] = updater(last);
-      }
+      if (last?.role === 'assistant') msgs[msgs.length - 1] = updater(last);
       return { messages: msgs };
     }),
 
@@ -90,9 +122,7 @@ export const useChatStore = create<ChatStore>((set) => ({
     set((s) => {
       const msgs = [...s.messages];
       const last = msgs[msgs.length - 1];
-      if (last?.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
-      }
+      if (last?.role === 'assistant') msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
       return { messages: msgs };
     }),
 
@@ -102,11 +132,30 @@ export const useChatStore = create<ChatStore>((set) => ({
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
   clearMessages: () => set({ messages: [] }),
+
   newSession: () => {
+    const state = get();
+    if (state.messages.length > 0) {
+      const sessions = loadSessions();
+      const existing = sessions.find(s => s.id === state.currentSessionId);
+      if (!existing) {
+        const firstUser = state.messages.find(m => m.role === 'user');
+        sessions.unshift({
+          id: state.currentSessionId,
+          title: firstUser?.content?.slice(0, 60) || '新对话',
+          messages: [],
+          createdAt: state.messages[0]?.timestamp || Date.now(),
+          updatedAt: Date.now(),
+        });
+        persistSessions(sessions);
+        set({ sessions });
+      }
+    }
     const id = createSessionId();
     persistSessionId(id);
     set({ currentSessionId: id, messages: [] });
   },
+
   removeLastMessage: () =>
     set((s) => ({ messages: s.messages.slice(0, -1) })),
 
