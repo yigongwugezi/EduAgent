@@ -32,6 +32,16 @@ export interface Resource {
   bookmarked?: boolean;
   /** 学习状态 */
   studyStatus?: 'new' | 'in_progress' | 'completed';
+
+  // ========== ResourceAgent P0 新增字段 ==========
+  /** 关联的学习阶段 ID */
+  relatedStageId?: string;
+  /** 关联的章节名称 */
+  relatedChapter?: string;
+  /** 关联的知识点列表 */
+  relatedKnowledgePoints?: string[];
+  /** 质检状态: passed / needs_review / fallback_passed */
+  qualityStatus?: string;
 }
 
 export interface CodeBlock {

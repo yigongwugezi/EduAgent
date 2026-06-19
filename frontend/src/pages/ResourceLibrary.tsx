@@ -1,5 +1,5 @@
-import { useState, useCallback, useEffect } from 'react';
-import { useNavigate, useParams, useLocation } from 'react-router-dom';
+import { useState, useCallback, useEffect, useRef } from 'react';
+import { useNavigate, useParams, useLocation, useSearchParams } from 'react-router-dom';
 import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
@@ -20,7 +20,8 @@ import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
-import SourceBadge, { UpdateTimeRow, type DataSource } from '../components/common/SourceBadge';
+import SourceBadge, { type DataSource } from '../components/common/SourceBadge';
+import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
 
 /* ===================================================================
  * 常量定义
@@ -91,6 +92,9 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
           <div className="flex-1 min-w-0">
             <h3 className="text-sm font-semibold text-gray-900 truncate group-hover:text-gray-700 transition-colors">{resource.title}</h3>
             <p className="text-xs text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">{resource.description}</p>
+            <div className="mt-1.5">
+              <SourceTag source={resource.source} />
+            </div>
           </div>
           {/* 学习状态标记 */}
           {resource.studyStatus === 'completed' && (
@@ -108,10 +112,36 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
           <span className="px-2 py-0.5 rounded-md text-[10px] text-gray-500 bg-gray-50 border border-gray-100">
             {RESOURCE_TYPE_LABELS[resource.type]}
           </span>
+          {/* 质检状态 */}
+          {resource.qualityStatus && resource.qualityStatus !== 'passed' && (
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
+              resource.qualityStatus === 'fallback_passed'
+                ? 'bg-amber-50 text-amber-600 border-amber-200'
+                : 'bg-red-50 text-red-600 border-red-200'
+            }`}>
+              {resource.qualityStatus === 'fallback_passed' ? '兜底' : '需复核'}
+            </span>
+          )}
           {resource.tags.slice(0, 2).map((tag) => (
             <span key={tag} className="px-2 py-0.5 rounded-md text-[10px] text-gray-400 bg-gray-50">{tag}</span>
           ))}
         </div>
+
+        {/* 所属阶段 + 章节 */}
+        {(resource.relatedStageId || resource.relatedChapter) && (
+          <div className="flex flex-wrap items-center gap-2 mb-2 text-[10px] text-gray-400">
+            {resource.relatedChapter && (
+              <span className="inline-flex items-center gap-1">
+                📖 {resource.relatedChapter}
+              </span>
+            )}
+            {resource.relatedStageId && (
+              <span className="inline-flex items-center gap-1">
+                📍 阶段 {resource.relatedStageId.replace(/[^0-9]/g, '')}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 底部信息 */}
         <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
@@ -229,6 +259,13 @@ function FeedbackForm({
     setSubmitting(true);
     try {
       await submitFeedback({ resourceId, rating, difficultyMatch: difficultyMatch as any, comment: comment || undefined });
+      // 同时上报学习事件，使学习分析页能看到反馈行为
+      await logStudyEvent({
+        event: 'feedback',
+        resourceId,
+        sessionId: useChatStore.getState().currentSessionId,
+        metadata: { rating, difficultyMatch, hasComment: !!comment },
+      });
       onSubmit();
     } catch { /* ignore */ }
     finally { setSubmitting(false); }
@@ -332,13 +369,22 @@ function QuizAnswerer({ questions, resourceId }: {
 
   const handleSubmit = async () => {
     const correct = questions.filter((q) => answers[q.id] === q.answer).length;
+    const wrong = questions.length - correct;
     setScore({ correct, total: questions.length });
     setSubmitted(true);
-    // 上报做题事件
+    // 上报做题事件（quiz_result 使学习分析页能计算正确率和薄弱知识点）
     await logStudyEvent({
-      event: 'quiz_submit',
+      event: 'quiz_result',
       resourceId,
-      metadata: { correct, total: questions.length, accuracy: Math.round((correct / questions.length) * 100) },
+      sessionId: useChatStore.getState().currentSessionId,
+      metadata: {
+        correct,
+        wrong,
+        total: questions.length,
+        accuracy: Math.round((correct / questions.length) * 100),
+        topic: questions[0]?.knowledgePoint || '通用',
+        knowledgePoint: questions[0]?.knowledgePoint || '通用',
+      },
     });
   };
 
@@ -457,6 +503,7 @@ function QuizAnswerer({ questions, resourceId }: {
 export default function ResourceLibrary() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
+  const [searchParams] = useSearchParams();
   const { resources, total, loading, error, applyFilter, toggleBookmark, refetch } = useResources();
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
@@ -467,9 +514,24 @@ export default function ResourceLibrary() {
   const [activeType, setActiveType] = useState<ResourceType | undefined>();
   const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>();
   const [activeSource, setActiveSource] = useState<DataSource | undefined>();
+  const [activeStageId, setActiveStageId] = useState<string | undefined>();
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
   const [prevResourceIds, setPrevResourceIds] = useState<string>('');
+  const stageFilterApplied = useRef(false);
+
+  // 从 URL query ?stage=xxx 读取阶段筛选
+  useEffect(() => {
+    const stageFromUrl = searchParams.get('stage');
+    const stageFromStorage = sessionStorage.getItem('eduagent_filter_stage');
+    const stageId = stageFromUrl || stageFromStorage;
+    if (stageId && !stageFilterApplied.current) {
+      stageFilterApplied.current = true;
+      setActiveStageId(stageId);
+      applyFilter({ search: stageId }); // 用 stageId 作为搜索词传递给后端
+      sessionStorage.removeItem('eduagent_filter_stage');
+    }
+  }, [searchParams, applyFilter]);
 
   // 收藏切换
   const handleBookmark = useCallback(async (id: string) => {
@@ -484,10 +546,11 @@ export default function ResourceLibrary() {
     await logStudyEvent({
       event: 'resource_complete',
       resourceId: resource.id,
-      metadata: { type: resource.type },
+      sessionId: useChatStore.getState().currentSessionId,
+      metadata: { type: resource.type, subjectId },
     });
     setSelected((prev) => prev ? { ...prev, studyStatus: 'completed' } : null);
-  }, []);
+  }, [subjectId]);
 
   // 打开资源详情
   const openDetail = useCallback(async (resource: Resource) => {
@@ -498,9 +561,10 @@ export default function ResourceLibrary() {
     await logStudyEvent({
       event: 'resource_view',
       resourceId: resource.id,
-      metadata: { type: resource.type },
+      sessionId: useChatStore.getState().currentSessionId,
+      metadata: { type: resource.type, subjectId },
     });
-  }, []);
+  }, [subjectId]);
 
   // 当资源列表加载完成且 URL 有 :id 参数时自动打开详情
   useEffect(() => {
@@ -548,59 +612,49 @@ export default function ResourceLibrary() {
       </div>
 
       {/* ========== 列表 ========== */}
-      {loading ? (
+      {loading && resources.length === 0 ? (
         <Loading text="加载资源中…" />
-      ) : error ? (
-        <EmptyState
-          icon={<AlertCircle className="w-8 h-8 text-red-400" />}
+      ) : error && resources.length === 0 ? (
+        <PageError
           title="资源加载失败"
           description={error}
-          action={
-            <div className="flex items-center gap-3 mt-3">
-              <button
-                onClick={refetch}
-                className="px-4 py-2 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
-              >
-                <RefreshCw className="w-4 h-4" />
-                重试
-              </button>
-              <button
-                onClick={() => navigate('/chat')}
-                className="px-4 py-2 bg-white border border-gray-200 text-gray-600 rounded-xl text-sm font-semibold hover:bg-gray-50 transition-all"
-              >
-                去对话页
-              </button>
-            </div>
-          }
+          onRetry={refetch}
+          onGoChat={() => navigate('/chat')}
         />
       ) : !resources || resources.length === 0 ? (
-        <EmptyState
-          icon={<BookOpen className="w-8 h-8" />}
-          title={search || activeType || activeDifficulty ? '没有匹配的资源' : '暂无资源'}
-          description={
-            search || activeType || activeDifficulty
-              ? '尝试调整筛选条件或搜索关键词'
-              : hasCourse
-                ? '当前课程暂无资源，在 AI 对话中说"生成学习资源"来获得个性化材料'
-                : '在 AI 对话中描述你的学习需求，多智能体将为你生成个性化学习资源'
-          }
-          action={
-            !search && !activeType && !activeDifficulty ? (
-              <button
-                onClick={() => navigate('/chat')}
-                className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4" />
-                去对话页生成资源
-              </button>
-            ) : undefined
-          }
-        />
+        <div className="relative">
+          {loading && <RefreshOverlay />}
+          <EmptyState
+            icon={<BookOpen className="w-8 h-8" />}
+            title={search || activeType || activeDifficulty ? '没有匹配的资源' : '暂无资源'}
+            description={
+              search || activeType || activeDifficulty
+                ? '尝试调整筛选条件或搜索关键词'
+                : hasCourse
+                  ? '当前课程暂无资源，在 AI 对话中说"生成学习资源"来获得个性化材料'
+                  : '在 AI 对话中描述你的学习需求，多智能体将为你生成个性化学习资源'
+            }
+            action={
+              !search && !activeType && !activeDifficulty ? (
+                <button
+                  onClick={() => navigate('/chat')}
+                  className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+                >
+                  <Sparkles className="w-4 h-4" />
+                  去对话页生成资源
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {resources.map((r) => (
-            <ResourceCard key={r.id} resource={r} onClick={() => openDetail(r)} />
-          ))}
+        <div className="relative">
+          {loading && <RefreshOverlay />}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {resources.map((r) => (
+              <ResourceCard key={r.id} resource={r} onClick={() => openDetail(r)} />
+            ))}
+          </div>
         </div>
       )}
 
@@ -608,7 +662,7 @@ export default function ResourceLibrary() {
       <Modal open={!!selected} onClose={() => setSelected(null)} title={selected?.title} wide>
         {selected && (
           <div className="space-y-4">
-            {/* 元信息 */}
+            {/* 元信息 — 类型 / 难度 / 来源 / 质检 / 时长 */}
             <div className="flex flex-wrap items-center gap-2">
               <span className={`px-2.5 py-1 rounded-lg text-xs font-medium border ${difficultyBadge[selected.difficulty]}`}>
                 {difficultyLabel[selected.difficulty]}
@@ -619,6 +673,15 @@ export default function ResourceLibrary() {
               <span className="text-xs text-gray-400">· {formatDuration(selected.estimatedMinutes)}</span>
               <span className="text-xs text-gray-400">· {timeAgo(selected.createdAt)}</span>
               <SourceBadge source={selected.source || 'system_inferred'} size="sm" />
+              {selected.qualityStatus && selected.qualityStatus !== 'passed' && (
+                <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
+                  selected.qualityStatus === 'fallback_passed'
+                    ? 'bg-amber-50 text-amber-600 border-amber-200'
+                    : 'bg-red-50 text-red-600 border-red-200'
+                }`}>
+                  {selected.qualityStatus === 'fallback_passed' ? '🛡️ 兜底内容' : '⚠️ 需复核'}
+                </span>
+              )}
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
                   ✅ 已完成
@@ -629,17 +692,102 @@ export default function ResourceLibrary() {
             {/* 描述 */}
             <p className="text-sm text-gray-500">{selected.description}</p>
 
-            {/* 推荐理由 */}
-            {(selected.source === 'agent_generated' || selected.source === 'system_inferred') && (
-              <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">
-                <p className="text-xs text-green-600 font-medium mb-0.5">💡 推荐理由</p>
-                <p className="text-[10px] text-green-500">
-                  此资源基于你的学习画像和当前知识短板由 PlannerAgent 智能体生成，
-                  与你的学习路径「{selected.knowledgePoints?.[0] || '当前课程'}」直接关联。
+            {/* 关联信息卡片 — 阶段 / 章节 / 知识点 / 来源 */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-4 bg-gray-50/80 border border-gray-100 rounded-xl">
+              {/* 所属阶段 */}
+              {selected.relatedStageId && (
+                <div className="flex items-start gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-brand-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-bold text-brand-600">
+                      {selected.relatedStageId.replace(/[^0-9]/g, '') || '?'}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400 font-medium">所属学习阶段</p>
+                    <p className="text-xs font-semibold text-gray-700">
+                      {selected.relatedChapter ? `第${selected.relatedStageId.replace(/[^0-9]/g, '') || ''}阶段` : selected.relatedStageId}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {/* 关联章节 */}
+              {selected.relatedChapter && (
+                <div className="flex items-start gap-2.5">
+                  <div className="w-7 h-7 rounded-lg bg-emerald-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-bold text-emerald-600">章</span>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400 font-medium">关联章节</p>
+                    <p className="text-xs font-semibold text-gray-700">{selected.relatedChapter}</p>
+                  </div>
+                </div>
+              )}
+              {/* 知识点 */}
+              {(selected.relatedKnowledgePoints?.length ?? 0) > 0 && (
+                <div className="flex items-start gap-2.5 sm:col-span-2">
+                  <div className="w-7 h-7 rounded-lg bg-purple-100 flex items-center justify-center flex-shrink-0">
+                    <span className="text-xs font-bold text-purple-600">知</span>
+                  </div>
+                  <div className="flex-1">
+                    <p className="text-[10px] text-gray-400 font-medium">关联知识点</p>
+                    <div className="flex flex-wrap gap-1.5 mt-1">
+                      {selected.relatedKnowledgePoints?.map((kp) => (
+                        <span key={kp} className="px-2 py-0.5 bg-purple-50 text-purple-600 rounded-md text-[10px] font-medium border border-purple-100">
+                          {kp}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* 质检状态 */}
+              {selected.qualityStatus && (
+                <div className="flex items-start gap-2.5">
+                  <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${
+                    selected.qualityStatus === 'passed' ? 'bg-green-100' :
+                    selected.qualityStatus === 'fallback_passed' ? 'bg-amber-100' : 'bg-red-100'
+                  }`}>
+                    <span className={`text-xs font-bold ${
+                      selected.qualityStatus === 'passed' ? 'text-green-600' :
+                      selected.qualityStatus === 'fallback_passed' ? 'text-amber-600' : 'text-red-600'
+                    }`}>
+                      {selected.qualityStatus === 'passed' ? '✓' :
+                       selected.qualityStatus === 'fallback_passed' ? '🛡' : '⚠'}
+                    </span>
+                  </div>
+                  <div>
+                    <p className="text-[10px] text-gray-400 font-medium">质检状态</p>
+                    <p className={`text-xs font-semibold ${
+                      selected.qualityStatus === 'passed' ? 'text-green-600' :
+                      selected.qualityStatus === 'fallback_passed' ? 'text-amber-600' : 'text-red-600'
+                    }`}>
+                      {selected.qualityStatus === 'passed' ? '已通过' :
+                       selected.qualityStatus === 'fallback_passed' ? '兜底通过' : '需人工复核'}
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 来源说明 / fallback 标签 */}
+            {selected.source === 'system_inferred' && (
+              <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
+                <p className="text-xs text-amber-700 font-medium mb-0.5">🛡️ 兜底资源</p>
+                <p className="text-[10px] text-amber-500">
+                  此资源由系统规则生成，未经过 AI 智能体优化。内容与你的学习画像匹配度可能有限。
+                  建议在 AI 对话中补充详细信息以获取更精准的个性化资源。
                 </p>
               </div>
             )}
-
+            {selected.source === 'agent_generated' && (
+              <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">
+                <p className="text-xs text-green-600 font-medium mb-0.5">✨ AI 智能体生成</p>
+                <p className="text-[10px] text-green-500">
+                  此资源由 ResourceAgent 根据你的学习画像、当前阶段「{selected.relatedChapter || selected.relatedStageId || '当前课程'}」
+                  和知识短板个性化生成，与你的学习路径直接关联。
+                </p>
+              </div>
+            )}
 
             {/* 知识点标签 */}
             <div className="flex flex-wrap gap-1.5">
@@ -704,64 +852,179 @@ export default function ResourceLibrary() {
               </div>
             )}
 
-            {/* 做题交互 (quiz 类型专属) */}
-            {selected.type === 'quiz' && selected.questions && selected.questions.length > 0 && (
-              <QuizAnswerer questions={selected.questions} resourceId={selected.id} />
-            )}
+            {/* 资源内容 — 按类型差异化展示 */}
+            <div className="prose-custom text-sm text-gray-800 leading-relaxed p-5 bg-gray-50/80 rounded-xl border border-gray-100">
+              {/* ===== 课程讲义 / 拓展阅读 : Markdown 正文 ===== */}
+              {(selected.type === 'lecture' || selected.type === 'reading') && (
+                <div>
+                  {selected.type === 'reading' && (
+                    <div className="mb-4 p-3 bg-emerald-50/70 border border-emerald-100 rounded-xl">
+                      <p className="text-xs text-emerald-700 font-medium mb-0.5">📖 拓展阅读</p>
+                      <p className="text-[10px] text-emerald-500">以下为与本课程相关的拓展阅读材料，帮助你加深理解</p>
+                    </div>
+                  )}
+                  {selected.type === 'lecture' && (
+                    <div className="mb-4 p-3 bg-blue-50/70 border border-blue-100 rounded-xl">
+                      <p className="text-xs text-blue-700 font-medium mb-0.5">📚 课程讲义</p>
+                      <p className="text-[10px] text-blue-500">以下为针对当前阶段定制的课程讲义内容</p>
+                    </div>
+                  )}
+                  <Markdown content={selected.content} />
+                </div>
+              )}
 
-            {/* 资源内容 */}
-            <div className="prose-custom text-sm text-gray-800 leading-relaxed p-5 bg-gray-50/80 rounded-xl max-h-[55vh] overflow-y-auto border border-gray-100">
-              {/* Markdown 渲染 */}
-              <Markdown content={selected.content} />
-              {/* Mermaid 图表 */}
-              {selected.mermaidDef && (
-                <div className="mt-4 p-3 bg-white rounded-xl border border-gray-100">
-                  <p className="text-xs text-gray-400 mb-2">知识图谱</p>
-                  <MermaidDiagram definition={selected.mermaidDef} />
-                </div>
-              )}
-              {/* 代码块 */}
-              {selected.codeBlocks && selected.codeBlocks.length > 0 && (
-                <div className="mt-4 space-y-3">
-                  <p className="text-xs text-gray-400">代码示例</p>
-                  {selected.codeBlocks.map((block, i) => (
-                    <div key={i} className="bg-gray-900 text-gray-100 rounded-xl p-4 overflow-x-auto">
-                      <pre className="text-xs font-mono"><code>{block.code}</code></pre>
-                      {block.explanation && (
-                        <p className="text-[10px] text-gray-400 mt-2">{block.explanation}</p>
-                      )}
+              {/* ===== 思维导图 : Mermaid 或结构化层级 ===== */}
+              {selected.type === 'mindmap' && (
+                <div>
+                  <div className="mb-4 p-3 bg-purple-50/70 border border-purple-100 rounded-xl">
+                    <p className="text-xs text-purple-700 font-medium mb-0.5">🧠 知识图谱 / 思维导图</p>
+                    <p className="text-[10px] text-purple-500">可视化呈现本阶段知识结构和知识点之间的关系</p>
+                  </div>
+                  {selected.mermaidDef ? (
+                    <div className="p-4 bg-white rounded-xl border border-gray-100">
+                      <MermaidDiagram definition={selected.mermaidDef} />
                     </div>
-                  ))}
+                  ) : (
+                    <Markdown content={selected.content} />
+                  )}
                 </div>
               )}
-              {/* 题目 */}
-              {selected.questions && selected.questions.length > 0 && (
-                <div className="mt-4 space-y-4">
-                  <p className="text-xs text-gray-400 font-medium">练习题 ({selected.questions.length} 题)</p>
-                  {selected.questions.map((q, i) => (
-                    <div key={q.id} className="p-3 bg-white border border-gray-100 rounded-xl">
-                      <p className="text-xs font-medium text-gray-800">
-                        {i + 1}. {q.stem}
-                      </p>
-                      {q.options && (
-                        <div className="mt-2 space-y-1">
-                          {q.options.map((opt, oi) => (
-                            <div key={oi} className="text-xs text-gray-600 pl-3">
-                              {String.fromCharCode(65 + oi)}. {opt}
+
+              {/* ===== 练习题 : 交互式做题 ===== */}
+              {selected.type === 'quiz' && (
+                <div>
+                  <div className="mb-4 p-3 bg-amber-50/70 border border-amber-100 rounded-xl">
+                    <p className="text-xs text-amber-700 font-medium mb-0.5">📝 随堂练习</p>
+                    <p className="text-[10px] text-amber-500">完成以下题目检验学习效果，系统将记录正确率</p>
+                  </div>
+                  {selected.questions && selected.questions.length > 0 ? (
+                    <QuizAnswerer questions={selected.questions} resourceId={selected.id} />
+                  ) : (
+                    <Markdown content={selected.content} />
+                  )}
+                </div>
+              )}
+
+              {/* ===== 实操案例 : 代码块 + 步骤说明 ===== */}
+              {selected.type === 'case_study' && (
+                <div>
+                  <div className="mb-4 p-3 bg-cyan-50/70 border border-cyan-100 rounded-xl">
+                    <p className="text-xs text-cyan-700 font-medium mb-0.5">💻 实操案例</p>
+                    <p className="text-[10px] text-cyan-500">动手实践加深理解，包含代码示例和操作步骤</p>
+                  </div>
+                  {/* Markdown 正文（含步骤说明） */}
+                  <Markdown content={selected.content} />
+                  {/* 代码块 */}
+                  {selected.codeBlocks && selected.codeBlocks.length > 0 && (
+                    <div className="mt-4 space-y-4">
+                      <p className="text-xs font-semibold text-gray-600">🔧 代码示例</p>
+                      {selected.codeBlocks.map((block, i) => (
+                        <div key={i} className="bg-gray-900 text-gray-100 rounded-xl overflow-hidden border border-gray-800">
+                          {block.language && (
+                            <div className="px-4 py-1.5 bg-gray-800 border-b border-gray-700 flex items-center justify-between">
+                              <span className="text-[10px] text-gray-400 font-mono">{block.language}</span>
                             </div>
-                          ))}
+                          )}
+                          <pre className="text-xs font-mono p-4 overflow-x-auto"><code>{block.code}</code></pre>
+                          {block.explanation && (
+                            <div className="px-4 py-2 bg-gray-800/50 border-t border-gray-700">
+                              <p className="text-[10px] text-gray-400">{block.explanation}</p>
+                            </div>
+                          )}
                         </div>
-                      )}
-                      <details className="mt-2">
-                        <summary className="text-[10px] text-brand-500 cursor-pointer hover:underline">查看答案</summary>
-                        <p className="text-[10px] text-green-600 mt-1">答案：{q.answer}</p>
-                        <p className="text-[10px] text-gray-400 mt-0.5">{q.explanation}</p>
-                      </details>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
+              )}
+
+              {/* ===== 视频脚本 : 分镜/讲稿结构 ===== */}
+              {selected.type === 'video' && (
+                <div>
+                  <div className="mb-4 p-3 bg-red-50/70 border border-red-100 rounded-xl">
+                    <p className="text-xs text-red-700 font-medium mb-0.5">🎬 教学视频</p>
+                    <p className="text-[10px] text-red-500">以下为本阶段配套教学视频的讲稿/分镜脚本</p>
+                  </div>
+                  {/* 优先展示 pptOutline 作为分镜结构 */}
+                  {selected.pptOutline && selected.pptOutline.length > 0 ? (
+                    <div className="space-y-3">
+                      {selected.pptOutline.map((slide, i) => (
+                        <div key={i} className="p-4 bg-white border border-gray-100 rounded-xl shadow-sm">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="w-5 h-5 rounded-full bg-red-100 text-red-600 text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                              {i + 1}
+                            </span>
+                            <h4 className="text-sm font-semibold text-gray-800">{slide.title}</h4>
+                          </div>
+                          {slide.bullets.length > 0 && (
+                            <ul className="space-y-1 ml-7">
+                              {slide.bullets.map((b, bi) => (
+                                <li key={bi} className="text-xs text-gray-600 list-disc">{b}</li>
+                              ))}
+                            </ul>
+                          )}
+                          {slide.notes && (
+                            <p className="text-[10px] text-gray-400 mt-2 ml-7 italic">💡 {slide.notes}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Markdown content={selected.content} />
+                  )}
+                </div>
+              )}
+
+              {/* ===== PPT 大纲 ===== */}
+              {selected.type === 'ppt' && (
+                <div>
+                  <div className="mb-4 p-3 bg-orange-50/70 border border-orange-100 rounded-xl">
+                    <p className="text-xs text-orange-700 font-medium mb-0.5">📊 PPT 大纲</p>
+                    <p className="text-[10px] text-orange-500">本阶段课程配套演示文稿大纲</p>
+                  </div>
+                  {selected.pptOutline && selected.pptOutline.length > 0 ? (
+                    <div className="space-y-3">
+                      {selected.pptOutline.map((slide, i) => (
+                        <div key={i} className="p-4 bg-white border border-gray-100 rounded-xl shadow-sm">
+                          <div className="flex items-center gap-2 mb-2">
+                            <span className="w-5 h-5 rounded-full bg-orange-100 text-orange-600 text-[10px] font-bold flex items-center justify-center flex-shrink-0">
+                              {i + 1}
+                            </span>
+                            <h4 className="text-sm font-semibold text-gray-800">{slide.title}</h4>
+                          </div>
+                          {slide.bullets.length > 0 && (
+                            <ul className="space-y-1 ml-7">
+                              {slide.bullets.map((b, bi) => (
+                                <li key={bi} className="text-xs text-gray-600 list-disc">{b}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <Markdown content={selected.content} />
+                  )}
+                </div>
+              )}
+
+              {/* ===== 兜底 : 通用 Markdown ===== */}
+              {!['lecture', 'mindmap', 'quiz', 'case_study', 'reading', 'video', 'ppt'].includes(selected.type) && (
+                <Markdown content={selected.content} />
               )}
             </div>
+
+            {/* 可折叠的题目展示（非 quiz 类型但带题目） */}
+            {selected.type !== 'quiz' && selected.questions && selected.questions.length > 0 && (
+              <details className="group">
+                <summary className="text-xs font-semibold text-brand-500 cursor-pointer hover:text-brand-600 transition-colors p-2">
+                  查看随堂练习 ({selected.questions.length} 题)
+                </summary>
+                <div className="mt-2">
+                  <QuizAnswerer questions={selected.questions} resourceId={selected.id} />
+                </div>
+              </details>
+            )}
 
             {/* 底部提示 */}
             <p className="text-[10px] text-gray-400 text-center pt-2">

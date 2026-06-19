@@ -158,7 +158,7 @@ def _normalize_frontend_dimensions(dimensions: list[dict[str, Any]]) -> list[dic
         score = _dimension_score(key, dim)
         result.append({
             "key": key,
-            "label": dim.get("label", key),
+            "label": _DIMENSION_LABELS.get(key, dim.get("label", key)),
             "value": score,
             "confidence": dim.get("confidence", 0.75),
             "description": text_value,
@@ -183,6 +183,21 @@ def _dimension_score(key: str, item: dict[str, Any]) -> int:
     return max(50, min(85, base))
 
 
+# 画像维度中文标签映射
+_DIMENSION_LABELS: dict[str, str] = {
+    "major_background": "专业背景",
+    "knowledge_base": "知识基础",
+    "learning_goal": "学习目标",
+    "cognitive_style": "认知风格",
+    "error_patterns": "易错模式",
+    "coding_ability": "编程能力",
+    "learning_progress": "学习进度",
+    "interest_direction": "兴趣方向",
+    "learning_rhythm": "学习节奏",
+    "self_efficacy": "学习效能",
+}
+
+
 def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
     """Convert raw orchestrator result to frontend-friendly profile dict."""
     raw_profile = result.get("profile") or {}
@@ -191,10 +206,12 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
     dimensions = [
         {
             "key": key,
-            "label": item.get("label", key) if isinstance(item, dict) else key,
+            "label": _DIMENSION_LABELS.get(key, item.get("label", key) if isinstance(item, dict) else key),
             "value": _dimension_score(key, item) if isinstance(item, dict) else 50,
             "confidence": item.get("confidence", 0.75) if isinstance(item, dict) else 0.5,
             "description": item.get("value", "") if isinstance(item, dict) else str(item),
+            "source": _source_label(item.get("source", "")) if isinstance(item, dict) else None,
+            "evidence": item.get("evidence", "") if isinstance(item, dict) else None,
             "updatedAt": int(time.time() * 1000),
         }
         for key, item in raw_profile.items()
@@ -259,7 +276,14 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
 
 _TYPE_MAP: dict[str, str] = {"practice": "case_study", "multimodal": "video"}
 
-_SOURCE_MAP: dict[str, str] = {"mock": "system_inferred", "agent": "agent_generated"}
+_SOURCE_MAP: dict[str, str] = {
+    "mock": "system_inferred",
+    "agent": "agent_generated",
+    "llm": "agent_generated",
+    "inferred": "system_inferred",
+    "model_inferred": "system_inferred",
+    "fallback": "fallback",
+}
 
 
 def _resource_type(resource_type: str) -> str:
@@ -291,14 +315,18 @@ def _to_resource(
     resource_id = item.get("resource_id", "resource")
     bookmarks = _get_bookmarks(session_id)
     content_fmt = item.get("content_format", "markdown")
+    related_stage_id = str(item.get("related_stage_id") or course_id)
+    related_chapter = str(item.get("related_chapter") or "")
+    related_knowledge_points = item.get("related_knowledge_points") or []
+    quality_status = str(item.get("quality_status") or "passed")
     return {
         "id": resource_id,
         "type": _resource_type(item.get("type", "lecture")),
         "title": item.get("title", "学习资源"),
         "description": item.get("description", ""),
         "content": content,
-        "knowledgePoints": [item.get("related_stage_id", course_id)],
-        "tags": [content_fmt, item.get("source", "agent_generated")],
+        "knowledgePoints": [related_stage_id] + (related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points]),
+        "tags": [content_fmt, item.get("source", "agent_generated"), quality_status],
         "difficulty": item.get("difficulty", "easy"),
         "estimatedMinutes": item.get("estimatedMinutes", 20),
         "format": "diagram" if content_fmt == "mermaid" else ("code" if item.get("type") == "practice" else "text"),
@@ -310,6 +338,10 @@ def _to_resource(
         "bookmarked": resource_id in bookmarks,
         "studyStatus": item.get("studyStatus", "new"),
         "source": _source_label(item.get("source", "")),
+        "relatedStageId": related_stage_id,
+        "relatedChapter": related_chapter,
+        "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
+        "qualityStatus": quality_status,
     }
 
 
@@ -378,6 +410,9 @@ def _raw_stages_to_nodes(stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "nodes": nodes,
             "objective": stage.get("goal", ""),
             "estimatedDays": _stage_estimated_days(stage.get("duration", "")),
+            "tasks": stage.get("tasks", []),
+            "resourceTypes": stage.get("resource_types", []),
+            "orderingReason": stage.get("reason", stage.get("ordering_reason", "")),
         })
     return result
 

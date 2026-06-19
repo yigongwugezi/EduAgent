@@ -6,10 +6,16 @@ import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
   User, Clock, Target, TrendingUp, Zap, BookOpen, Brain, Shield,
-  Sparkles, AlertCircle, CheckCircle2, ArrowRight, Info, AlertTriangle,
+  Sparkles, AlertCircle, CheckCircle2, ArrowRight, Info, AlertTriangle, RefreshCw,
 } from 'lucide-react';
-import Loading from '../components/common/Loading';
-import EmptyState from '../components/common/EmptyState';
+import {
+  PageLoading,
+  PageEmpty,
+  PageError,
+  SourceTag,
+  FallbackBanner,
+  RefreshOverlay,
+} from '../components/common/PageState';
 
 /* ===================================================================
  * 画像完整度常量
@@ -20,11 +26,12 @@ const ALL_DIMENSION_KEYS: DimensionKey[] = [
   'learning_rhythm', 'self_efficacy',
 ];
 
-const SOURCE_LABELS: Record<string, { label: string; color: string }> = {
-  user_input: { label: '用户提供', color: 'bg-blue-50 text-blue-600 border-blue-200' },
-  inferred:    { label: '系统推断', color: 'bg-amber-50 text-amber-600 border-amber-200' },
-  diagnosis:   { label: '诊断分析', color: 'bg-purple-50 text-purple-600 border-purple-200' },
-  feedback:    { label: '学习反馈', color: 'bg-green-50 text-green-600 border-green-200' },
+/** 维度来源 → 展示标签映射（与后端 source 字段直连） */
+const DIM_SOURCE_LABELS: Record<string, { label: string; color: string }> = {
+  user_input:       { label: '用户输入', color: 'bg-blue-50 text-blue-600 border-blue-200' },
+  agent_generated:  { label: 'LLM 生成', color: 'bg-purple-50 text-purple-600 border-purple-200' },
+  system_inferred:  { label: '模型推断', color: 'bg-amber-50 text-amber-600 border-amber-200' },
+  fallback:         { label: '兜底',     color: 'bg-gray-100 text-gray-500 border-gray-200' },
 };
 
 /* ===================================================================
@@ -101,58 +108,86 @@ function DimensionRadar({ dimensions }: { dimensions: ProfileDimension[] }) {
 }
 
 /* ===================================================================
- * 维度进度条
+ * 维度进度条（含来源标记）
  * =================================================================== */
 function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
+  const sourceInfo = dim.source ? DIM_SOURCE_LABELS[dim.source] : null;
   return (
-    <div className="flex items-center gap-3">
-      <div className="w-20 text-xs text-gray-500 text-right flex-shrink-0">{dim.label}</div>
+    <div className="flex items-center gap-2">
+      <div className="w-16 text-[10px] text-gray-500 text-right flex-shrink-0 truncate" title={dim.label}>{dim.label}</div>
       <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.value}%`, backgroundColor: color }} />
       </div>
-      <div className="w-10 text-xs font-semibold text-right" style={{ color }}>{dim.value}</div>
+      <div className="w-8 text-[10px] font-semibold text-right flex-shrink-0" style={{ color }}>{dim.value}</div>
+      {sourceInfo && (
+        <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border flex-shrink-0 ${sourceInfo.color}`}>
+          {sourceInfo.label}
+        </span>
+      )}
     </div>
   );
 }
 
 /* ===================================================================
- * 维度卡片 — 带来源标记
+ * 维度卡片 — 展示分数 / 解释 / 证据 / 来源（全部直连后端，不做前端推断）
  * =================================================================== */
 function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number }) {
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
-  // 尝试从 description 推断来源（简化版，实际应从后端 source 字段获取）
-  const inferredSource = dim.confidence >= 0.85 ? 'user_input' : dim.confidence >= 0.6 ? 'inferred' : 'inferred';
-  const sourceInfo = SOURCE_LABELS[inferredSource] || SOURCE_LABELS.inferred;
+  // 直接使用后端返回的 source，不根据 confidence 做前端推断
+  const sourceInfo = dim.source ? DIM_SOURCE_LABELS[dim.source] : null;
 
   return (
     <div className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-md transition-all duration-200">
+      {/* 头部：维度名 + 来源标记 */}
       <div className="flex items-start justify-between mb-2">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 min-w-0">
           <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-          <h4 className="text-sm font-semibold text-gray-800">{dim.label}</h4>
+          <h4 className="text-sm font-semibold text-gray-800 truncate">{dim.label}</h4>
         </div>
-        {/* 来源标记 */}
-        <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${sourceInfo.color}`}>
-          {sourceInfo.label}
-        </span>
+        {sourceInfo && (
+          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ml-2 flex-shrink-0 ${sourceInfo.color}`}>
+            {sourceInfo.label}
+          </span>
+        )}
       </div>
 
-      {/* 掌握度 */}
+      {/* 分数进度条 */}
       <div className="flex items-center gap-3 mb-2">
         <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-          <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.value}%`, backgroundColor: color }} />
+          <div
+            className="h-full rounded-full transition-all duration-700"
+            style={{ width: `${dim.value}%`, backgroundColor: color }}
+          />
         </div>
-        <span className="text-sm font-bold" style={{ color }}>{dim.value}%</span>
+        <span className="text-sm font-bold flex-shrink-0" style={{ color }}>{dim.value}%</span>
       </div>
 
-      {/* 描述 */}
-      <p className="text-xs text-gray-500 leading-relaxed">{dim.description || '待补充'}</p>
+      {/* 解释 */}
+      {dim.description && (
+        <p className="text-xs text-gray-500 leading-relaxed">{dim.description}</p>
+      )}
 
-      {/* 置信度 */}
+      {/* 证据（后端返回时才展示） */}
+      {dim.evidence && (
+        <div className="mt-2 p-2.5 bg-gray-50 border border-gray-100 rounded-lg">
+          <div className="flex items-center gap-1 mb-1">
+            <Info className="w-3 h-3 text-gray-400" />
+            <span className="text-[10px] font-medium text-gray-500">支撑证据</span>
+          </div>
+          <p className="text-[10px] text-gray-500 leading-relaxed">{dim.evidence}</p>
+        </div>
+      )}
+
+      {/* 底部：置信度 */}
       <div className="flex items-center gap-1.5 mt-2 text-[10px] text-gray-400">
-        <Info className="w-3 h-3" />
-        置信度 {(dim.confidence * 100).toFixed(0)}%
+        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full"
+            style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }}
+          />
+        </div>
+        <span>置信度 {(dim.confidence * 100).toFixed(0)}%</span>
       </div>
     </div>
   );
@@ -163,23 +198,29 @@ function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number })
  * =================================================================== */
 export default function ProfilePage() {
   const navigate = useNavigate();
-  const { profile, loading, error } = useProfile();
+  const { profile, loading, error, fetchProfile } = useProfile();
 
-  if (loading && !profile) return <Loading fullScreen text="加载画像..." />;
+  // —— Loading（首次无数据） ——
+  if (loading && !profile) {
+    return <PageLoading text="加载画像..." />;
+  }
 
+  // —— Error（首次无数据） ——
   if (error && !profile) {
     return (
-      <EmptyState
-        icon={<AlertTriangle className="w-8 h-8" />}
+      <PageError
         title="画像加载失败"
         description={error}
+        onRetry={fetchProfile}
+        onGoChat={() => navigate('/chat')}
       />
     );
   }
 
+  // —— Empty（从未生成过画像） ——
   if (!profile) {
     return (
-      <EmptyState
+      <PageEmpty
         icon={<User className="w-8 h-8" />}
         title="暂无学习画像"
         description="在 AI 对话中描述你的专业、基础和目标，系统会自动构建你的专属学习画像"
@@ -196,6 +237,11 @@ export default function ProfilePage() {
     );
   }
 
+  // 判断数据来源（用于 fallback 标记）
+  const dimensionSources = profile.dimensions.map(d => d.source).filter(Boolean);
+  const isFallback = dimensionSources.length > 0 && dimensionSources.every(s => s === 'system_inferred');
+  const isGenerated = dimensionSources.some(s => s === 'agent_generated');
+
   // 计算完整度
   const existingKeys = new Set(profile.dimensions.map((d) => d.key));
   const completedCount = ALL_DIMENSION_KEYS.filter((k) => existingKeys.has(k)).length;
@@ -204,13 +250,24 @@ export default function ProfilePage() {
   const learnerName = getCurrentLearner()?.name || profile.nickname || '学习者';
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6 md:py-8">
-      {/* ========== 错误提示 ========== */}
+    <div className="max-w-5xl mx-auto px-4 py-6 md:py-8 relative">
+      {/* ========== 刷新遮罩 ========== */}
+      {loading && profile && <RefreshOverlay />}
+
+      {/* ========== 错误提示（已有画像但刷新失败） ========== */}
       {error && (
         <div className="mb-6 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-xs text-red-600">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
           {error}
+          <button onClick={fetchProfile} className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">
+            <RefreshCw className="w-3 h-3" /> 重试
+          </button>
         </div>
+      )}
+
+      {/* ========== Fallback 提示 ========== */}
+      {isFallback && !loading && (
+        <FallbackBanner message="画像维度来自系统兜底规则。建议在 AI 对话中补充更多信息以获得精准画像。" />
       )}
 
       {/* ========== 顶部信息卡 — 含完整度 ========== */}
@@ -416,7 +473,11 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      <p className="text-center text-xs text-gray-400 mt-8">
+      {/* ========== 底部来源标记 ========== */}
+      <div className="flex items-center justify-center gap-3 mt-8 mb-2">
+        <SourceTag source={isFallback ? 'system_inferred' : isGenerated ? 'agent_generated' : undefined} />
+      </div>
+      <p className="text-center text-xs text-gray-400">
         画像更新时间：{timeAgo(profile.updatedAt)} · 数据来源包含用户对话、系统推断和诊断分析
       </p>
     </div>

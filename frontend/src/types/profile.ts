@@ -17,15 +17,25 @@ export interface StudentProfile {
   history: StudyHistory;
 }
 
+/** 维度数据来源类型 */
+export type DimensionSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
+
 export interface ProfileDimension {
   key: DimensionKey;
   label: string;
-  value: number;       // 0-100 掌握度
-  confidence: number;  // 0-1 置信度
+  /** 0-100 分数/掌握度（后端返回，前端不造假） */
+  value: number;
+  /** 0-1 置信度 */
+  confidence: number;
+  /** 维度解释/说明 */
   description: string;
+  /** 支撑证据（如用户原始语句、分析依据） */
+  evidence?: string;
+  /** 分数（与 value 一致，语义更清晰的后端字段名） */
+  score?: number;
   updatedAt: number;
   /** 数据来源 */
-  source?: 'user_input' | 'agent_generated' | 'system_inferred';
+  source?: DimensionSource;
 }
 
 export type DimensionKey =

@@ -16,6 +16,9 @@ export interface LearningPath {
   source?: 'agent_generated' | 'system_inferred' | 'none';
 }
 
+/** 阶段状态 — 由节点状态计算得出 */
+export type StageStatus = 'not_started' | 'in_progress' | 'completed';
+
 export interface LearningStage {
   id: string;
   order: number;
@@ -27,6 +30,12 @@ export interface LearningStage {
   objective: string;
   /** 预计天数 */
   estimatedDays: number;
+  /** 学习任务列表（原始文本） */
+  tasks?: string[];
+  /** 推荐资源类型列表 */
+  resourceTypes?: string[];
+  /** 排序理由 */
+  orderingReason?: string;
 }
 
 export interface PathNode {
