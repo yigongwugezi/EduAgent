@@ -90,13 +90,18 @@ class LearningTracker:
         # In-memory fallback (original logic)
         events = self._filter(session_id)
         total_minutes = sum(self._duration_minutes(event) for event in events)
-        resource_events = [event for event in events if event.get("resourceId")]
+        # Only count real resource events (not node_progress which also has resourceId)
+        _RESOURCE_EVENT_TYPES = {"resource_view", "resource_complete", "quiz_result", "quiz_submit", "feedback"}
+        resource_events = [
+            event for event in events
+            if event.get("resourceId") and event.get("event") in _RESOURCE_EVENT_TYPES
+        ]
         from collections import Counter
         resource_counter: Counter[str] = Counter(str(event.get("resourceId")) for event in resource_events)
         event_counter: Counter[str] = Counter(str(event.get("event", "unknown")) for event in events)
         # Capture the most recent title for each resourceId from event metadata
         resource_titles: dict[str, str] = {}
-        for event in events:
+        for event in resource_events:
             rid = str(event.get("resourceId", ""))
             if rid and isinstance(event.get("metadata"), dict):
                 title = event["metadata"].get("title")

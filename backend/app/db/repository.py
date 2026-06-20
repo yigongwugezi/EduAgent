@@ -446,8 +446,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
-        # Resource counter
-        if evt.resource_id:
+        # Resource counter (only real resource events, not node_progress)
+        _RESOURCE_EVENTS = {"resource_view", "resource_complete", "quiz_result", "quiz_submit", "feedback"}
+        if evt.resource_id and evt.event_type in _RESOURCE_EVENTS:
             resource_counts[evt.resource_id] = resource_counts.get(evt.resource_id, 0) + 1
             # Capture resource title from metadata
             if meta.get("title"):
