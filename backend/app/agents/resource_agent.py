@@ -91,10 +91,16 @@ class ResourceAgent(BaseAgent):
             },
         ]
 
-        # Always use _build_rule_fallback to ensure task_id is properly set
-        # (LLM output from mock/demo lacks task_id).
-        # Once LLM is configured to output task_id, switch back to LLM path.
-        return self._build_rule_fallback(course, stages, knowledge_points, profile)
+        try:
+            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=2200)
+            parsed = self._parse_json(raw)
+        except (LLMClientError, json.JSONDecodeError, TypeError, ValueError):
+            return []
+
+        resources = parsed.get("resources") if isinstance(parsed, dict) else None
+        if not isinstance(resources, list):
+            return []
+        return self._normalize_llm_resources(resources, stages, knowledge_points)
 
     def _build_rule_fallback(
         self,
@@ -152,6 +158,12 @@ class ResourceAgent(BaseAgent):
         stages: list[dict[str, Any]],
         knowledge_points: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
+        """Normalize LLM output and auto-fill ``task_id`` when missing.
+
+        LLM may not output ``task_id``.  When missing, resources are
+        distributed among each stage's tasks round-robin so that they
+        can be filtered by node in the frontend.
+        """
         stage_ids = {str(stage.get("stage_id") or f"stage_{index}") for index, stage in enumerate(stages, start=1)}
         fallback_bindings = self._stage_bindings(stages, knowledge_points)
         normalized: list[dict[str, Any]] = []
@@ -174,6 +186,14 @@ class ResourceAgent(BaseAgent):
             if not content and not quiz_items:
                 continue
 
+            # Auto-fill task_id if LLM didn't provide it
+            task_id = str(item.get("task_id") or "")
+            if not task_id:
+                tasks = binding.get("tasks", [])
+                if tasks:
+                    task_idx = (index - 1) % len(tasks)
+                    task_id = f"{stage_id}_node_{task_idx + 1}"
+
             normalized.append(
                 {
                     "resource_id": str(item.get("resource_id") or f"res_{resource_type}_{index:03d}"),
@@ -188,7 +208,7 @@ class ResourceAgent(BaseAgent):
                     "related_knowledge_points": knowledge,
                     "source": SOURCE_LLM,
                     "quality_status": str(item.get("quality_status") or "passed"),
-                    "task_id": str(item.get("task_id") or ""),
+                    "task_id": task_id,
                     "reason": str(item.get("reason") or item.get("generation_reason") or binding["reason"]),
                     "generation_reason": str(item.get("generation_reason") or item.get("reason") or binding["reason"]),
                     "difficulty": str(item.get("difficulty") or binding["difficulty"]),

@@ -441,7 +441,7 @@ export default function LearningPathPage() {
 
   // —— 跳转到资源库并筛选当前阶段 ——
   const handleViewResources = (stageId: string) => {
-    navigate(`/resources?stage=${stageId}`);
+    navigate(`/resources?relatedStageId=${stageId}`);
   };
 
   // —— Loading（首次无数据） ——

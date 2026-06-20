@@ -259,7 +259,7 @@ function FeedbackForm({
     if (rating === 0) return;
     setSubmitting(true);
     try {
-      await submitFeedback({ resourceId, rating, difficultyMatch: difficultyMatch as any, comment: comment || undefined });
+      await submitFeedback({ sessionId: useChatStore.getState().currentSessionId, resourceId, rating, difficultyMatch: difficultyMatch as any, comment: comment || undefined });
       // 同时上报学习事件，使学习分析页能看到反馈行为
       await logStudyEvent({
         event: 'feedback',
@@ -506,7 +506,7 @@ export default function ResourceLibrary() {
   const params = useParams<{ id: string }>();
   // 从 URL 读取筛选参数（阶段/task/搜索/资源ID）
   const urlParams = new URLSearchParams(window.location.search);
-  const stageFilter = urlParams.get('stage') || '';
+  const stageFilter = urlParams.get('relatedStageId') || '';
   const taskIdFilter = urlParams.get('taskId') || '';
   const searchFilter = urlParams.get('search') || '';
   const resourceIdsFilter = urlParams.get('resourceIds') || '';
@@ -559,7 +559,7 @@ export default function ResourceLibrary() {
 
     // 先持久化 study_status 到后端
     try {
-      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: newStatus });
+      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: newStatus }, { params: { sessionId: useChatStore.getState().currentSessionId } });
     } catch {
       setErrorMsg('状态保存失败，请检查后端服务');
       setTimeout(() => setErrorMsg(null), 3000);
@@ -576,6 +576,7 @@ export default function ResourceLibrary() {
       if (resource.relatedStageId) {
         try {
           await client.patch(`/learning-path/auto-advance`, {
+            sessionId: useChatStore.getState().currentSessionId,
             relatedStageId: resource.relatedStageId,
             taskId: resource.taskId,
             event: 'resource_complete',
@@ -616,6 +617,7 @@ export default function ResourceLibrary() {
     if (resource.relatedStageId) {
       try {
         await client.patch(`/learning-path/auto-advance`, {
+          sessionId: useChatStore.getState().currentSessionId,
           relatedStageId: resource.relatedStageId,
           taskId: resource.taskId,
           event: 'resource_view',

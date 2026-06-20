@@ -1469,7 +1469,9 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
         from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
         resource = repo_get_resource(db, resource_id)
         if resource:
-            # 已有 DB 记录，直接更新状态
+            # 校验资源属于当前 session，防止跨 session 修改
+            if resource.session_id != session_id:
+                return {"ok": False, "error": "resource does not belong to this session"}
             resource.study_status = study_status
             db.commit()
         else:
@@ -1586,8 +1588,15 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
 
 
 # ── In-memory node progress store ────────────────────────────────────
-# Keyed by node_id, stores {status, mastery, updatedAt}
+# Keyed by "{session_id}:{node_id}" for session isolation.
+# Two learners with the same node_id (e.g. "stage_1_node_1") won't
+# interfere with each other.
 _node_progress_store: dict[str, dict[str, Any]] = {}
+
+
+def _nkey(session_id: str, node_id: str) -> str:
+    """Build a session-isolated key for the node progress store."""
+    return f"{session_id}:{node_id}"
 
 
 def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
@@ -1637,8 +1646,8 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             elif completed > 0:
                 node["status"] = "in_progress"
                 node["mastery"] = 60
-            elif nid in _node_progress_store:
-                saved = _node_progress_store[nid]
+            elif _nkey(session_id, nid) in _node_progress_store:
+                saved = _node_progress_store[_nkey(session_id, nid)]
                 node["status"] = saved.get("status", node["status"])
                 node["mastery"] = saved.get("mastery", node["mastery"])
             # else: keep default (locked/available from learning path)
@@ -1655,8 +1664,8 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
             next_nodes = next_stage.get("nodes", [])
             if next_nodes:
                 first_next = next_nodes[0]["id"]
-                if first_next not in _node_progress_store:
-                    _node_progress_store[first_next] = {
+                if _nkey(session_id, first_next) not in _node_progress_store:
+                    _node_progress_store[_nkey(session_id, first_next)] = {
                         "status": "available", "mastery": 0,
                         "updatedAt": time.time(),
                     }
@@ -1745,8 +1754,8 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
-    # 持久化节点进度到内存存储
-    _node_progress_store[node_id] = {
+    # 持久化节点进度到会话隔离的内存存储
+    _node_progress_store[_nkey(session_id, node_id)] = {
         "status": payload.get("status", "available"),
         "mastery": payload.get("mastery", 0),
         "updatedAt": time.time(),
@@ -1765,7 +1774,9 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
 
 @router.post("/feedback")
 def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
-    session_id = _payload_session_id(payload)
+    session_id = str(payload.get("sessionId") or "")
+    if not session_id:
+        return {"ok": False, "error": "sessionId is required"}
     learning_tracker.log({"event": "feedback", **payload}, session_id=session_id)
     return {"ok": True}
 
@@ -1773,6 +1784,17 @@ def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
 @router.post("/feedback/event")
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
+    # Auto-fill duration from resource's estimated_minutes for completion events
+    if payload.get("event") == "resource_complete" and payload.get("resourceId"):
+        try:
+            from app.db.repository import get_resource as _get_res
+            db = SessionLocal()
+            res = _get_res(db, payload["resourceId"])
+            if res and res.estimated_minutes and not payload.get("duration"):
+                payload["duration"] = res.estimated_minutes
+            db.close()
+        except Exception:
+            pass
     learning_tracker.log(payload, session_id=session_id)
     return {"ok": True}
 
@@ -1810,22 +1832,26 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
     if task_id and not task_id.startswith(related_stage_id):
         task_id = ""  # mismatched stage — ignore
 
+    session_id = _payload_session_id(payload)
+
     def _update(node_id: str, status: str, mastery: int) -> None:
-        _node_progress_store[node_id] = {
+        _node_progress_store[_nkey(session_id, node_id)] = {
             "status": status, "mastery": mastery,
             "updatedAt": time.time(),
         }
 
-    session_id = _payload_session_id(payload)
+    def _has(node_id: str) -> bool:
+        return _nkey(session_id, node_id) in _node_progress_store
+
     if task_id and event == "resource_view":
-        if task_id not in _node_progress_store:
+        if not _has(task_id):
             _update(task_id, "in_progress", 40)
             _log_node_progress(session_id, task_id, "in_progress")
         parts = task_id.rsplit("_node_", 1)
         if len(parts) == 2:
             next_num = int(parts[1]) + 1
             next_id = f"{parts[0]}_node_{next_num}"
-            if next_id not in _node_progress_store:
+            if not _has(next_id):
                 _update(next_id, "available", 0)
                 _log_node_progress(session_id, next_id, "available")
     elif task_id and event == "resource_complete":
@@ -1833,7 +1859,7 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
         if len(parts) == 2:
             next_num = int(parts[1]) + 1
             next_id = f"{parts[0]}_node_{next_num}"
-            if next_id not in _node_progress_store:
+            if not _has(next_id):
                 _update(next_id, "available", 0)
                 _log_node_progress(session_id, next_id, "available")
         _log_node_progress(session_id, task_id, "completed")
