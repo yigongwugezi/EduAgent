@@ -544,7 +544,10 @@ class ConversationStore:
             set_fact("learning_goal", goal_segment or text)
 
         time_match = re.search(
-            r"(\d+\s*(天|周|个月|小时|分钟)|一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)(内|左右|以内|以上|完成)?",
+            r"(\d+\s*(天|周|个月|小时|分钟)|"
+            r"[一二两三四五六七八九十半]+天|"
+            r"一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)"
+            r"(内|左右|以内|以上|完成)?",
             text,
         )
         if time_match:

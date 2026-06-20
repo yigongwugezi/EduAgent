@@ -156,6 +156,27 @@ INTENT_ROUTES = {
             "帮我设计一个NLP小项目",
         ],
     },
+    "diagnosis": {
+        "description": "用户询问自身薄弱点、知识漏洞或需要改进的地方。",
+        "examples": [
+            "我哪里比较薄弱",
+            "我什么地方需要加强",
+            "我的薄弱点是什么",
+            "我有哪些知识漏洞",
+            "我哪里不会",
+            "我哪部分掌握得不好",
+            "帮我分析一下我的薄弱环节",
+        ],
+    },
+    "full_workflow": {
+        "description": "用户要求完整流程：构建画像+生成学习路径+推荐学习资源。",
+        "examples": [
+            "帮我构建学习画像、学习路径和学习资源",
+            "画像路径资源完整流程",
+            "帮我完成画像路径资源生成",
+            "完整的画像路径资源生成",
+        ],
+    },
     "unsafe": {
         "description": "作弊、攻击、违法、绕过系统等不安全请求。",
         "examples": [
@@ -169,4 +190,4 @@ INTENT_ROUTES = {
 }
 
 
-ROUTE_AGENT_INTENTS = {"learning_plan", "resource_request", "project_help"}
+ROUTE_AGENT_INTENTS = {"learning_plan", "resource_request", "project_help", "full_workflow"}

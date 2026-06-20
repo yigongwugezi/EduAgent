@@ -870,6 +870,10 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
         return _resource_request_reply(message, session_id), True
     if name == "tutoring":
         return _tutoring_reply(message), False
+    if name == "diagnosis":
+        return _feedback_reply(message, session_id), False
+    if name == "full_workflow":
+        return _learning_plan_request_reply(message, intent, session_id)
     if name == "progress_feedback":
         return _feedback_reply(message, session_id), False
     if name == "unsafe":
