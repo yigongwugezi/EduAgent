@@ -435,8 +435,8 @@
     "turns": [
       {
         "message": "画像 + 路径 + 资源完整流程",
-        "intent": "learning_plan",
-        "reply_contains": ["生成学习方案", "学习路径"]
+        "intent": "full_workflow",
+        "reply_contains": ["生成学习方案", "画像信息还不够"]
       }
     ]
   },
@@ -445,8 +445,8 @@
     "turns": [
       {
         "message": "我哪里比较薄弱",
-        "intent": "progress_feedback",
-        "reply_contains": ["薄弱", "反馈"]
+        "intent": "diagnosis",
+        "reply_contains": ["反馈", "学习事件"]
       }
     ]
   },

@@ -197,9 +197,9 @@ def test_intent_classify_profile_keyword_画像() -> None:
 
 
 def test_intent_classify_diagnosis_question() -> None:
-    """Issue #4: 我哪里比较薄弱 should be profile_query, not progress_feedback."""
+    """Issue #4: 我哪里比较薄弱 is a diagnosis query (explicitly listed as diagnosis example in intent_routes)."""
     result = classify("我哪里比较薄弱")
-    assert result["intent"] == "profile_query"
+    assert result["intent"] == "diagnosis"
 
 
 def test_intent_classify_compound_full_workflow() -> None:
