@@ -1653,12 +1653,16 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
                 node["mastery"] = 60
             elif _nkey(session_id, nid) in _node_progress_store:
                 saved = _node_progress_store[_nkey(session_id, nid)]
+                # Store tracks unlock status only; status must derive from resources.
                 node["status"] = saved.get("status", node["status"])
-                node["mastery"] = saved.get("mastery", node["mastery"])
+                node["mastery"] = 0
             # else: keep default (locked/available from learning path)
+            # Safety: status and mastery must be consistent
+            if node.get("mastery", 0) >= 100 and node.get("status") != "mastered":
+                node["mastery"] = 60
 
-    # ── Auto-unlock: after computing node statuses, check if any stage
-    #    is fully mastered and unlock the next stage's first node.
+    # ── Auto-unlock: unlock next stage's first node when current stage
+    #    is fully mastered. Skip if node already has a derived status.
     for i, stage in enumerate(stages):
         nodes = stage.get("nodes", [])
         if not nodes:
@@ -1667,7 +1671,7 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
         if all_mastered and i + 1 < len(stages):
             next_stage = stages[i + 1]
             next_nodes = next_stage.get("nodes", [])
-            if next_nodes:
+            if next_nodes and next_nodes[0].get("status") not in ("mastered", "in_progress"):
                 first_next = next_nodes[0]["id"]
                 if _nkey(session_id, first_next) not in _node_progress_store:
                     _node_progress_store[_nkey(session_id, first_next)] = {

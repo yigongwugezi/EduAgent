@@ -17,11 +17,11 @@ class Settings(BaseSettings):
     database_url: str = "sqlite:///./data/r436_runtime.db"
 
     # Agent orchestration settings
-    agent_timeout: int = 60  # seconds per individual agent
+    agent_timeout: int = 120  # seconds per individual agent
     agent_run_timeout: int = 300  # seconds for full orchestrator run
     llm_retry_count: int = 2  # number of retries for failed LLM calls
     llm_retry_delay: float = 1.0  # seconds between retries
-    llm_request_timeout: int = 60  # seconds for a single LLM HTTP request
+    llm_request_timeout: int = 15  # seconds for a single LLM HTTP request
     enable_mock_fallback: bool = False  # demo_result fallback is opt-in for local demos only
 
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])

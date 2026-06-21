@@ -205,11 +205,10 @@ const STAGE_STATUS_CONFIG: Record<StageStatus, { icon: any; label: string; bg: s
 /* ===================================================================
  * 阶段组件（增强版）
  * =================================================================== */
-function StageSection({ stage, defaultExpanded, onStatusChange, onCompleteStage, onViewResources }: {
+function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources }: {
   stage: LearningStage;
   defaultExpanded: boolean;
   onStatusChange: (nodeId: string, status: PathNodeStatus) => void;
-  onCompleteStage: (stageId: string) => void;
   onViewResources: (stageId: string) => void;
 }) {
   const navigate = useNavigate();
@@ -221,7 +220,6 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onCompleteStage,
 
   // 找到推荐起点（第一个 available 或 in_progress 的节点）
   const recommendedIdx = stage.nodes.findIndex((n) => n.status === 'available' || n.status === 'in_progress');
-  const allDone = status === 'completed';
 
   return (
     <div className={`mb-6 rounded-2xl border transition-all ${statusCfg.bg}`}>
@@ -361,17 +359,6 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onCompleteStage,
               查看阶段资源
             </button>
 
-            {/* 完成阶段 */}
-            {!allDone && (
-              <button
-                onClick={(e) => { e.stopPropagation(); onCompleteStage(stage.id); }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-green-500 text-white rounded-lg text-[11px] font-semibold hover:bg-green-600 transition-all shadow-sm"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                标记阶段完成
-              </button>
-            )}
-
             {/* 进度条 */}
             <div className="flex-1 min-w-[100px] ml-auto">
               <div className="flex items-center justify-between mb-0.5">
@@ -417,28 +404,6 @@ export default function LearningPathPage() {
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
 
   // —— 完成阶段：标记所有未完成节点为 mastered + 记录学习事件 ——
-  const handleCompleteStage = async (stageId: string) => {
-    if (!path) return;
-    const stage = path.stages.find((s) => s.id === stageId);
-    if (!stage) return;
-    stage.nodes.forEach((node) => {
-      if (node.status !== 'mastered') {
-        updateNodeStatus(node.id, 'mastered');
-      }
-    });
-    await logStudyEvent({
-      event: 'node_progress',
-      sessionId: useChatStore.getState().currentSessionId,
-      metadata: {
-        stageId,
-        stageTitle: stage.title,
-        completedNodes: stage.nodes.length,
-        action: 'complete_stage',
-        subjectId,
-      },
-    });
-  };
-
   // —— 跳转到资源库并筛选当前阶段 ——
   const handleViewResources = (stageId: string) => {
     navigate(`/resources?relatedStageId=${stageId}`);
@@ -621,7 +586,6 @@ export default function LearningPathPage() {
             stage={stage}
             defaultExpanded={idx === 0 || idx === firstAvailableStage}
             onStatusChange={updateNodeStatus}
-            onCompleteStage={handleCompleteStage}
             onViewResources={handleViewResources}
           />
         ))}
