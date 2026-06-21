@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { useChatStore } from '../store/chatStore';
 import { useStreamChat } from '../hooks/useStreamChat';
 import { getSessionMessages } from '../api/chat';
@@ -14,15 +14,14 @@ import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 
 /* ===================================================================
- * 工作流管线定义
+ * 生成流程管线定义
  * =================================================================== */
-const AGENT_PIPELINE: { agentName: string; label: string; description: string }[] = [
-  { agentName: 'ProfileAgent',   label: '画像分析',   description: '正在提取学习画像…' },
-  { agentName: 'KnowledgeAgent', label: '知识检索',   description: '正在检索课程知识库…' },
-  { agentName: 'DiagnosisAgent', label: '诊断分析',   description: '正在诊断知识短板…' },
-  { agentName: 'PlannerAgent',   label: '路径规划',   description: '正在生成学习路径…' },
-  { agentName: 'ResourceAgent',  label: '资源生成',   description: '正在生成学习资源…' },
-  { agentName: 'ReviewAgent',    label: '质量检查',   description: '正在校验内容质量…' },
+const GEN_PIPELINE: { key: string; label: string }[] = [
+  { key: 'understanding', label: '理解需求' },
+  { key: 'profiling',     label: '生成画像' },
+  { key: 'planning',      label: '规划路径' },
+  { key: 'generating',    label: '生成资源' },
+  { key: 'saving',        label: '保存结果' },
 ];
 
 /* ===================================================================
@@ -116,33 +115,115 @@ function MessageBubble({ msg }: { msg: ChatMessage }) {
 }
 
 /* ===================================================================
- * 工作流进度管线
+ * 生成进度管线 + 成功/失败/超时状态
  * =================================================================== */
-function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
-  const currentIdx = AGENT_PIPELINE.findIndex((a) => a.agentName === progress.agentName);
-  const pct = progress.progress;
+function AgentPipelineProgress({
+  progress,
+  onRetry,
+  onNavigate,
+}: {
+  progress: GenerationProgress;
+  onRetry?: () => void;
+  onNavigate?: (path: string) => void;
+}) {
+  const [elapsed, setElapsed] = useState(0);
+  const currentKey = progress.agentName || '';
+  const currentIdx = GEN_PIPELINE.findIndex((s) => s.key === currentKey);
+  const isError = !!progress.error;
+  const isDone = progress.done && !progress.error;
 
+  // 计时器 — 长时间等待提示
+  useEffect(() => {
+    if (isDone || isError) return;
+    const t = setInterval(() => setElapsed((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [isDone, isError]);
+
+  const longWait = elapsed >= 15;
+
+  // ── 失败状态 ──
+  if (isError) {
+    return (
+      <div className="px-4 py-4 bg-red-50 border border-red-100 rounded-2xl shadow-sm animate-fade-in-up space-y-3 max-w-[82%] ml-12">
+        <div className="flex items-start gap-2.5">
+          <div className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center flex-shrink-0">
+            <XCircle className="w-4 h-4 text-red-500" />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-700">生成失败</p>
+            <p className="text-xs text-red-500 mt-1">{progress.error || '后端处理出错，请稍后重试'}</p>
+            {onRetry && (
+              <button
+                onClick={onRetry}
+                className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 bg-red-100 hover:bg-red-200 rounded-lg text-xs font-medium text-red-700 transition-colors"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                重新生成
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── 完成状态 ──
+  if (isDone) {
+    return (
+      <div className="px-4 py-4 bg-green-50/60 border border-green-100 rounded-2xl shadow-sm animate-fade-in-up space-y-3 max-w-[82%] ml-12">
+        <div className="flex items-center gap-2.5">
+          <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
+            <Check className="w-4 h-4 text-green-600" />
+          </div>
+          <span className="text-sm font-semibold text-green-700">生成完成</span>
+        </div>
+        {/* 跳转入口 */}
+        {onNavigate && (
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button
+              onClick={() => onNavigate('/profile')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
+            >
+              📋 查看画像
+            </button>
+            <button
+              onClick={() => onNavigate('/path')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
+            >
+              🗺️ 查看路径
+            </button>
+            <button
+              onClick={() => onNavigate('/resources')}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-green-200 rounded-lg text-xs font-medium text-green-700 hover:bg-green-50 transition-colors"
+            >
+              📚 查看资源
+            </button>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ── 进行中状态 ──
   return (
     <div className="px-4 py-4 bg-white border border-gray-100 rounded-2xl shadow-sm animate-fade-in-up space-y-3 max-w-[82%] ml-12">
       {/* 标题 */}
       <div className="flex items-center gap-2.5">
         <div className="w-5 h-5 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
         <span className="text-sm font-semibold text-gray-800">
-          {progress.stage || '工作流模块正在协同处理'}
+          {progress.stage || '多智能体协同处理中'}
         </span>
-        <span className="text-xs text-brand-500 font-medium ml-auto">{pct}%</span>
+        <span className="text-xs text-brand-500 font-medium ml-auto">{progress.progress}%</span>
       </div>
 
       {/* 管线步骤 */}
       <div className="flex items-center gap-1">
-        {AGENT_PIPELINE.map((agent, idx) => {
+        {GEN_PIPELINE.map((step, idx) => {
           const isCompleted = idx < currentIdx;
           const isCurrent = idx === currentIdx;
           const isPending = idx > currentIdx;
-
           return (
-            <div key={agent.agentName} className="flex items-center gap-1 flex-1 min-w-0">
-              {/* 步骤圆点 */}
+            <div key={step.key} className="flex items-center gap-1 flex-1 min-w-0">
               <div
                 className={`w-6 h-6 rounded-full flex items-center justify-center flex-shrink-0 transition-all duration-300 ${
                   isCompleted
@@ -151,7 +232,6 @@ function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
                       ? 'bg-brand-100 ring-2 ring-brand-300'
                       : 'bg-gray-50 ring-2 ring-gray-100'
                 }`}
-                title={agent.description}
               >
                 {isCompleted ? (
                   <Check className="w-3 h-3 text-green-600" />
@@ -161,8 +241,7 @@ function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
                   <div className="w-2 h-2 rounded-full bg-gray-300" />
                 )}
               </div>
-              {/* 连接线 */}
-              {idx < AGENT_PIPELINE.length - 1 && (
+              {idx < GEN_PIPELINE.length - 1 && (
                 <div
                   className={`flex-1 h-0.5 rounded-full transition-colors duration-300 ${
                     isCompleted ? 'bg-green-300' : isCurrent ? 'bg-gray-200' : 'bg-gray-100'
@@ -176,17 +255,17 @@ function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
 
       {/* 标签 */}
       <div className="flex items-center justify-between">
-        {AGENT_PIPELINE.map((agent, idx) => {
+        {GEN_PIPELINE.map((step, idx) => {
           const isCurrent = idx === currentIdx;
           const isCompleted = idx < currentIdx;
           return (
             <span
-              key={agent.agentName}
+              key={step.key}
               className={`text-[9px] transition-colors duration-300 ${
                 isCurrent ? 'text-brand-600 font-semibold' : isCompleted ? 'text-green-500' : 'text-gray-300'
               }`}
             >
-              {agent.label}
+              {step.label}
             </span>
           );
         })}
@@ -196,9 +275,19 @@ function AgentPipelineProgress({ progress }: { progress: GenerationProgress }) {
       <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
         <div
           className="h-full bg-gradient-to-r from-brand-500 to-brand-600 rounded-full transition-all duration-700 ease-out"
-          style={{ width: `${pct}%` }}
+          style={{ width: `${progress.progress}%` }}
         />
       </div>
+
+      {/* 长时间等待提示 */}
+      {longWait && (
+        <div className="flex items-center gap-2 p-2 bg-amber-50 border border-amber-100 rounded-lg">
+          <span className="text-amber-500 text-xs">⏳</span>
+          <p className="text-[10px] text-amber-600">
+            生成已持续 {elapsed} 秒，多智能体协同可能需要一些时间，请耐心等待…
+          </p>
+        </div>
+      )}
     </div>
   );
 }
@@ -224,6 +313,32 @@ function QuickCommands({ onSelect }: { onSelect: (prompt: string) => void }) {
 }
 
 /* ===================================================================
+ * 兜底等待指示器（带计时）
+ * =================================================================== */
+function StreamingWaitIndicator() {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return (
+    <div className="px-4 py-3 bg-white border border-gray-100 rounded-2xl shadow-sm max-w-[82%] ml-12">
+      <div className="flex items-center gap-2.5">
+        <div className="w-5 h-5 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
+        <div className="flex-1 min-w-0">
+          <span className="text-sm text-gray-500">AI 正在分析你的需求…</span>
+          {elapsed >= 8 && (
+            <p className="text-[10px] text-amber-500 mt-1">
+              已等待 {elapsed} 秒，首次生成可能较慢
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===================================================================
  * 主页面 — 优化版
  * =================================================================== */
 
@@ -231,6 +346,7 @@ type AgentProgressInfo = GenerationProgress | null;
 
 export default function ChatPage() {
   const location = useLocation();
+  const navigate = useNavigate();
   const initialMessage = (location.state as { initialMessage?: string })?.initialMessage;
   const { messages, isStreaming, agentProgress, currentSessionId, setLoading } = useChatStore() as {
     messages: ChatMessage[];
@@ -326,9 +442,13 @@ export default function ChatPage() {
   };
 
   const handleRetry = () => {
-    // 去掉错误消息后重试最后一次用户输入
+    // 去掉所有错误消息后重试最后一次用户输入
     const lastUser = [...messages].reverse().find((m) => m.role === 'user');
     if (lastUser) send(lastUser.content);
+  };
+
+  const handleNavigate = (path: string) => {
+    navigate(path);
   };
 
   const hasError = messages.some((m) => m.error);
@@ -400,20 +520,17 @@ export default function ChatPage() {
           </div>
         ))}
 
-        {/* 工作流进度管线 */}
-        {isStreaming && agentProgress && (
-          <AgentPipelineProgress progress={agentProgress} />
+        {/* 生成进度管线（进行中 / 成功 / 失败） */}
+        {agentProgress && (
+          <AgentPipelineProgress
+            progress={agentProgress}
+            onRetry={handleRetry}
+            onNavigate={handleNavigate}
+          />
         )}
 
         {/* 简单 loading (无 agentProgress 时的兜底) */}
-        {isStreaming && !agentProgress && (
-          <div className="px-4 py-3 bg-white border border-gray-100 rounded-2xl shadow-sm animate-pulse max-w-[82%] ml-12">
-            <div className="flex items-center gap-2.5">
-              <div className="w-5 h-5 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" />
-              <span className="text-sm text-gray-500">AI 正在分析你的需求…</span>
-            </div>
-          </div>
-        )}
+        {isStreaming && !agentProgress && <StreamingWaitIndicator />}
 
         <div ref={bottomRef} />
       </div>

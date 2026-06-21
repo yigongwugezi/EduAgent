@@ -70,14 +70,31 @@ export function useStreamChat() {
                     progress: payload.progress || 0,
                     agentName: payload.agentName,
                     detail: payload.detail,
+                    error: payload.error,
+                    done: payload.done,
                   });
                 }
                 if (payload.content) {
                   appendToLastAssistant(payload.content);
                 }
                 if (payload.done) {
-                  updateLastAssistant((m) => ({ ...m, streaming: false }));
-                  setAgentProgress(null);
+                  if (payload.error) {
+                    updateLastAssistant((m) => ({
+                      ...m,
+                      streaming: false,
+                      error: payload.error,
+                    }));
+                    // 失败状态 5 秒后自动收起
+                    setTimeout(() => setAgentProgress(null), 5000);
+                  } else {
+                    updateLastAssistant((m) => ({ ...m, streaming: false }));
+                    // 确保 agentProgress 标记为完成（done 事件可能不带 agentName）
+                    const cur = useChatStore.getState().agentProgress;
+                    if (cur && !cur.done) {
+                      setAgentProgress({ ...cur, done: true, progress: 100 });
+                    }
+                    // 成功状态不清除 — 跳转按钮常驻，新对话开始时会自动重置
+                  }
                 }
               } catch {
                 appendToLastAssistant(line.slice(6));
@@ -86,8 +103,6 @@ export function useStreamChat() {
           }
         }
 
-        updateLastAssistant((m) => ({ ...m, streaming: false }));
-        setAgentProgress(null);
         bumpDataVersion();
       } catch (err) {
         try {
@@ -113,10 +128,17 @@ export function useStreamChat() {
                 ? fallbackErr.message
                 : err instanceof Error
                   ? err.message
-                  : 'request failed',
+                  : '请求失败，请检查后端服务是否运行',
           }));
-        } finally {
-          setAgentProgress(null);
+          // Show error progress briefly
+          setAgentProgress({
+            stage: '生成失败',
+            progress: 0,
+            agentName: 'failed',
+            error: fallbackErr instanceof Error ? fallbackErr.message : '请求失败',
+            done: true,
+          });
+          setTimeout(() => setAgentProgress(null), 5000);
         }
       } finally {
         setStreaming(false);

@@ -54,6 +54,8 @@ export interface GenerationProgress {
   progress: number; // 0-100
   agentName?: string;
   detail?: string;
+  error?: string;
+  done?: boolean;
 }
 
 export interface QuickCommand {

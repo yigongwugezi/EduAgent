@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Any
+from typing import Any, Callable
 
 from app.agents import (
     DiagnosisAgent,
@@ -62,12 +62,23 @@ class AgentOrchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────
 
+    # ── Stage-to-progress mapping ─────────────────────────────────
+    AGENT_STAGE_MAP: dict[str, tuple[str, int]] = {
+        "profile_agent":   ("profiling", 25),
+        "knowledge_agent": ("knowledge", 30),
+        "diagnosis_agent": ("diagnosis", 40),
+        "planner_agent":   ("planning",  55),
+        "resource_agent":  ("generating", 75),
+        "review_agent":    ("reviewing",  85),
+    }
+
     def run(
         self,
         session_id: str,
         course_id: str,
         user_message: str,
         profile_facts: dict[str, str] | None = None,
+        progress_callback: Callable | None = None,
     ) -> dict[str, Any]:
         """Execute the full multi-agent pipeline.
 
@@ -75,12 +86,21 @@ class AgentOrchestrator:
             session_id: Current session identifier.
             course_id: Target course identifier.
             user_message: The constructed prompt to send to agents.
+            progress_callback: Optional ``(stage_key, stage_label, progress_pct) -> None``.
 
         Returns:
             A dict with keys: session_id, course_id, profile, diagnosis,
             learning_path, resources, knowledge_context, review,
             agent_steps, overall_status, overall_error.
         """
+        AGENT_LABELS = {
+            "profile_agent": "正在生成画像",
+            "knowledge_agent": "正在检索知识",
+            "diagnosis_agent": "正在诊断分析",
+            "planner_agent": "正在规划路径",
+            "resource_agent": "正在生成资源",
+            "review_agent": "正在检查质量",
+        }
         context: dict[str, Any] = {
             "session_id": session_id,
             "course_id": course_id,
@@ -115,6 +135,14 @@ class AgentOrchestrator:
                 for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
                     if key not in result:
                         result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
+
+            # ── Report progress after each agent ──
+            if progress_callback:
+                stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
+                pct = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[1]
+                label = AGENT_LABELS.get(agent.agent_id, agent.agent_name)
+                if stage_key:
+                    progress_callback(stage_key, label, pct)
 
         # Determine overall status
         if not result["agent_steps"]:

@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import re
 import time
+import threading
 from datetime import datetime, timezone
-from typing import Any
+from queue import Queue, Empty
+from typing import Any, Callable
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
@@ -142,6 +144,7 @@ def _classify_intent(message: str) -> dict[str, Any]:
 def _run_agents(
     message: str = "我想学习人工智能导论",
     session_id: str = "frontend_session_001",
+    progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
     state = conversation_store.get(session_id)
@@ -163,6 +166,7 @@ def _run_agents(
         session_id=session_id,
         user_message=message,
         course_id=course_id,
+        progress_callback=progress_callback,
     )
     if selected_course and "course" not in result:
         result["course"] = {
@@ -769,7 +773,10 @@ def _start_advice_reply(session_id: str) -> str:
     )
 
 
-def _learning_plan_request_reply(message: str, intent: dict[str, Any], session_id: str) -> tuple[str, bool]:
+def _learning_plan_request_reply(
+    message: str, intent: dict[str, Any], session_id: str,
+    progress_callback: Callable | None = None,
+) -> tuple[str, bool]:
     state = conversation_store.get(session_id)
     readiness = conversation_store.readiness(state)
     force_generate_words = [
@@ -783,10 +790,10 @@ def _learning_plan_request_reply(message: str, intent: dict[str, Any], session_i
     force_generate = any(word in message for word in force_generate_words)
     if readiness["readyToPlan"] or force_generate:
         if force_generate and not readiness["readyToPlan"]:
-            result = _run_agents(message, session_id=session_id)
+            result = _run_agents(message, session_id=session_id, progress_callback=progress_callback)
             content = _learning_plan_reply(result, intent)
             return f"{content}\n\n低画像完整度生成：当前信息较少，本方案作为第一版草稿，后续可随画像更新继续调整。", True
-        return _learning_plan_reply(_run_agents(message, session_id=session_id), intent), True
+        return _learning_plan_reply(_run_agents(message, session_id=session_id, progress_callback=progress_callback), intent), True
 
     questions = "\n".join(f"- {question}" for question in conversation_store.next_questions(state, limit=3))
     known = "\n".join(conversation_store.known_lines(state)) or "- 暂时还没有稳定画像信息"
@@ -810,8 +817,8 @@ def _tutoring_reply(message: str) -> str:
     )
 
 
-def _resource_request_reply(message: str, session_id: str) -> str:
-    result = _run_agents(message, session_id=session_id)
+def _resource_request_reply(message: str, session_id: str, progress_callback: Callable | None = None) -> str:
+    result = _run_agents(message, session_id=session_id, progress_callback=progress_callback)
     resources = [_to_resource(item, result.get("course_id", "ai_intro"), session_id) for item in result.get("resources", [])]
     names = "、".join(item["title"] for item in resources[:5])
     return (
@@ -837,7 +844,10 @@ def _unknown_reply(intent: dict[str, Any]) -> str:
     )
 
 
-def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> tuple[str, bool]:
+def _reply_for_intent(
+    message: str, intent: dict[str, Any], session_id: str,
+    progress_callback: Callable | None = None,
+) -> tuple[str, bool]:
     name = intent["intent"]
     if name == "casual_chat":
         return _casual_reply(session_id), False
@@ -855,7 +865,7 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
         state = conversation_store.get(session_id)
         if conversation_store.readiness(state)["readyToPlan"]:
             try:
-                _run_agents(message, session_id=session_id)
+                _run_agents(message, session_id=session_id, progress_callback=progress_callback)
                 ran_agents = True
             except Exception:
                 pass  # Don't block chat reply if agent run fails
@@ -864,27 +874,47 @@ def _reply_for_intent(message: str, intent: dict[str, Any], session_id: str) -> 
     if name == "start_advice":
         return _start_advice_reply(session_id), False
     if name == "learning_plan":
-        return _learning_plan_request_reply(message, intent, session_id)
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "resource_request":
-        return _resource_request_reply(message, session_id), True
+        return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
     if name == "tutoring":
         return _tutoring_reply(message), False
     if name == "diagnosis":
         return _feedback_reply(message, session_id), False
     if name == "full_workflow":
-        return _learning_plan_request_reply(message, intent, session_id)
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "progress_feedback":
         return _feedback_reply(message, session_id), False
     if name == "unsafe":
         return "这个请求可能不适合处理。你可以换成正常的学习问题或课程规划需求。", False
     if name == "full_workflow":
-        return _learning_plan_request_reply(message, intent, session_id)
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     return _unknown_reply(intent), False
 
 
 # ═══════════════════════════════════════════════════════════════════════
 # Chat endpoints
 # ═══════════════════════════════════════════════════════════════════════
+
+
+def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:
+    """Check whether the given intent will trigger agent execution."""
+    name = intent["intent"]
+    if name in ("learning_plan", "full_workflow", "resource_request"):
+        return True
+    if name == "profile_update":
+        state = conversation_store.get(session_id)
+        return conversation_store.readiness(state)["readyToPlan"]
+    return False
+
+
+GEN_STAGES = [
+    ("understanding", "正在理解需求", 5),
+    ("profiling",    "正在生成画像", 25),
+    ("planning",     "正在规划路径", 50),
+    ("generating",   "正在生成资源", 75),
+    ("saving",       "正在保存结果", 95),
+]
 
 
 @router.post("/chat/stream")
@@ -897,17 +927,102 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     conversation_store.append_message(session_id, "user", message)
     intent = _classify_intent(message)
     conversation_store.set_intent(session_id, intent)
-    reply, ran_agents = _reply_for_intent(message, intent, session_id)
-    conversation_store.append_message(session_id, "assistant", reply)
+    run_agents = _will_run_agents(intent, session_id)
+
+    def _to_event(stage: str, agent: str, pct: int, **kw) -> str:
+        data = {"stage": stage, "agentName": agent, "progress": pct, "done": False, **kw}
+        return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
     def event_stream():
-        if ran_agents:
-            yield f"data: {json.dumps({'content': '正在启动多智能体协同流程...\n', 'done': False}, ensure_ascii=False)}\n\n"
+        nonlocal run_agents
+        if run_agents:
+            # ── 先发「正在理解需求」，让用户立刻感知响应 ──
+            s0_label, s0_key, s0_pct = "正在理解需求", "understanding", 5
+            yield _to_event(s0_label, s0_key, s0_pct)
+
+            # ── 在线程中执行智能体，通过队列实时回传进度 ──
+            progress_q: Queue = Queue()
+            result_box: dict[str, Any] = {}
+
+            def _agent_worker():
+                try:
+                    # 后端细粒度阶段 → 前端 5 阶段映射
+                    _STAGE_MAP = {
+                        "profiling":   ("profiling", "正在生成画像"),
+                        "knowledge":   ("profiling", "正在生成画像"),
+                        "diagnosis":   ("profiling", "正在生成画像"),
+                        "planning":    ("planning", "正在规划路径"),
+                        "generating":  ("generating", "正在生成资源"),
+                        "reviewing":   ("generating", "正在生成资源"),
+                    }
+                    def on_progress(stage_key: str, stage_label: str, pct: int):
+                        mapped_key, mapped_label = _STAGE_MAP.get(stage_key, (stage_key, stage_label))
+                        progress_q.put(("progress", mapped_key, mapped_label, pct))
+                    reply, ran = _reply_for_intent(
+                        message, intent, session_id,
+                        progress_callback=on_progress,
+                    )
+                    result_box["reply"] = reply
+                    result_box["ran"] = ran
+                    progress_q.put(("done",))
+                except Exception as exc:
+                    result_box["error"] = exc
+                    progress_q.put(("error",))
+
+            t = threading.Thread(target=_agent_worker, daemon=True)
+            t.start()
+
+            # ── 从队列读取实时进度事件 ──
+            while t.is_alive() or not progress_q.empty():
+                try:
+                    msg = progress_q.get(timeout=0.5)
+                    kind = msg[0]
+                    if kind == "progress":
+                        _, stage_key, stage_label, pct = msg
+                        yield _to_event(stage_label, stage_key, pct)
+                    elif kind == "done":
+                        break
+                    elif kind == "error":
+                        err = result_box.get("error", Exception("未知错误"))
+                        yield _to_event("生成失败", "failed", 0, error=str(err), done=True)
+                        yield 'data: {"done":true}\n\n'
+                        return
+                except Empty:
+                    # 仍在等待中 — 可发心跳保持连接活跃
+                    continue
+
+            # ── 处理结果 ──
+            if "error" in result_box:
+                yield _to_event("生成失败", "failed", 0, error=str(result_box["error"]), done=True)
+                yield 'data: {"done":true}\n\n'
+                return
+
+            reply = result_box.get("reply", "")
+            ran = result_box.get("ran", False)
+            if not ran:
+                run_agents = False
+
+            # ── 推进到「保存结果」并保存 ──
+            yield _to_event("正在保存结果", "saving", 95)
+            conversation_store.append_message(session_id, "assistant", reply)
+            yield _to_event("正在保存结果", "saving", 100)
+
+            # ── 流式输出回复内容 ──
+            for chunk in reply.splitlines(keepends=True):
+                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
         else:
-            intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）\n\n"
-            yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}\n\n"
-        for chunk in reply.splitlines(keepends=True):
-            yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
+            reply, ran_agents = _reply_for_intent(message, intent, session_id)
+            conversation_store.append_message(session_id, "assistant", reply)
+            if ran_agents:
+                # profile_update triggered agents — show completed stages
+                for stage_key, stage_label, pct in GEN_STAGES:
+                    yield f"data: {json.dumps({'stage': stage_label, 'agentName': stage_key, 'progress': pct, 'done': False}, ensure_ascii=False)}\n\n"
+            else:
+                intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）\n\n"
+                yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}\n\n"
+            for chunk in reply.splitlines(keepends=True):
+                yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
+
         yield 'data: {"done":true}\n\n'
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")

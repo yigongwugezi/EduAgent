@@ -12,7 +12,7 @@ This ensures that GET endpoints never accidentally trigger agent runs.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from app.db.engine import SessionLocal
 from app.db.repository import (
@@ -102,6 +102,7 @@ def run_agents(
     session_id: str,
     user_message: str,
     course_id: str | None = None,
+    progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -116,6 +117,7 @@ def run_agents(
         session_id: Current session identifier.
         user_message: The latest user message.
         course_id: Optional explicit course ID.  If *None*, matched from facts.
+        progress_callback: Optional callback forwarded to Orchestrator.
 
     Returns:
         The orchestrator result dict (see ``OrchestratorResult`` schema).
@@ -151,6 +153,7 @@ def run_agents(
         course_id=resolved_course_id,
         user_message=agent_message,
         profile_facts=dict(state.facts),
+        progress_callback=progress_callback,
     )
 
     # Attach course metadata
