@@ -299,6 +299,7 @@ def get_resources(session_id: str) -> list[dict[str, Any]]:
                 "ppt_outline": r.ppt_outline,
                 "bookmarked": r.bookmarked or False,
                 "study_status": r.study_status or "new",
+                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
                 "source": r.source or "system_inferred",
                 "related_stage_id": _extract_stage_id(r),
                 "task_id": r.task_id or _extract_task_id(r),

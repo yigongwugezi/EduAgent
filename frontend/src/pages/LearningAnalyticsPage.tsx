@@ -1,49 +1,20 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
-import client from '../api/client';
-import { useChatStore } from '../store/chatStore';
-import { useSubjectStore } from '../store/subjectStore';
+import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   TrendingUp, Zap, Target, BookOpen, Clock, Brain,
   AlertCircle, Sparkles, ArrowRight, Star, RefreshCw,
   BarChart3, Activity, ListChecks, Eye, MessageSquare, HelpCircle, Cpu,
-  CheckCircle2, User,
+  CheckCircle2, User, GitFork,
 } from 'lucide-react';
 import {
   PageLoading, PageEmpty, PageError, SourceTag, FallbackBanner, RefreshOverlay,
 } from '../components/common/PageState';
 import { formatDuration } from '../utils/format';
-
-/* ===================================================================
- * 类型
- * =================================================================== */
-interface WeakTopic {
-  topic: string;
-  wrongCount: number;
-  totalCount: number;
-  risk: number;
-  /** 来源: quiz, practice, feedback, diagnosis */
-  source: string[];
-  /** 优先级: high | medium | low */
-  priority?: string;
-  /** 掌握度 (0-100) */
-  mastery?: number;
-  /** 推荐原因 */
-  reason?: string;
-}
-
-interface AnalyticsData {
-  eventCount: number;
-  totalStudyMinutes: number;
-  activeResourceCount: number;
-  eventBreakdown: Record<string, number>;
-  topResources: { resourceId: string; count: number; title?: string }[];
-  quizAccuracy: number | null;
-  weakTopics: WeakTopic[];
-  recommendations: string[];
-  recentEvents: { event: string; resourceId?: string; timestamp?: number | string; metadata?: Record<string, unknown> }[];
-  summary: string;
-}
+import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
+import type { AnalyticsSummary } from '../types/analytics';
+import { useSubjectStore } from '../store/subjectStore';
+import { useChatStore } from '../store/chatStore';
+import { getLearningPath } from '../api/knowledge';
 
 /* ===================================================================
  * 子组件
@@ -96,59 +67,9 @@ function ProgressRing({ pct, size = 80, strokeWidth = 6 }: { pct: number; size?:
  * 主页面
  * =================================================================== */
 export default function LearningAnalyticsPage() {
-  const location = useLocation();
   const navigate = useNavigate();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const lastSubjectRef = useRef<string | undefined>(undefined);
-  const dataVersion = useChatStore((state) => state.dataVersion);
-  const lastVersionRef = useRef<number>(0);
-
-  const fetchAnalytics = useCallback(async () => {
-    const sid = useChatStore.getState().currentSessionId;
-    if (!subjectId && !sid) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const { data } = await client.get('/learning-analytics', {
-        params: { sessionId: sid, subjectId },
-      });
-      setAnalytics(data);
-    } catch {
-      setError('加载分析数据失败');
-    } finally {
-      setLoading(false);
-    }
-  }, [subjectId]);
-
-  // 每次进入页面时刷新 + 科目切换
-  useEffect(() => {
-    if (subjectId) {
-      fetchAnalytics();
-    } else {
-      setLoading(false);
-      setError(null);
-      setAnalytics(null);
-    }
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && subjectId) {
-        fetchAnalytics();
-      }
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    return () => document.removeEventListener('visibilitychange', onVisible);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [subjectId, location.key, fetchAnalytics]);
-
-  // 对话完成后自动刷新
-  useEffect(() => {
-    if (dataVersion > 0 && dataVersion !== lastVersionRef.current) {
-      lastVersionRef.current = dataVersion;
-      fetchAnalytics();
-    }
-  }, [dataVersion, fetchAnalytics]);
+  const { analytics, loading, error, refetch } = useLearningAnalytics();
 
   // —— 无科目 ——
   if (!subjectId) {
@@ -172,7 +93,7 @@ export default function LearningAnalyticsPage() {
       <PageError
         title="加载分析数据失败"
         description={error}
-        onRetry={fetchAnalytics}
+        onRetry={refetch}
       />
     );
   }
@@ -204,7 +125,7 @@ export default function LearningAnalyticsPage() {
   };
 
   /** 获取最近事件的友好描述 */
-  const eventDescription = (evt: AnalyticsData['recentEvents'][0]): string => {
+  const eventDescription = (evt: AnalyticsSummary['recentEvents'][0]): string => {
     const meta = evt.metadata || {};
     switch (evt.event) {
       case 'resource_view':     return `查看了资源「${meta.title || meta.type || ''}」`;
@@ -248,7 +169,7 @@ export default function LearningAnalyticsPage() {
         <div className="mb-6 p-3 bg-red-50 border border-red-100 rounded-xl flex items-center gap-2 text-xs text-red-600">
           <AlertCircle className="w-4 h-4 flex-shrink-0" />
           {error}
-          <button onClick={fetchAnalytics} className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">
+          <button onClick={refetch} className="ml-auto flex items-center gap-1 px-2 py-1 bg-red-100 rounded-lg hover:bg-red-200 transition-colors">
             <RefreshCw className="w-3 h-3" /> 重试
           </button>
         </div>
@@ -368,38 +289,13 @@ export default function LearningAnalyticsPage() {
           </div>
         </div>
 
-        {/* 事件分布 */}
+        {/* 事件分布 — 已移至图表区 */}
         <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
             <Zap className="w-4 h-4 text-brand-500" />
             学习行为分布
           </h3>
-          {Object.keys(analytics.eventBreakdown).length === 0 ? (
-            <p className="text-xs text-gray-400">暂无事件记录</p>
-          ) : (
-            <div className="space-y-2">
-              {Object.entries(analytics.eventBreakdown)
-                .sort(([, a], [, b]) => b - a)
-                .map(([event, count]) => {
-                  const info = eventLabels[event] || { label: event, icon: '📌' };
-                  const maxCount = Math.max(...Object.values(analytics.eventBreakdown));
-                  const pct = Math.round((count / maxCount) * 100);
-                  return (
-                    <div key={event} className="flex items-center gap-2">
-                      <span className="w-5 text-xs">{info.icon}</span>
-                      <span className="text-xs text-gray-600 w-20 flex-shrink-0">{info.label}</span>
-                      <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-brand-400 to-brand-600 rounded-full transition-all duration-500"
-                          style={{ width: `${pct}%` }}
-                        />
-                      </div>
-                      <span className="text-xs font-semibold text-gray-700 w-6 text-right">{count}</span>
-                    </div>
-                  );
-                })}
-            </div>
-          )}
+          <EventDistributionChart data={analytics.eventBreakdown} eventLabels={eventLabels} />
         </div>
       </div>
 
@@ -511,6 +407,59 @@ export default function LearningAnalyticsPage() {
               ))}
             </div>
           )}
+        </div>
+      </div>
+
+      {/* ========== 图表区域 ========== */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        {/* 1. 资源完成趋势 */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <BarChart3 className="w-4 h-4 text-green-500" />
+            资源完成趋势
+          </h3>
+          <CompletionTrendChart data={analytics.completionTrend} />
+        </div>
+
+        {/* 2. Quiz 正确率趋势 */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <TrendingUp className="w-4 h-4 text-amber-500" />
+            Quiz 正确率趋势
+          </h3>
+          <QuizTrendChart data={analytics.quizTrend} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        {/* 3. 学习事件类型分布 */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-purple-500" />
+            事件类型分布
+          </h3>
+          <EventDistributionChart
+            data={analytics.eventBreakdown}
+            eventLabels={eventLabels}
+          />
+        </div>
+
+        {/* 4. 各资源类型使用次数 */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <BookOpen className="w-4 h-4 text-cyan-500" />
+            资源类型使用
+          </h3>
+          <ResourceTypeChart data={analytics.resourceTypeBreakdown} />
+        </div>
+
+        {/* 5. 阶段完成度（从学习路径获取） */}
+        <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm">
+          <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
+            <Target className="w-4 h-4 text-rose-500" />
+            阶段完成度
+          </h3>
+          <StageProgressCard />
         </div>
       </div>
 
@@ -640,6 +589,235 @@ export default function LearningAnalyticsPage() {
           累计追踪 {analytics.eventCount} 条学习事件 · 数据驱动个性化学习体验持续优化
         </p>
       </div>
+    </div>
+  );
+}
+
+/* ===================================================================
+ * 图表子组件
+ * =================================================================== */
+
+/** 1. 资源完成趋势 - 迷你柱状图 */
+function CompletionTrendChart({ data }: { data: { date: string; count: number }[] }) {
+  const hasData = data.some(d => d.count > 0);
+  const maxCount = Math.max(...data.map(d => d.count), 1);
+  const visibleData = data.slice(-7);
+
+  if (!hasData) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-center">
+        <BarChart3 className="w-8 h-8 text-gray-200 mb-2" />
+        <p className="text-xs text-gray-400">暂无资源完成记录</p>
+        <p className="text-[10px] text-gray-300 mt-1">完成学习资源后自动生成</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex items-end gap-1 h-32 mb-2">
+        {visibleData.map((item) => {
+          const h = Math.max((item.count / maxCount) * 100, item.count > 0 ? 8 : 2);
+          return (
+            <div key={item.date} className="flex-1 flex flex-col items-center gap-1 group">
+              <span className="text-[9px] text-gray-400 opacity-0 group-hover:opacity-100 transition-opacity">{item.count}</span>
+              <div className="w-full rounded-t-sm transition-all duration-300 group-hover:opacity-80"
+                style={{ height: `${h}%`, backgroundColor: item.count > 0 ? '#22c55e' : '#f1f5f9', minHeight: item.count > 0 ? '4px' : '2px' }} />
+              <span className="text-[8px] text-gray-400 whitespace-nowrap">{item.date.slice(5)}</span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-gray-400 text-center">
+        累计完成 <span className="font-semibold text-gray-600">{data.reduce((s, d) => s + d.count, 0)}</span> 个资源
+      </p>
+    </div>
+  );
+}
+
+/** 2. Quiz 正确率趋势 - SVG折线图 */
+function QuizTrendChart({ data }: { data: { date: string; accuracy: number; topic: string }[] }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-center">
+        <TrendingUp className="w-8 h-8 text-gray-200 mb-2" />
+        <p className="text-xs text-gray-400">暂无练习记录</p>
+        <p className="text-[10px] text-gray-300 mt-1">完成练习后自动生成</p>
+      </div>
+    );
+  }
+  const points = data.slice(-15);
+  const svgW = 280, svgH = 100, padL = 5, padR = 5, padT = 8, padB = 5;
+  const chartW = svgW - padL - padR, chartH = svgH - padT - padB;
+  const xStep = points.length > 1 ? chartW / (points.length - 1) : chartW / 2;
+  const linePath = points.map((p, i) => {
+    const x = padL + i * xStep;
+    const y = padT + chartH - (p.accuracy / 100) * chartH;
+    return `${i === 0 ? 'M' : 'L'}${x},${y}`;
+  }).join(' ');
+
+  return (
+    <div>
+      <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-28">
+        <line x1={padL} y1={padT} x2={padL + chartW} y2={padT} stroke="#f1f5f9" strokeWidth={1} />
+        <line x1={padL} y1={padT + chartH / 2} x2={padL + chartW} y2={padT + chartH / 2} stroke="#f1f5f9" strokeWidth={1} />
+        <line x1={padL} y1={padT + chartH} x2={padL + chartW} y2={padT + chartH} stroke="#f1f5f9" strokeWidth={1} />
+        <line x1={padL} y1={padT + chartH / 2} x2={padL + chartW} y2={padT + chartH / 2} stroke="#fde68a" strokeWidth={1} strokeDasharray="4,3" />
+        <path d={linePath} fill="none" stroke="#f59e0b" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+        {points.map((p, i) => {
+          const x = padL + i * xStep, y = padT + chartH - (p.accuracy / 100) * chartH;
+          const color = p.accuracy >= 80 ? '#22c55e' : p.accuracy >= 60 ? '#f59e0b' : '#ef4444';
+          return <circle key={i} cx={x} cy={y} r={3.5} fill={color} stroke="white" strokeWidth={1.5}>
+            <title>{`${p.topic || '练习'}: ${p.accuracy}%\n${p.date}`}</title>
+          </circle>;
+        })}
+      </svg>
+      <div className="flex items-center justify-between text-[10px] text-gray-400 mt-1">
+        <span>最近 {points.length} 次练习</span>
+        <span className="flex items-center gap-2">
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-green-500" />&ge;80%</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-500" />60-79%</span>
+          <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" />&lt;60%</span>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+/** 3. 事件类型分布 - 水平条形图（替换原有简单列表） */
+function EventDistributionChart({
+  data, eventLabels,
+}: {
+  data: Record<string, number>;
+  eventLabels: Record<string, { label: string; icon: string; color: string }>;
+}) {
+  const entries = Object.entries(data).sort(([, a], [, b]) => b - a);
+  if (entries.length === 0) {
+    return <div className="flex flex-col items-center justify-center py-10 text-center">
+      <Activity className="w-8 h-8 text-gray-200 mb-2" /><p className="text-xs text-gray-400">暂无事件记录</p>
+    </div>;
+  }
+  const maxCount = Math.max(...Object.values(data));
+  const barColor: Record<string, string> = {
+    resource_view: '#6366f1', resource_complete: '#22c55e', quiz_result: '#f59e0b',
+    feedback: '#a855f7', practice_result: '#06b6d4', node_progress: '#10b981',
+  };
+  return (
+    <div className="space-y-2.5">
+      {entries.map(([event, count]) => {
+        const info = eventLabels[event] || { label: event, icon: '📌', color: 'text-gray-400' };
+        const pct = Math.round((count / maxCount) * 100);
+        return (
+          <div key={event} className="flex items-center gap-2">
+            <span className="w-4 text-xs flex-shrink-0">{info.icon}</span>
+            <span className="text-[11px] text-gray-600 w-22 flex-shrink-0 truncate">{info.label}</span>
+            <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.max(pct, 4)}%`, backgroundColor: barColor[event] || '#94a3b8' }} />
+            </div>
+            <span className="text-xs font-semibold text-gray-600 w-5 text-right">{count}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/** 4. 各资源类型使用次数 - 水平条形图 */
+function ResourceTypeChart({ data }: { data: Record<string, number> }) {
+  const TYPE_LABELS: Record<string, string> = {
+    lecture: '课程讲义', mindmap: '思维导图', quiz: '练习题',
+    reading: '拓展阅读', case_study: '实操案例', video: '教学视频', ppt: 'PPT大纲', practice: '实操',
+  };
+  const TYPE_COLORS: Record<string, string> = {
+    lecture: '#3b82f6', mindmap: '#8b5cf6', quiz: '#f59e0b',
+    reading: '#22c55e', case_study: '#06b6d4', video: '#ef4444', ppt: '#f97316', practice: '#14b8a6',
+  };
+  const entries = Object.entries(data).sort(([, a], [, b]) => b - a);
+  if (entries.length === 0) {
+    return <div className="flex flex-col items-center justify-center py-10 text-center">
+      <BookOpen className="w-8 h-8 text-gray-200 mb-2" /><p className="text-xs text-gray-400">暂无资源使用数据</p>
+    </div>;
+  }
+  const maxCount = Math.max(...Object.values(data));
+  return (
+    <div className="space-y-2.5">
+      {entries.map(([type, count]) => (
+        <div key={type} className="flex items-center gap-2">
+          <span className="text-[11px] text-gray-600 w-20 flex-shrink-0 truncate">{TYPE_LABELS[type] || type}</span>
+          <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full rounded-full transition-all duration-500"
+              style={{ width: `${Math.max(Math.round((count / maxCount) * 100), 4)}%`, backgroundColor: TYPE_COLORS[type] || '#94a3b8' }} />
+          </div>
+          <span className="text-xs font-semibold text-gray-600 w-5 text-right">{count}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** 5. 阶段完成度 - 从学习路径API获取 */
+function StageProgressCard() {
+  const navigate = useNavigate();
+  const [stages, setStages] = useState<{ id: string; title: string; progress: number; total: number }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const sessionId = useChatStore((s) => s.currentSessionId);
+
+  useEffect(() => {
+    if (!sessionId) { setLoading(false); return; }
+    getLearningPath({ sessionId })
+      .then((res) => {
+        const path = res?.path;
+        const stagesList = path?.stages || [];
+        if (stagesList.length > 0) {
+          setStages(stagesList.map((s: { id?: string; title?: string; nodes?: { status?: string }[] }) => ({
+            id: s.id || '',
+            title: s.title || '',
+            progress: (s.nodes || []).filter(
+              (n) => n?.status === 'completed' || n?.status === 'mastered'
+            ).length,
+            total: (s.nodes || []).length,
+          })));
+        }
+      })
+      .catch(() => { /* silent */ })
+      .finally(() => setLoading(false));
+  }, [sessionId]);
+
+  if (loading) return <div className="flex items-center justify-center py-10"><div className="w-5 h-5 rounded-full border-2 border-brand-500 border-t-transparent animate-spin" /></div>;
+  if (stages.length === 0) return <div className="flex flex-col items-center justify-center py-10 text-center">
+    <Target className="w-8 h-8 text-gray-200 mb-2" /><p className="text-xs text-gray-400">暂无学习阶段</p>
+  </div>;
+
+  return (
+    <div className="space-y-3">
+      {stages.map((stage) => {
+        const pct = stage.total > 0 ? Math.round((stage.progress / stage.total) * 100) : 0;
+        return (
+          <div
+            key={stage.id}
+            onClick={() => navigate(`/path?stageId=${stage.id}`)}
+            className="cursor-pointer hover:bg-gray-50 rounded-xl p-2 -mx-2 transition-colors group"
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[11px] font-medium text-gray-700 truncate group-hover:text-brand-600 transition-colors">{stage.title}</span>
+              <span className="text-[10px] text-gray-400 flex-shrink-0 ml-2">{stage.progress}/{stage.total}</span>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${pct}%`, backgroundColor: pct >= 100 ? '#22c55e' : pct >= 50 ? '#6366f1' : '#f59e0b' }} />
+            </div>
+          </div>
+        );
+      })}
+      {/* 查看完整路径 */}
+      <button
+        onClick={() => navigate('/path')}
+        className="w-full mt-2 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[10px] font-medium text-gray-400 border border-gray-100 hover:border-brand-200 hover:text-brand-600 transition-all"
+      >
+        <GitFork className="w-3.5 h-3.5" />
+        查看完整学习路径
+      </button>
     </div>
   );
 }

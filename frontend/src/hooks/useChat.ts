@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useChatStore } from '../store/chatStore';
 import * as chatApi from '../api/chat';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('Chat');
 
 export function useChat() {
   const store = useChatStore();
@@ -11,8 +14,9 @@ export function useChat() {
     try {
       const res = await chatApi.getSessions();
       store.setSessions(res.sessions);
-    } catch {
-      // 静默失败
+      log.debug(`已加载 ${res.sessions.length} 个会话`);
+    } catch (err) {
+      log.warn('加载会话列表失败', err instanceof Error ? err.message : err);
     } finally {
       setLoading(false);
     }

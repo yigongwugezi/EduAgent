@@ -205,11 +205,12 @@ const STAGE_STATUS_CONFIG: Record<StageStatus, { icon: any; label: string; bg: s
 /* ===================================================================
  * 阶段组件（增强版）
  * =================================================================== */
-function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources }: {
+function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources, resourceStats }: {
   stage: LearningStage;
   defaultExpanded: boolean;
   onStatusChange: (nodeId: string, status: PathNodeStatus) => void;
   onViewResources: (stageId: string) => void;
+  resourceStats?: { total: number; completed: number };
 }) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(defaultExpanded);
@@ -252,8 +253,14 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources 
                 progress === 100 ? 'text-green-500' : progress > 0 ? 'text-brand-500' : 'text-gray-400'
               }`}>
                 {completed}/{stage.nodes.length} 知识点
-              </span>
-            </div>
+              </span>              {/* 资源完成率 */}
+              {resourceStats && resourceStats.total > 0 && (
+                <span className={`text-[10px] font-medium ${
+                  resourceStats.completed === resourceStats.total ? 'text-green-500' : resourceStats.completed > 0 ? 'text-brand-500' : 'text-gray-400'
+                }`}>
+                  {resourceStats.completed}/{resourceStats.total} 资源
+                </span>
+              )}            </div>
             <h3 className="text-base font-bold text-gray-900 mt-1">{stage.title}</h3>
             <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{stage.objective || stage.description}</p>
 
@@ -360,19 +367,41 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources 
             </button>
 
             {/* 进度条 */}
-            <div className="flex-1 min-w-[100px] ml-auto">
-              <div className="flex items-center justify-between mb-0.5">
-                <span className="text-[9px] text-gray-400">阶段进度</span>
-                <span className="text-[9px] font-semibold text-gray-500">{progress}%</span>
+            <div className="flex-1 min-w-[100px] ml-auto space-y-1">
+              <div>
+                <div className="flex items-center justify-between mb-0.5">
+                  <span className="text-[9px] text-gray-400">阶段进度</span>
+                  <span className="text-[9px] font-semibold text-gray-500">{progress}%</span>
+                </div>
+                <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full rounded-full transition-all duration-700 ${
+                      progress >= 100 ? 'bg-green-500' : progress > 0 ? 'bg-brand-500' : 'bg-gray-200'
+                    }`}
+                    style={{ width: `${progress}%` }}
+                  />
+                </div>
               </div>
-              <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                <div
-                  className={`h-full rounded-full transition-all duration-700 ${
-                    progress >= 100 ? 'bg-green-500' : progress > 0 ? 'bg-brand-500' : 'bg-gray-200'
-                  }`}
-                  style={{ width: `${progress}%` }}
-                />
-              </div>
+              {/* 资源完成进度条 */}
+              {resourceStats && resourceStats.total > 0 && (() => {
+                const resPct = Math.round((resourceStats.completed / resourceStats.total) * 100);
+                return (
+                  <div>
+                    <div className="flex items-center justify-between mb-0.5">
+                      <span className="text-[9px] text-gray-400">资源完成</span>
+                      <span className="text-[9px] font-semibold text-gray-500">{resPct}%</span>
+                    </div>
+                    <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-700 ${
+                          resPct >= 100 ? 'bg-green-500' : resPct > 0 ? 'bg-cyan-500' : 'bg-gray-200'
+                        }`}
+                        style={{ width: `${resPct}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
 
@@ -587,6 +616,7 @@ export default function LearningPathPage() {
             defaultExpanded={idx === 0 || idx === firstAvailableStage}
             onStatusChange={updateNodeStatus}
             onViewResources={handleViewResources}
+            resourceStats={path.stageResourceStats?.[stage.id]}
           />
         ))}
       </div>

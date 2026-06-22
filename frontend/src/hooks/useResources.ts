@@ -10,6 +10,9 @@ export function useResources(initialFilter?: ResourceFilter) {
   const dataVersion = useChatStore((state) => state.dataVersion);
   const [resources, setResources] = useState<Resource[]>([]);
   const [total, setTotal] = useState(0);
+  const [completedCount, setCompletedCount] = useState(0);
+  const [incompleteCount, setIncompleteCount] = useState(0);
+  const [completionRate, setCompletionRate] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState<ResourceFilter>(initialFilter || {});
@@ -34,12 +37,18 @@ export function useResources(initialFilter?: ResourceFilter) {
       if (pendingFilterRef.current === undefined) {
         setResources(res?.resources || []);
         setTotal(res?.total || 0);
+        setCompletedCount(res?.completedCount ?? 0);
+        setIncompleteCount(res?.incompleteCount ?? 0);
+        setCompletionRate(res?.completionRate ?? 0);
       }
-    } catch {
+    } catch (e) {
       if (pendingFilterRef.current === undefined) {
         setResources([]);
         setTotal(0);
-        setError('资源加载失败，请确认后端已启动');
+        setCompletedCount(0);
+        setIncompleteCount(0);
+        setCompletionRate(0);
+        setError(e instanceof Error ? e.message : '资源加载失败');
       }
     } finally {
       setLoading(false);
@@ -103,6 +112,9 @@ export function useResources(initialFilter?: ResourceFilter) {
   return {
     resources,
     total,
+    completedCount,
+    incompleteCount,
+    completionRate,
     loading,
     error,
     filter,

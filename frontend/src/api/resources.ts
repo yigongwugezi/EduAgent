@@ -4,6 +4,9 @@ import type { Resource, ResourceFilter } from '../types/resource';
 export interface ResourceListResponse {
   resources: Resource[];
   total: number;
+  completedCount: number;
+  incompleteCount: number;
+  completionRate: number;
   page: number;
 }
 
@@ -103,5 +106,28 @@ export async function batchExportResources(
     sessionId,
     resourceIds: resourceIds || undefined,
   });
+  return data;
+}
+
+/** 更新单个资源的学习状态 */
+export async function updateStudyStatus(
+  resourceId: string,
+  studyStatus: string,
+  sessionId: string,
+): Promise<{ ok: boolean; studyStatus: string }> {
+  const { data } = await client.patch(`/resources/${resourceId}/study-status`, {
+    studyStatus,
+  }, { params: { sessionId } });
+  return data;
+}
+
+/** 自动推进学习路径节点 */
+export async function autoAdvanceNode(params: {
+  sessionId: string;
+  relatedStageId: string;
+  taskId?: string;
+  event: string;
+}): Promise<{ ok: boolean }> {
+  const { data } = await client.patch('/learning-path/auto-advance', params);
   return data;
 }

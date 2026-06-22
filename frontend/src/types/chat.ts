@@ -40,14 +40,7 @@ export interface ResourceCardData {
   knowledgePoints: string[];
 }
 
-export type ResourceType =
-  | 'lecture'     // 课程讲义
-  | 'mindmap'     // 思维导图
-  | 'quiz'        // 练习题
-  | 'reading'     // 拓展阅读
-  | 'case_study'  // 实操案例
-  | 'video'       // 教学视频/动画
-  | 'ppt';        // PPT大纲
+import type { ResourceType } from './resource';
 
 export interface GenerationProgress {
   stage: string;

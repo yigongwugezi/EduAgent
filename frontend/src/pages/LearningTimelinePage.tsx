@@ -1,16 +1,14 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Clock, Eye, CheckCircle2, FileText, Code, MessageSquare,
   Target, BookOpen, ArrowRight, ExternalLink, History,
 } from 'lucide-react';
-import { useChatStore } from '../store/chatStore';
-import { useSubjectStore } from '../store/subjectStore';
-import { getLearningTimeline } from '../api/feedback';
-import type { TimelineEvent } from '../api/feedback';
+import type { TimelineEvent } from '../types/analytics';
 import { timeAgo } from '../utils/format';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
+import { useLearningEvents } from '../hooks/useLearningEvents';
 
 /* ===================================================================
  * 事件图标映射
@@ -158,28 +156,7 @@ function TimelineItem({
  * =================================================================== */
 export default function LearningTimelinePage() {
   const navigate = useNavigate();
-  const sessionId = useChatStore((s) => s.currentSessionId);
-  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
-  const [events, setEvents] = useState<TimelineEvent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [total, setTotal] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!sessionId) return;
-    setLoading(true);
-    setError(null);
-    getLearningTimeline(sessionId, subjectId, 100)
-      .then((res) => {
-        setEvents(res.events || []);
-        setTotal(res.total || 0);
-      })
-      .catch(() => {
-        setError('加载学习时间线失败，请确认后端已启动');
-        setEvents([]);
-      })
-      .finally(() => setLoading(false));
-  }, [sessionId, subjectId]);
+  const { events, total, loading, error, refetch } = useLearningEvents(100);
 
   // 按天分组
   const grouped = groupByDate(events);

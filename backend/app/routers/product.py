@@ -1463,6 +1463,7 @@ def get_resources(
             "createdAt": item.get("createdAt", int(time.time() * 1000)),
             "bookmarked": item.get("bookmarked", False),
             "studyStatus": item.get("studyStatus", item.get("study_status", "new")),
+            "completedAt": item.get("completedAt", item.get("completed_at")),
             "source": _source_label(item.get("source", "")),
             "relatedStageId": item.get("relatedStageId", item.get("related_stage_id", "")),
             "taskId": item.get("taskId", item.get("task_id", "")),
@@ -1564,7 +1565,19 @@ def get_resources(
 
     merged.sort(key=_sort_key)
 
-    return {"resources": merged, "total": len(merged), "page": 1, "sessionId": session_id}
+    # ── 完成统计 ──
+    completed_count = sum(1 for r in merged if r.get("studyStatus") == "completed")
+    total_count = len(merged)
+
+    return {
+        "resources": merged,
+        "total": total_count,
+        "completedCount": completed_count,
+        "incompleteCount": total_count - completed_count,
+        "completionRate": round(completed_count / total_count * 100) if total_count > 0 else 0,
+        "page": 1,
+        "sessionId": session_id,
+    }
 
 
 @router.get("/resources/{resource_id}")
@@ -1966,6 +1979,28 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         all_nodes = [n for s in stages for n in s.get("nodes", [])]
         mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
         overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
+
+        # Resource completion stats per stage
+        stage_resource_stats: dict[str, dict[str, int]] = {}
+        stage_ids = [s.get("id", "") for s in stages]
+        try:
+            db_res = ag_get_resources(session_id)
+            for r in db_res:
+                sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
+                if not sid:
+                    continue
+                # Match stage IDs (stage_1, stage_2, etc.)
+                matched = next((s for s in stage_ids if sid in s or s in sid), None)
+                if not matched:
+                    continue
+                if matched not in stage_resource_stats:
+                    stage_resource_stats[matched] = {"total": 0, "completed": 0}
+                stage_resource_stats[matched]["total"] += 1
+                if r.get("study_status") == "completed":
+                    stage_resource_stats[matched]["completed"] += 1
+        except Exception:
+            pass
+
         return {
             "id": base.get("id", f"path_{session_id}"),
             "title": base.get("title", "个性化学习路径"),
@@ -1973,6 +2008,7 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             "courseName": base.get("courseName", ""),
             "courseId": base.get("courseId", ""),
             "stages": stages,
+            "stageResourceStats": stage_resource_stats,
             "createdAt": base.get("createdAt", int(time.time() * 1000)),
             "overallProgress": overall,
             "estimatedDays": base.get("estimatedDays", 14),

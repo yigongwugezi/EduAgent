@@ -5,7 +5,7 @@ import {
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
   HelpCircle, Check, XCircle, RefreshCw, AlertCircle, RotateCcw,
-  SlidersHorizontal, BookmarkX, Layers,
+  SlidersHorizontal, BookmarkX, Layers, TrendingUp,
   Download, ListChecks, Square, CheckSquare,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
@@ -13,7 +13,7 @@ import { useChatStore } from '../store/chatStore';
 import { useProfileStore } from '../store/profileStore';
 import { useSubjectStore } from '../store/subjectStore';
 import type { Resource, ResourceFilter, SortBy } from '../types/resource';
-import type { ResourceType } from '../types/chat';
+import type { ResourceType, DataSource } from '../types/resource';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import { timeAgo, formatDuration } from '../utils/format';
 import { HighlightText, matchesQuery } from '../utils/highlight';
@@ -22,10 +22,10 @@ import EmptyState from '../components/common/EmptyState';
 import Modal from '../components/common/Modal';
 import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
-import client from '../api/client';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
 import * as resourcesApi from '../api/resources';
-import SourceBadge, { type DataSource } from '../components/common/SourceBadge';
+import { updateStudyStatus, autoAdvanceNode } from '../api/resources';
+import SourceBadge from '../components/common/SourceBadge';
 import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
 
 /* ===================================================================
@@ -85,376 +85,9 @@ const SORT_OPTIONS: { value: SortBy; label: string; icon: string }[] = [
   { value: 'stage',    label: '阶段优先',   icon: '📍' },
 ];
 
-/* ===================================================================
- * 资源卡片
- * =================================================================== */
-function ResourceCard({ resource, onClick, searchQuery, selected, onToggleSelect, selectionMode }: {
-  resource: Resource;
-  onClick: () => void;
-  searchQuery?: string;
-  selected?: boolean;
-  onToggleSelect?: () => void;
-  selectionMode?: boolean;
-}) {
-  const colorMap: Record<string, string> = {
-    lecture:    'from-blue-400 to-blue-500',
-    mindmap:    'from-purple-400 to-purple-500',
-    quiz:       'from-amber-400 to-orange-500',
-    case_study: 'from-cyan-400 to-teal-500',
-    reading:    'from-emerald-400 to-green-500',
-    video:      'from-red-400 to-rose-500',
-    ppt:        'from-orange-400 to-amber-500',
-  };
-  const bgMap: Record<string, string> = {
-    lecture:    'bg-blue-50',
-    mindmap:    'bg-purple-50',
-    quiz:       'bg-amber-50',
-    case_study: 'bg-cyan-50',
-    reading:    'bg-emerald-50',
-    video:      'bg-red-50',
-    ppt:        'bg-orange-50',
-  };
+import ResourceCard from '../components/resources/ResourceCard';
 
-  return (
-    <button
-      onClick={onClick}
-      className={`group bg-white border rounded-2xl text-left transition-all duration-300 w-full relative overflow-hidden ${
-        selected
-          ? 'border-brand-400 ring-2 ring-brand-200 shadow-md'
-          : 'border-gray-100 hover:shadow-xl hover:-translate-y-1.5'
-      }`}
-    >
-      {/* 顶部渐变条 */}
-      <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${colorMap[resource.type] || 'from-gray-400 to-gray-500'}`} />
-
-      {/* 装饰光晕 */}
-      <div className={`absolute -bottom-8 -right-8 w-20 h-20 ${bgMap[resource.type] || 'bg-gray-50'} rounded-full opacity-60 group-hover:scale-150 transition-transform duration-500`} />
-
-      <div className="relative p-5 pt-4">
-        <div className="flex items-start gap-3 mb-3">
-          <div className={`w-11 h-11 rounded-xl ${bgMap[resource.type] || 'bg-gray-50'} flex items-center justify-center flex-shrink-0 shadow-sm group-hover:scale-110 group-hover:shadow-md transition-all duration-300`}>
-            {iconMap[resource.type]}
-          </div>
-          <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-gray-900 truncate group-hover:text-gray-700 transition-colors">
-              <HighlightText text={resource.title} query={searchQuery} />
-            </h3>
-            <p className="text-xs text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">
-              <HighlightText text={resource.description} query={searchQuery} />
-            </p>
-            <div className="mt-1.5">
-              <SourceTag source={resource.source} />
-            </div>
-          </div>
-          {/* 学习状态标记 */}
-          {resource.studyStatus === 'completed' && (
-            <div className="w-6 h-6 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-              <CheckCircle2 className="w-3.5 h-3.5 text-green-600" />
-            </div>
-          )}
-        </div>
-
-        {/* 标签 */}
-        <div className="flex flex-wrap items-center gap-1.5 mb-3">
-          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${difficultyBadge[resource.difficulty]}`}>
-            {difficultyLabel[resource.difficulty]}
-          </span>
-          <span className="px-2 py-0.5 rounded-md text-[10px] text-gray-500 bg-gray-50 border border-gray-100">
-            {RESOURCE_TYPE_LABELS[resource.type]}
-          </span>
-          {/* 质检状态 */}
-          {resource.qualityStatus && resource.qualityStatus !== 'passed' && (
-            <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
-              resource.qualityStatus === 'fallback_passed'
-                ? 'bg-amber-50 text-amber-600 border-amber-200'
-                : 'bg-red-50 text-red-600 border-red-200'
-            }`}>
-              {resource.qualityStatus === 'fallback_passed' ? '兜底' : '需复核'}
-            </span>
-          )}
-          {resource.tags.slice(0, 2).map((tag) => (
-            <span key={tag} className={`px-2 py-0.5 rounded-md text-[10px] ${searchQuery && matchesQuery(tag, searchQuery) ? 'bg-amber-100 text-amber-700 font-medium' : 'text-gray-400 bg-gray-50'}`}>
-              <HighlightText text={tag} query={searchQuery} />
-            </span>
-          ))}
-          {/* 知识点标签 — 搜索匹配时高亮 */}
-          {resource.knowledgePoints.slice(0, 3).map((kp) => (
-            <span key={kp} className={`px-2 py-0.5 rounded-md text-[10px] ${
-              searchQuery && matchesQuery(kp, searchQuery)
-                ? 'bg-amber-100 text-amber-700 font-medium border border-amber-200'
-                : 'bg-brand-50 text-brand-600 border border-brand-100'
-            }`}>
-              <HighlightText text={kp} query={searchQuery} />
-            </span>
-          ))}
-        </div>
-
-        {/* 所属阶段 + 章节 */}
-        {(resource.relatedStageId || resource.relatedChapter) && (
-          <div className="flex flex-wrap items-center gap-2 mb-2 text-[10px] text-gray-400">
-            {resource.relatedChapter && (
-              <span className="inline-flex items-center gap-1">
-                📖 <HighlightText text={resource.relatedChapter} query={searchQuery} />
-              </span>
-            )}
-            {resource.relatedStageId && (
-              <span className="inline-flex items-center gap-1">
-                📍 阶段 {resource.relatedStageId.replace(/[^0-9]/g, '')}
-              </span>
-            )}
-          </div>
-        )}
-
-        {/* 底部信息 */}
-        <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
-          <span className="flex items-center gap-1">
-            <Clock className="w-3 h-3" />
-            {formatDuration(resource.estimatedMinutes)}
-          </span>
-          <div className="flex items-center gap-2">
-            {resource.bookmarked && (
-              <span className="flex items-center gap-0.5 text-brand-500">
-                <BookmarkCheck className="w-3 h-3" />
-              </span>
-            )}
-            <SourceBadge source={resource.source || 'system_inferred'} size="xs" />
-            <span className="flex items-center gap-0.5 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">
-              查看详情 <ChevronRight className="w-3 h-3" />
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* 选择模式复选框 */}
-      {selectionMode && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onToggleSelect?.(); }}
-          className={`absolute top-3 left-3 w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all z-10 ${
-            selected
-              ? 'bg-brand-500 border-brand-500 text-white'
-              : 'bg-white/90 border-gray-300 hover:border-brand-400'
-          }`}
-        >
-          {selected ? (
-            <CheckSquare className="w-4 h-4" />
-          ) : (
-            <Square className="w-3.5 h-3.5" />
-          )}
-        </button>
-      )}
-    </button>
-  );
-}
-
-/* ===================================================================
- * 筛选栏 — 完整多条件筛选
- * =================================================================== */
-function FilterBar({
-  active, onFilter, onSelectDifficulty, activeDifficulty, dataSource, onSelectSource,
-  activeQuality, onSelectQuality, activeStudyStatus, onSelectStudyStatus,
-  activeBookmarked, onSelectBookmarked, availableChapters, activeChapter, onSelectChapter,
-  showFilters, onToggleFilters, hasActiveFilters, onClearAll,
-}: {
-  active: ResourceType | undefined;
-  onFilter: (type: ResourceType | undefined) => void;
-  onSelectDifficulty: (level: string | undefined) => void;
-  activeDifficulty: string | undefined;
-  dataSource?: DataSource | undefined;
-  onSelectSource: (s: DataSource | undefined) => void;
-  activeQuality?: string | undefined;
-  onSelectQuality: (q: string | undefined) => void;
-  activeStudyStatus?: string | undefined;
-  onSelectStudyStatus: (s: string | undefined) => void;
-  activeBookmarked?: string | undefined;
-  onSelectBookmarked: (b: string | undefined) => void;
-  availableChapters: string[];
-  activeChapter?: string | undefined;
-  onSelectChapter: (c: string | undefined) => void;
-  showFilters: boolean;
-  onToggleFilters: () => void;
-  hasActiveFilters: boolean;
-  onClearAll: () => void;
-}) {
-  return (
-    <div className="space-y-2">
-      {/* 第一行：资源类型 */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1">
-        <Filter className="w-4 h-4 text-gray-400 flex-shrink-0" />
-        {FILTER_TYPES.map((t) => (
-          <button
-            key={t || 'all'}
-            onClick={() => onFilter(t)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all ${
-              active === t
-                ? 'bg-gray-900 text-white shadow-sm'
-                : 'bg-white border border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
-            }`}
-          >
-            {t ? RESOURCE_TYPE_LABELS[t] : '全部'}
-          </button>
-        ))}
-
-        {/* 展开/收起高级筛选 */}
-        <button
-          onClick={onToggleFilters}
-          className={`ml-auto px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 ${
-            showFilters || hasActiveFilters
-              ? 'bg-brand-50 text-brand-600 border border-brand-200'
-              : 'bg-white border border-gray-200 text-gray-400 hover:border-gray-300'
-          }`}
-        >
-          <SlidersHorizontal className="w-3.5 h-3.5" />
-          {showFilters ? '收起筛选' : '更多筛选'}
-          {hasActiveFilters && (
-            <span className="w-2 h-2 rounded-full bg-brand-500" />
-          )}
-        </button>
-      </div>
-
-      {/* 第二行：基础筛选（始终显示） */}
-      <div className="flex items-center gap-4 flex-wrap">
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
-          {[undefined, 'easy', 'medium', 'hard'].map((level) => (
-            <button
-              key={level || 'all-diff'}
-              onClick={() => onSelectDifficulty(level)}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                activeDifficulty === level
-                  ? 'bg-gray-800 text-white'
-                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              {level ? difficultyLabel[level] : '不限'}
-            </button>
-          ))}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10px] text-gray-400 flex-shrink-0">来源：</span>
-          {([undefined, 'agent_generated', 'system_inferred', 'fallback', 'user_input'] as (DataSource | undefined)[]).map((s) => (
-            <button
-              key={s || 'all-src'}
-              onClick={() => onSelectSource(s)}
-              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                dataSource === s
-                  ? 'bg-gray-800 text-white'
-                  : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
-              }`}
-            >
-              {s ? (s === 'agent_generated' ? '智能体生成' : s === 'system_inferred' ? '系统推断' : s === 'fallback' ? '兜底' : '用户输入') : '不限'}
-            </button>
-          ))}
-        </div>
-
-        {/* 清空筛选按钮 */}
-        {hasActiveFilters && (
-          <button
-            onClick={onClearAll}
-            className="px-2.5 py-1 rounded-lg text-[10px] font-medium text-red-500 bg-red-50 border border-red-100 hover:bg-red-100 transition-all flex items-center gap-1"
-          >
-            <RotateCcw className="w-3 h-3" />
-            清空筛选
-          </button>
-        )}
-      </div>
-
-      {/* 第三行：高级筛选（可折叠） */}
-      {showFilters && (
-        <div className="p-4 bg-gray-50/80 border border-gray-100 rounded-xl space-y-3 animate-fade-in-up">
-          {/* 章节 */}
-          {availableChapters.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[10px] text-gray-400 flex-shrink-0 flex items-center gap-1">
-                <Layers className="w-3 h-3" /> 章节：
-              </span>
-              <button
-                onClick={() => onSelectChapter(undefined)}
-                className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                  !activeChapter
-                    ? 'bg-gray-800 text-white'
-                    : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-                }`}
-              >
-                不限
-              </button>
-              {availableChapters.map((ch) => (
-                <button
-                  key={ch}
-                  onClick={() => onSelectChapter(ch)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                    activeChapter === ch
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {ch}
-                </button>
-              ))}
-            </div>
-          )}
-
-          <div className="flex items-center gap-6 flex-wrap">
-            {/* 质检状态 */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-gray-400 flex-shrink-0">质检：</span>
-              {QUALITY_STATUS_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value || 'all-qs'}
-                  onClick={() => onSelectQuality(opt.value)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                    activeQuality === opt.value
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {/* 学习状态 */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-gray-400 flex-shrink-0">状态：</span>
-              {STUDY_STATUS_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value || 'all-ss'}
-                  onClick={() => onSelectStudyStatus(opt.value)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                    activeStudyStatus === opt.value
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-
-            {/* 收藏状态 */}
-            <div className="flex items-center gap-1.5">
-              <span className="text-[10px] text-gray-400 flex-shrink-0">收藏：</span>
-              {BOOKMARKED_OPTIONS.map((opt) => (
-                <button
-                  key={opt.value || 'all-bm'}
-                  onClick={() => onSelectBookmarked(opt.value)}
-                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
-                    activeBookmarked === opt.value
-                      ? 'bg-gray-800 text-white'
-                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  {opt.value === 'true' ? <BookmarkCheck className="w-3 h-3 inline mr-0.5" /> :
-                   opt.value === 'false' ? <BookmarkX className="w-3 h-3 inline mr-0.5" /> : null}
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
+import ResourceFilters from '../components/resources/ResourceFilters';
 
 /* ===================================================================
  * 反馈表单
@@ -758,7 +391,7 @@ export default function ResourceLibrary() {
       ) as ResourceFilter
     : undefined;
 
-  const { resources, total, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources(initialFilter);
+  const { resources, total, completedCount, incompleteCount, completionRate, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources(initialFilter);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
@@ -917,9 +550,9 @@ export default function ResourceLibrary() {
         setBatchExportText(result.export);
       }
       refetch();
-    } catch {
-      setErrorMsg('批量操作失败，请检查后端服务');
-      setTimeout(() => setErrorMsg(null), 3000);
+    } catch (e) {
+      setErrorMsg('批量操作失败：' + (e instanceof Error ? e.message : '请检查后端服务'));
+      setTimeout(() => setErrorMsg(null), 5000);
     } finally {
       setBatchProcessing(false);
       setBatchConfirm(prev => ({ ...prev, open: false }));
@@ -993,10 +626,10 @@ export default function ResourceLibrary() {
 
     // 先持久化 study_status 到后端
     try {
-      await client.patch(`/resources/${resource.id}/study-status`, { studyStatus: newStatus }, { params: { sessionId: useChatStore.getState().currentSessionId } });
-    } catch {
-      setErrorMsg('状态保存失败，请检查后端服务');
-      setTimeout(() => setErrorMsg(null), 3000);
+      await updateStudyStatus(resource.id, newStatus, useChatStore.getState().currentSessionId);
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : '状态保存失败');
+      setTimeout(() => setErrorMsg(null), 5000);
     }
 
     if (newStatus === 'completed') {
@@ -1009,15 +642,15 @@ export default function ResourceLibrary() {
       // 自动推进学习路径节点状态
       if (resource.relatedStageId) {
         try {
-          await client.patch(`/learning-path/auto-advance`, {
+          await autoAdvanceNode({
             sessionId: useChatStore.getState().currentSessionId,
-            relatedStageId: resource.relatedStageId,
+            relatedStageId: resource.relatedStageId || '',
             taskId: resource.taskId,
             event: 'resource_complete',
           });
-        } catch {
-          setErrorMsg('学习路径推进失败');
-          setTimeout(() => setErrorMsg(null), 3000);
+        } catch (e) {
+          setErrorMsg('学习路径推进失败：' + (e instanceof Error ? e.message : ''));
+          setTimeout(() => setErrorMsg(null), 5000);
         }
       }
       // 实操案例额外上报
@@ -1050,15 +683,15 @@ export default function ResourceLibrary() {
     // 自动推进学习路径节点状态
     if (resource.relatedStageId) {
       try {
-        await client.patch(`/learning-path/auto-advance`, {
+        await autoAdvanceNode({
           sessionId: useChatStore.getState().currentSessionId,
-          relatedStageId: resource.relatedStageId,
+          relatedStageId: resource.relatedStageId || '',
           taskId: resource.taskId,
           event: 'resource_view',
         });
-      } catch {
-        setErrorMsg('学习路径推进失败');
-        setTimeout(() => setErrorMsg(null), 3000);
+      } catch (e) {
+        setErrorMsg('学习路径推进失败：' + (e instanceof Error ? e.message : ''));
+        setTimeout(() => setErrorMsg(null), 5000);
       }
     }
   }, [subjectId]);
@@ -1102,6 +735,38 @@ export default function ResourceLibrary() {
             </button>
           )}
         </div>
+
+        {/* 完成统计条形图 */}
+        {total > 0 && (
+          <div className="flex items-center gap-4 mt-3 p-3 bg-gray-50/80 border border-gray-100 rounded-xl">
+            <div className="flex items-center gap-2 text-xs">
+              <CheckCircle2 className="w-4 h-4 text-green-500" />
+              <span className="text-green-700 font-semibold">{completedCount}</span>
+              <span className="text-gray-400">已完成</span>
+            </div>
+            <div className="flex items-center gap-2 text-xs">
+              <div className="w-4 h-4 rounded-full border-2 border-gray-300" />
+              <span className="text-gray-500 font-semibold">{incompleteCount}</span>
+              <span className="text-gray-400">未完成</span>
+            </div>
+            <div className="flex-1 max-w-xs">
+              <div className="h-2 bg-gray-200 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{
+                    width: `${completionRate}%`,
+                    background: completionRate >= 80
+                      ? 'linear-gradient(90deg, #22c55e, #16a34a)'
+                      : completionRate >= 40
+                        ? 'linear-gradient(90deg, #f59e0b, #d97706)'
+                        : 'linear-gradient(90deg, #6366f1, #4f46e5)',
+                  }}
+                />
+              </div>
+            </div>
+            <span className="text-xs font-semibold text-gray-600">{completionRate}%</span>
+          </div>
+        )}
         {/* 当前活动筛选标签 */}
         {hasActiveFilters && (
           <div className="flex flex-wrap items-center gap-1.5 mt-2">
@@ -1224,7 +889,7 @@ export default function ResourceLibrary() {
           </button>
         </div>
 
-        <FilterBar
+        <ResourceFilters
           active={activeType}
           onFilter={(type) => updateFilters({ type: type || undefined })}
           onSelectDifficulty={(d) => updateFilters({ difficulty: d || undefined })}
@@ -1380,6 +1045,7 @@ export default function ResourceLibrary() {
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
                   ✅ 已完成
+                  {selected.completedAt && ` ${timeAgo(selected.completedAt)}完成`}
                 </span>
               )}
             </div>
@@ -1524,6 +1190,15 @@ export default function ResourceLibrary() {
               >
                 <CheckCircle2 className="w-3.5 h-3.5" />
                 {selected.studyStatus === 'completed' ? '撤销完成' : '标记完成'}
+              </button>
+
+              {/* 查看学习分析 */}
+              <button
+                onClick={() => { setSelected(null); navigate('/analytics'); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-500 border border-gray-200 hover:border-brand-300 hover:text-brand-600 bg-white transition-all"
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                查看学习分析
               </button>
 
               {/* 反馈 */}

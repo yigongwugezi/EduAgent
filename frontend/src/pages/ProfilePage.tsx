@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from './LoginPage';
+import ProfileDimensionCard from '../components/profile/ProfileDimensionCard';
 import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
@@ -126,70 +127,6 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
           {sourceInfo.label}
         </span>
       )}
-    </div>
-  );
-}
-
-/* ===================================================================
- * 维度卡片 — 分数 / 解释 / 证据 / 来源
- * =================================================================== */
-function DimensionCard({ dim, index }: { dim: ProfileDimension; index: number }) {
-  const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
-  const sourceInfo = SOURCE_LABELS[dim.source];
-
-  return (
-    <div className="bg-white border border-gray-100 rounded-xl p-4 hover:shadow-md transition-all duration-200">
-      {/* 头部：标签 + 来源 */}
-      <div className="flex items-start justify-between mb-3 gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
-          <h4 className="text-sm font-semibold text-gray-800 truncate">{dim.label}</h4>
-        </div>
-        {sourceInfo && (
-          <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border whitespace-nowrap ${sourceInfo.color}`}>
-            {sourceInfo.label}
-          </span>
-        )}
-      </div>
-
-      {/* 分数 */}
-      <div className="flex items-center gap-3 mb-3">
-        <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden">
-          <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.score}%`, backgroundColor: color }} />
-        </div>
-        <span className="text-lg font-bold tabular-nums" style={{ color }}>{dim.score}</span>
-      </div>
-
-      {/* 数值 */}
-      {dim.value && (
-        <p className="text-xs text-gray-700 leading-relaxed mb-2">{dim.value}</p>
-      )}
-
-      {/* 解释 */}
-      {(dim.explanation || dim.description) && (
-        <p className="text-[11px] text-gray-500 leading-relaxed mb-2">
-          {dim.explanation || dim.description}
-        </p>
-      )}
-
-      {/* 证据 */}
-      {dim.evidence && (
-        <div className="mb-2 p-3 bg-gray-50 border border-gray-100 rounded-lg">
-          <div className="flex items-center gap-1 mb-1.5">
-            <Info className="w-3 h-3 text-gray-400" />
-            <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">支撑证据</span>
-          </div>
-          <p className="text-[11px] text-gray-500 leading-relaxed">{dim.evidence}</p>
-        </div>
-      )}
-
-      {/* 置信度 */}
-      <div className="flex items-center gap-1.5 text-[10px] text-gray-400">
-        <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
-          <div className="h-full rounded-full" style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }} />
-        </div>
-        <span className="tabular-nums">置信度 {(dim.confidence * 100).toFixed(0)}%</span>
-      </div>
     </div>
   );
 }
@@ -410,7 +347,7 @@ export default function ProfilePage() {
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
           {profile.dimensions.map((dim, i) => (
-            <DimensionCard key={dim.key} dim={dim} index={i} />
+            <ProfileDimensionCard key={dim.key} dim={dim} index={i} />
           ))}
         </div>
       </div>

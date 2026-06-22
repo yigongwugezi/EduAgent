@@ -74,14 +74,14 @@ export interface KnowledgeGap {
   reason?: string;
 }
 
+import type { ResourceFormat } from './resource';
+
 export interface LearningPreferences {
   preferredFormats: ResourceFormat[];
   paceMinutes: number;
-  difficulty: DifficultyLevel | 'unknown';
+  difficulty: 'beginner' | 'intermediate' | 'advanced' | 'unknown';
   explainStyle: 'diagram' | 'code' | 'case' | 'theory' | 'unknown';
 }
-
-export type ResourceFormat = 'text' | 'diagram' | 'video' | 'code' | 'quiz';
 
 export type DifficultyLevel = 'beginner' | 'intermediate' | 'advanced';
 

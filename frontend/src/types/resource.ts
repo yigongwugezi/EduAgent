@@ -2,19 +2,40 @@
 // Resource types
 // ================================================================
 
-import type { ResourceType } from './chat';
+/** 资源类型 — 7 种资源 */
+export type ResourceType =
+  | 'lecture'     // 课程讲义
+  | 'mindmap'     // 思维导图
+  | 'quiz'        // 练习题
+  | 'reading'     // 拓展阅读
+  | 'case_study'  // 实操案例
+  | 'video'       // 教学视频/动画
+  | 'ppt';        // PPT大纲
 
+/** 数据来源类型 */
+export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
+
+/** 内容格式 */
 export type ResourceFormat = 'text' | 'diagram' | 'video' | 'code' | 'quiz';
+
+/** 难度 */
+export type DifficultyLevel = 'easy' | 'medium' | 'hard';
+
+/** 学习状态 */
+export type StudyStatus = 'new' | 'in_progress' | 'completed';
+
+/** 质检状态 */
+export type QualityStatus = 'passed' | 'needs_review' | 'fallback_passed';
 
 export interface Resource {
   id: string;
   type: ResourceType;
   title: string;
   description: string;
-  content: string;          // Markdown body
+  content: string;
   knowledgePoints: string[];
   tags: string[];
-  difficulty: 'easy' | 'medium' | 'hard';
+  difficulty: DifficultyLevel;
   estimatedMinutes: number;
   format: ResourceFormat;
   /** Mermaid 图谱定义 (mindmap 类型) */
@@ -27,23 +48,23 @@ export interface Resource {
   pptOutline?: PptSlide[];
   createdAt: number;
   /** 数据来源 */
-  source?: 'user_input' | 'agent_generated' | 'system_inferred';
+  source?: DataSource;
   /** 是否已收藏 */
   bookmarked?: boolean;
   /** 学习状态 */
-  studyStatus?: 'new' | 'in_progress' | 'completed';
-
-  // ========== ResourceAgent P0 新增字段 ==========
+  studyStatus?: StudyStatus;
+  /** 完成时间 (epoch ms) */
+  completedAt?: number | null;
   /** 关联的学习阶段 ID */
   relatedStageId?: string;
-  /** 关联的子阶段/任务 ID (如 stage_1_node_2) */
+  /** 关联的子阶段/任务 ID */
   taskId?: string;
   /** 关联的章节名称 */
   relatedChapter?: string;
   /** 关联的知识点列表 */
   relatedKnowledgePoints?: string[];
-  /** 质检状态: passed / needs_review / fallback_passed */
-  qualityStatus?: string;
+  /** 质检状态 */
+  qualityStatus?: QualityStatus;
 }
 
 export interface CodeBlock {
@@ -60,7 +81,7 @@ export interface QuizQuestion {
   answer: string;
   explanation: string;
   knowledgePoint: string;
-  difficulty: 'easy' | 'medium' | 'hard';
+  difficulty: DifficultyLevel;
 }
 
 export interface PptSlide {
@@ -80,8 +101,8 @@ export type SortBy =
 
 export interface ResourceFilter {
   type?: ResourceType;
-  difficulty?: string;
-  source?: string;
+  difficulty?: DifficultyLevel | string;
+  source?: DataSource | string;
   knowledgePoint?: string;
   format?: ResourceFormat;
   search?: string;
@@ -91,10 +112,10 @@ export interface ResourceFilter {
   resourceIds?: string;
   /** 章节筛选 */
   chapter?: string;
-  /** 质检状态: passed | needs_review | fallback_passed */
-  qualityStatus?: string;
-  /** 学习状态: new | in_progress | completed */
-  studyStatus?: string;
+  /** 质检状态 */
+  qualityStatus?: QualityStatus | string;
+  /** 学习状态 */
+  studyStatus?: StudyStatus | string;
   /** 收藏筛选: "true" | "false" */
   bookmarked?: string;
 }

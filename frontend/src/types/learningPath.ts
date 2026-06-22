@@ -14,6 +14,8 @@ export interface LearningPath {
   /** 预计完成天数 */
   estimatedDays: number;
   source?: 'agent_generated' | 'system_inferred' | 'none';
+  /** 每阶段资源完成统计 { stageId: { total, completed } } */
+  stageResourceStats?: Record<string, { total: number; completed: number }>;
 }
 
 /** 阶段状态 — 由节点状态计算得出 */

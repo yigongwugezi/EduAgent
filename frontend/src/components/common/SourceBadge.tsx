@@ -1,7 +1,6 @@
 import { Clock, Cpu, Sparkles, User } from 'lucide-react';
 import type { ReactNode } from 'react';
-
-export type DataSource = 'user_input' | 'agent_generated' | 'system_inferred' | 'fallback';
+import type { DataSource } from '../../types/resource';
 
 const SOURCE_CONFIG: Record<DataSource, {
   label: string;

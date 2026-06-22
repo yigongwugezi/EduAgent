@@ -28,8 +28,8 @@ export function useProfile() {
         store.setError(subjectId, '画像数据为空');
         setError('画像数据为空');
       }
-    } catch {
-      const msg = '加载画像失败，请稍后重试';
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : '加载画像失败';
       store.setError(subjectId, msg);
       setError(msg);
     } finally {

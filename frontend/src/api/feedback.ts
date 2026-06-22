@@ -26,25 +26,7 @@ export async function logStudyEvent(params: StudyEventParams): Promise<void> {
 
 // ── Learning Timeline ─────────────────────────────────────────────
 
-export interface TimelineEvent {
-  id: number;
-  event: string;
-  label: string;
-  icon: string;
-  color: string;
-  resourceId: string;
-  resourceTitle: string;
-  resourceType: string;
-  relatedStageId: string;
-  relatedChapter: string;
-  metadata: Record<string, unknown>;
-  timestamp: number;
-}
-
-export interface TimelineResponse {
-  events: TimelineEvent[];
-  total: number;
-}
+import type { TimelineResponse } from '../types/analytics';
 
 export async function getLearningTimeline(
   sessionId: string,

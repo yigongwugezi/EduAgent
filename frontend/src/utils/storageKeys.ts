@@ -78,6 +78,11 @@ export const runtimeStorageKeys = {
     primary: `r436_runtime_active_subject_${learnerId}`,
     legacy: [`eduagent_active_subject_${learnerId}`],
   }),
+  /** 认证令牌 */
+  authToken: {
+    primary: 'edu_token',
+    legacy: [],
+  },
 } satisfies Record<string, StorageKeyPair | ((suffix: string) => StorageKeyPair)>;
 
 export { readItem as readStorageItem, writeItem as writeStorageItem, readJson as readStorageJson, writeJson as writeStorageJson };

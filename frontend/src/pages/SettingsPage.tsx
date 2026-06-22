@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../store/subjectStore';
 import { getCurrentLearner, logoutLearner } from './LoginPage';
-import { readStorageItem, readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
+import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
+import { safeClearCache, exportAllData, importAllData, getCacheSize, formatBytes } from '../utils/cache';
 import {
   Settings, User, BookOpen, MessageSquare, Activity, Database, Info,
   ChevronRight, Check, X, Edit3, Save, Trash2, Download, Upload,
@@ -191,28 +192,14 @@ export default function SettingsPage() {
   };
 
   const handleClearData = () => {
-    // 保留学习者信息，清除其他
-    const learners = readStorageItem(runtimeStorageKeys.learners);
-    const activeLearner = readStorageItem(runtimeStorageKeys.activeLearner);
-    const prefs = readStorageItem(runtimeStorageKeys.learningPrefs);
-    localStorage.clear();
-    if (learners) localStorage.setItem(runtimeStorageKeys.learners.primary, learners);
-    if (activeLearner) localStorage.setItem(runtimeStorageKeys.activeLearner.primary, activeLearner);
-    if (prefs) localStorage.setItem(runtimeStorageKeys.learningPrefs.primary, prefs);
+    safeClearCache();
     setShowClearConfirm(false);
     setClearDone(true);
     setTimeout(() => setClearDone(false), 3000);
   };
 
   const handleExportData = () => {
-    const data: Record<string, any> = {};
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
-      if (key) {
-        try { data[key] = JSON.parse(localStorage.getItem(key) || ''); }
-        catch { data[key] = localStorage.getItem(key); }
-      }
-    }
+    const data = exportAllData();
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -235,9 +222,7 @@ export default function SettingsPage() {
       reader.onload = () => {
         try {
           const data = JSON.parse(reader.result as string);
-          Object.entries(data).forEach(([key, value]) => {
-            localStorage.setItem(key, JSON.stringify(value));
-          });
+          importAllData(data);
           window.location.reload();
         } catch { alert('数据格式错误，导入失败'); }
       };
@@ -525,14 +510,7 @@ export default function SettingsPage() {
               <SettingSection title="存储统计">
                 <SettingRow label="本地存储用量" description="localStorage 占用的数据量">
                   <span className="text-xs text-gray-500">
-                    {(() => {
-                      let size = 0;
-                      for (let i = 0; i < localStorage.length; i++) {
-                        const key = localStorage.key(i);
-                        if (key) size += localStorage.getItem(key)?.length || 0;
-                      }
-                      return size < 1024 ? `${size} B` : `${(size / 1024).toFixed(1)} KB`;
-                    })()}
+                    {formatBytes(getCacheSize())}
                   </span>
                 </SettingRow>
 

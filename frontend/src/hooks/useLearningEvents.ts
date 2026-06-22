@@ -1,0 +1,50 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { getLearningTimeline } from '../api/feedback';
+import type { TimelineEvent } from '../types/analytics';
+import { useChatStore } from '../store/chatStore';
+import { useSubjectStore } from '../store/subjectStore';
+
+/**
+ * 学习事件时间线 Hook
+ *
+ * 特性：
+ * - sessionId / subjectId 变化时自动刷新
+ * - 暴露 loading / error / refetch
+ * - 内置不重复请求保护
+ */
+export function useLearningEvents(limit = 100) {
+  const sessionId = useChatStore((s) => s.currentSessionId);
+  const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const [events, setEvents] = useState<TimelineEvent[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const lastKeyRef = useRef<string | undefined>(undefined);
+
+  const fetchEvents = useCallback(async () => {
+    if (!sessionId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await getLearningTimeline(sessionId, subjectId, limit);
+      setEvents(res.events || []);
+      setTotal(res.total || 0);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '加载学习时间线失败');
+      setEvents([]);
+      setTotal(0);
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId, subjectId, limit]);
+
+  useEffect(() => {
+    const key = sessionId ? `${sessionId}:${subjectId}:${limit}` : undefined;
+    if (key && lastKeyRef.current !== key) {
+      lastKeyRef.current = key;
+      fetchEvents();
+    }
+  }, [sessionId, subjectId, limit, fetchEvents]);
+
+  return { events, total, loading, error, refetch: fetchEvents };
+}

@@ -308,6 +308,7 @@ def save_resource(
         ppt_outline=resource_data.get("ppt_outline") or resource_data.get("pptOutline"),
         bookmarked=resource_data.get("bookmarked", False),
         study_status=resource_data.get("study_status") or resource_data.get("studyStatus", "new"),
+        completed_at=_utcnow() if (resource_data.get("study_status") or resource_data.get("studyStatus", "")) == "completed" else resource_data.get("completed_at"),
         source=resource_data.get("source", "agent_generated"),
         related_stage_id=resource_data.get("related_stage_id", ""),
         task_id=resource_data.get("task_id", ""),
@@ -330,6 +331,7 @@ def save_resource(
         existing.ppt_outline = res.ppt_outline
         existing.bookmarked = res.bookmarked
         existing.study_status = res.study_status
+        existing.completed_at = res.completed_at
         existing.source = res.source
         existing.related_stage_id = res.related_stage_id
         existing.task_id = res.task_id
@@ -368,6 +370,10 @@ def update_resource_study_status(db: Session, resource_id: str, study_status: st
     resource = db.query(ResourceModel).filter(ResourceModel.id == resource_id).first()
     if resource:
         resource.study_status = study_status
+        if study_status == "completed":
+            resource.completed_at = _utcnow()
+        elif study_status == "new":
+            resource.completed_at = None
 
 
 def toggle_bookmark(db: Session, resource_id: str) -> bool | None:
@@ -587,7 +593,77 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     if not recommendations:
         recommendations.append("当前学习节奏稳定，可以继续推进下一阶段任务。")
 
+    # ── Chart data: completion trend (last 14 days) ──
+    from collections import defaultdict as _dd
+    daily_completions: dict[str, int] = _dd(int)
+    daily_quiz: list[dict[str, Any]] = []
+    resource_type_counts: dict[str, int] = _dd(int)
+
+    for evt in events:
+        meta = evt.metadata_ or {}
+        day_key = evt.created_at.strftime("%Y-%m-%d") if evt.created_at else ""
+
+        # Completion trend
+        if evt.event_type == "resource_complete" and day_key:
+            daily_completions[day_key] += 1
+
+        # Quiz trend — collect individual accuracy points
+        if evt.event_type in ("quiz_result", "quiz_submit", "practice_result"):
+            accuracy = meta.get("accuracy")
+            score = meta.get("score")
+            pct = None
+            if accuracy is not None:
+                try:
+                    pct = round(float(accuracy) * 100) if float(accuracy) <= 1 else round(float(accuracy))
+                except (TypeError, ValueError):
+                    pass
+            if pct is None and score is not None:
+                try:
+                    pct = round(float(score) * 100) if float(score) <= 1 else round(float(score))
+                except (TypeError, ValueError):
+                    pass
+            if pct is not None:
+                daily_quiz.append({
+                    "date": day_key,
+                    "accuracy": pct,
+                    "topic": meta.get("topic") or meta.get("knowledgePoint") or "",
+                    "timestamp": evt.created_at.isoformat() if evt.created_at else "",
+                })
+
+        # Resource type usage
+        rtype = meta.get("type", "")
+        if rtype and evt.resource_id and evt.event_type in _RESOURCE_EVENTS:
+            resource_type_counts[rtype] += 1
+
+    # Also read resource type from ResourceModel for a more complete picture
+    try:
+        resource_rows = (
+            db.query(ResourceModel.type, ResourceModel.id)
+            .filter(ResourceModel.session_id == session_id)
+            .all()
+        )
+        for rtype, rid in resource_rows:
+            if rid in resource_counts and rtype:
+                resource_type_counts[rtype] = max(
+                    resource_type_counts.get(rtype, 0),
+                    resource_counts.get(rid, 0),
+                )
+    except Exception:
+        pass
+
     top_resources = sorted(resource_counts.items(), key=lambda x: x[1], reverse=True)[:5]
+
+    # Build completion trend array (last 14 days)
+    import datetime as _dt
+    today = _dt.date.today()
+    completion_trend = []
+    for i in range(13, -1, -1):
+        d = today - _dt.timedelta(days=i)
+        ds = d.strftime("%Y-%m-%d")
+        completion_trend.append({
+            "date": ds,
+            "count": daily_completions.get(ds, 0),
+        })
 
     return {
         "eventCount": len(events),
@@ -600,6 +676,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "quizAccuracy": quiz_accuracy,
         "weakTopics": weak_topics,
         "recommendations": recommendations,
+        "completionTrend": completion_trend,
+        "quizTrend": daily_quiz[-20:],  # last 20 quiz results
+        "resourceTypeBreakdown": dict(sorted(resource_type_counts.items(), key=lambda x: x[1], reverse=True)),
         "recentEvents": [
             {
                 "event": evt.event_type,

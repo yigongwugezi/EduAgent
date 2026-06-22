@@ -92,6 +92,7 @@ def init_db() -> None:
             "source": "VARCHAR(16) DEFAULT 'agent_generated'",
             "related_stage_id": "VARCHAR(64)",
             "task_id": "VARCHAR(64)",
+            "completed_at": "DATETIME",
             "updated_at": "DATETIME",
         },
     }

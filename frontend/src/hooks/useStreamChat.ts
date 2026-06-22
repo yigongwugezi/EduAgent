@@ -5,6 +5,9 @@ import { streamRequest } from '../api/client';
 import { sendMessage } from '../api/chat';
 import type { ChatMessage } from '../types/chat';
 import { uid } from '../utils/format';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('StreamChat');
 
 export function useStreamChat() {
   const {
@@ -96,7 +99,8 @@ export function useStreamChat() {
                     // 成功状态不清除 — 跳转按钮常驻，新对话开始时会自动重置
                   }
                 }
-              } catch {
+              } catch (parseErr) {
+                log.debug('SSE 非 JSON 行', line.slice(0, 80), parseErr);
                 appendToLastAssistant(line.slice(6));
               }
             }
@@ -105,12 +109,14 @@ export function useStreamChat() {
 
         bumpDataVersion();
       } catch (err) {
+        log.warn('流式请求失败，尝试非流式回退', err instanceof Error ? err.message : err);
         try {
           const fallback = await sendMessage({
             message: content.trim(),
             sessionId: useChatStore.getState().currentSessionId,
             subjectId: useSubjectStore.getState().activeSubject?.id,
           });
+          log.info('非流式回退成功');
           updateLastAssistant((m) => ({
             ...m,
             content: fallback.reply.content,
@@ -120,6 +126,7 @@ export function useStreamChat() {
           }));
           bumpDataVersion();
         } catch (fallbackErr) {
+          log.error('非流式回退也失败', fallbackErr instanceof Error ? fallbackErr.message : fallbackErr);
           updateLastAssistant((m) => ({
             ...m,
             streaming: false,

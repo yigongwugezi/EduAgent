@@ -3,6 +3,9 @@ import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from 
 import { getCurrentLearner } from '../pages/LoginPage';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('ChatStore');
 
 /** 基于 learnerId + subjectId 生成 storage key，实现科目隔离 */
 export const suffix = () => {
@@ -85,6 +88,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   dataVersion: 0,
 
   setCurrentSession: (id) => {
+    log.debug(`切换会话: ${id.slice(0, 20)}...`);
     persistSessionId(id);
     set({ currentSessionId: id, messages: [] });
   },
@@ -145,6 +149,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   clearMessages: () => set({ messages: [] }),
   newSession: () => {
     const state = get();
+    log.debug('创建新会话');
     // 有消息时保存当前会话摘要
     if (state.messages.length > 0) {
       const sessions = loadSessions();

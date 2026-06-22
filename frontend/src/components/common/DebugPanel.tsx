@@ -3,7 +3,11 @@ import { useChatStore } from '../../store/chatStore';
 import { useProfileStore } from '../../store/profileStore';
 import { useSubjectStore } from '../../store/subjectStore';
 import { getCurrentLearner } from '../../pages/LoginPage';
-import { Bug, ChevronDown, ChevronUp, X, Activity } from 'lucide-react';
+import { Bug, X } from 'lucide-react';
+import { createLogger } from '../../utils/logger';
+import { safeClearCache } from '../../utils/cache';
+
+const log = createLogger('DebugPanel');
 
 /* ===================================================================
  * 接口调试面板
@@ -14,18 +18,43 @@ import { Bug, ChevronDown, ChevronUp, X, Activity } from 'lucide-react';
  *   - 数据来源（db/agent/mock/none）
  * =================================================================== */
 
-// 拦截 fetch 记录 API 调用
-let apiCalls: { method: string; url: string; time: number }[] = [];
+// 拦截 fetch 记录 API 调用（仅在开发环境生效）
+const apiCalls: { method: string; url: string; time: number; ok: boolean }[] = [];
 const originalFetch = window.fetch;
-window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
-  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-  // 只记录后端 API 调用
-  if (url.includes('localhost:8001') || url.includes('/api/')) {
-    apiCalls.unshift({ method: init?.method || 'GET', url: url.split('localhost:8001')[1] || url, time: Date.now() });
-    if (apiCalls.length > 20) apiCalls.pop();
-  }
-  return originalFetch(input, init);
-};
+if (import.meta.env.DEV) {
+  window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    // 只记录后端 API 调用
+    if (url.includes('localhost:8001') || url.includes('/api/')) {
+      const start = Date.now();
+      try {
+        const response = await originalFetch(input, init);
+        apiCalls.unshift({
+          method: init?.method || 'GET',
+          url: url.split('localhost:8001')[1] || url,
+          time: start,
+          ok: response.ok,
+        });
+        if (!response.ok) {
+          log.warn(`API ${init?.method || 'GET'} ${url.split('localhost:8001')[1] || url} → ${response.status}`);
+        }
+        if (apiCalls.length > 20) apiCalls.pop();
+        return response;
+      } catch (err) {
+        apiCalls.unshift({
+          method: init?.method || 'GET',
+          url: url.split('localhost:8001')[1] || url,
+          time: start,
+          ok: false,
+        });
+        if (apiCalls.length > 20) apiCalls.pop();
+        log.error(`API 请求失败 ${init?.method || 'GET'} ${url.split('localhost:8001')[1] || url}`, err);
+        throw err;
+      }
+    }
+    return originalFetch(input, init);
+  };
+}
 
 export default function DebugPanel() {
   const [open, setOpen] = useState(false);
@@ -36,6 +65,9 @@ export default function DebugPanel() {
     const timer = setInterval(() => forceUpdate(n => n + 1), 1000);
     return () => clearInterval(timer);
   }, []);
+
+  // 生产环境不渲染任何内容（hooks 必须在条件前调用）
+  if (import.meta.env.PROD) return null;
 
   const calls = apiCalls.slice(0, 8);
   const learner = getCurrentLearner();
@@ -113,12 +145,12 @@ export default function DebugPanel() {
               <p className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">操作</p>
               <button
                 onClick={() => {
-                  localStorage.clear();
+                  safeClearCache();
                   window.location.reload();
                 }}
                 className="w-full text-left px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-[10px] text-red-400 hover:bg-red-500/20 transition-colors"
               >
-                🗑 清除所有本地数据并刷新
+                🗑 清除本地数据（保留登录信息）
               </button>
             </div>
           </div>

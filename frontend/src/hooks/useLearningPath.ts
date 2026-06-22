@@ -46,9 +46,9 @@ export function useLearningPath() {
         setPath(null);
         setError('学习路径数据为空');
       }
-    } catch {
+    } catch (e) {
       setPath(null);
-      setError('加载学习路径失败，请确认后端已启动');
+      setError(e instanceof Error ? e.message : '加载学习路径失败');
     } finally {
       setLoading(false);
     }
@@ -65,8 +65,8 @@ export function useLearningPath() {
       });
       setPath(res.path);
       return res.path;
-    } catch {
-      setError('路径生成失败');
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '路径生成失败');
       return null;
     } finally {
       setLoading(false);
