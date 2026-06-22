@@ -1,19 +1,22 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
-  HelpCircle, Check, XCircle, RefreshCw, AlertCircle,
+  HelpCircle, Check, XCircle, RefreshCw, AlertCircle, RotateCcw,
+  SlidersHorizontal, BookmarkX, Layers,
+  Download, ListChecks, Square, CheckSquare,
 } from 'lucide-react';
 import { useResources } from '../hooks/useResources';
 import { useChatStore } from '../store/chatStore';
 import { useProfileStore } from '../store/profileStore';
 import { useSubjectStore } from '../store/subjectStore';
-import type { Resource, ResourceFilter } from '../types/resource';
+import type { Resource, ResourceFilter, SortBy } from '../types/resource';
 import type { ResourceType } from '../types/chat';
 import { RESOURCE_TYPE_LABELS } from '../utils/constants';
 import { timeAgo, formatDuration } from '../utils/format';
+import { HighlightText, matchesQuery } from '../utils/highlight';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
 import Modal from '../components/common/Modal';
@@ -21,6 +24,7 @@ import Markdown from '../utils/markdown';
 import MermaidDiagram from '../utils/mermaid';
 import client from '../api/client';
 import { submitFeedback, logStudyEvent } from '../api/feedback';
+import * as resourcesApi from '../api/resources';
 import SourceBadge, { type DataSource } from '../components/common/SourceBadge';
 import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
 
@@ -48,13 +52,50 @@ const difficultyLabel: Record<string, string> = {
 };
 
 const FILTER_TYPES: (ResourceType | undefined)[] = [
-  undefined, 'lecture', 'mindmap', 'quiz', 'reading', 'case_study',
+  undefined, 'lecture', 'mindmap', 'quiz', 'reading', 'case_study', 'video', 'ppt',
+];
+
+const QUALITY_STATUS_OPTIONS = [
+  { value: undefined, label: '不限' },
+  { value: 'passed', label: '已通过' },
+  { value: 'needs_review', label: '需复核' },
+  { value: 'fallback_passed', label: '兜底通过' },
+] as const;
+
+const STUDY_STATUS_OPTIONS = [
+  { value: undefined, label: '不限' },
+  { value: 'new', label: '未开始' },
+  { value: 'in_progress', label: '学习中' },
+  { value: 'completed', label: '已完成' },
+] as const;
+
+const BOOKMARKED_OPTIONS = [
+  { value: undefined, label: '不限' },
+  { value: 'true', label: '已收藏' },
+  { value: 'false', label: '未收藏' },
+] as const;
+
+const SORT_OPTIONS: { value: SortBy; label: string; icon: string }[] = [
+  { value: 'default',  label: '推荐排序',   icon: '⭐' },
+  { value: 'newest',   label: '最新生成',   icon: '🕐' },
+  { value: 'shortest', label: '时间短优先', icon: '⏱' },
+  { value: 'easiest',  label: '难度低→高', icon: '📗' },
+  { value: 'hardest',  label: '难度高→低', icon: '📕' },
+  { value: 'status',   label: '未完成优先', icon: '📌' },
+  { value: 'stage',    label: '阶段优先',   icon: '📍' },
 ];
 
 /* ===================================================================
  * 资源卡片
  * =================================================================== */
-function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () => void }) {
+function ResourceCard({ resource, onClick, searchQuery, selected, onToggleSelect, selectionMode }: {
+  resource: Resource;
+  onClick: () => void;
+  searchQuery?: string;
+  selected?: boolean;
+  onToggleSelect?: () => void;
+  selectionMode?: boolean;
+}) {
   const colorMap: Record<string, string> = {
     lecture:    'from-blue-400 to-blue-500',
     mindmap:    'from-purple-400 to-purple-500',
@@ -77,7 +118,11 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
   return (
     <button
       onClick={onClick}
-      className="group bg-white border border-gray-100 rounded-2xl text-left hover:shadow-xl hover:-translate-y-1.5 transition-all duration-300 w-full relative overflow-hidden"
+      className={`group bg-white border rounded-2xl text-left transition-all duration-300 w-full relative overflow-hidden ${
+        selected
+          ? 'border-brand-400 ring-2 ring-brand-200 shadow-md'
+          : 'border-gray-100 hover:shadow-xl hover:-translate-y-1.5'
+      }`}
     >
       {/* 顶部渐变条 */}
       <div className={`absolute top-0 left-0 right-0 h-1 bg-gradient-to-r ${colorMap[resource.type] || 'from-gray-400 to-gray-500'}`} />
@@ -91,8 +136,12 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
             {iconMap[resource.type]}
           </div>
           <div className="flex-1 min-w-0">
-            <h3 className="text-sm font-semibold text-gray-900 truncate group-hover:text-gray-700 transition-colors">{resource.title}</h3>
-            <p className="text-xs text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">{resource.description}</p>
+            <h3 className="text-sm font-semibold text-gray-900 truncate group-hover:text-gray-700 transition-colors">
+              <HighlightText text={resource.title} query={searchQuery} />
+            </h3>
+            <p className="text-xs text-gray-400 mt-0.5 line-clamp-2 leading-relaxed">
+              <HighlightText text={resource.description} query={searchQuery} />
+            </p>
             <div className="mt-1.5">
               <SourceTag source={resource.source} />
             </div>
@@ -124,7 +173,19 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
             </span>
           )}
           {resource.tags.slice(0, 2).map((tag) => (
-            <span key={tag} className="px-2 py-0.5 rounded-md text-[10px] text-gray-400 bg-gray-50">{tag}</span>
+            <span key={tag} className={`px-2 py-0.5 rounded-md text-[10px] ${searchQuery && matchesQuery(tag, searchQuery) ? 'bg-amber-100 text-amber-700 font-medium' : 'text-gray-400 bg-gray-50'}`}>
+              <HighlightText text={tag} query={searchQuery} />
+            </span>
+          ))}
+          {/* 知识点标签 — 搜索匹配时高亮 */}
+          {resource.knowledgePoints.slice(0, 3).map((kp) => (
+            <span key={kp} className={`px-2 py-0.5 rounded-md text-[10px] ${
+              searchQuery && matchesQuery(kp, searchQuery)
+                ? 'bg-amber-100 text-amber-700 font-medium border border-amber-200'
+                : 'bg-brand-50 text-brand-600 border border-brand-100'
+            }`}>
+              <HighlightText text={kp} query={searchQuery} />
+            </span>
           ))}
         </div>
 
@@ -133,7 +194,7 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
           <div className="flex flex-wrap items-center gap-2 mb-2 text-[10px] text-gray-400">
             {resource.relatedChapter && (
               <span className="inline-flex items-center gap-1">
-                📖 {resource.relatedChapter}
+                📖 <HighlightText text={resource.relatedChapter} query={searchQuery} />
               </span>
             )}
             {resource.relatedStageId && (
@@ -163,15 +224,36 @@ function ResourceCard({ resource, onClick }: { resource: Resource; onClick: () =
           </div>
         </div>
       </div>
+
+      {/* 选择模式复选框 */}
+      {selectionMode && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onToggleSelect?.(); }}
+          className={`absolute top-3 left-3 w-6 h-6 rounded-md border-2 flex items-center justify-center transition-all z-10 ${
+            selected
+              ? 'bg-brand-500 border-brand-500 text-white'
+              : 'bg-white/90 border-gray-300 hover:border-brand-400'
+          }`}
+        >
+          {selected ? (
+            <CheckSquare className="w-4 h-4" />
+          ) : (
+            <Square className="w-3.5 h-3.5" />
+          )}
+        </button>
+      )}
     </button>
   );
 }
 
 /* ===================================================================
- * 筛选栏
+ * 筛选栏 — 完整多条件筛选
  * =================================================================== */
 function FilterBar({
   active, onFilter, onSelectDifficulty, activeDifficulty, dataSource, onSelectSource,
+  activeQuality, onSelectQuality, activeStudyStatus, onSelectStudyStatus,
+  activeBookmarked, onSelectBookmarked, availableChapters, activeChapter, onSelectChapter,
+  showFilters, onToggleFilters, hasActiveFilters, onClearAll,
 }: {
   active: ResourceType | undefined;
   onFilter: (type: ResourceType | undefined) => void;
@@ -179,10 +261,23 @@ function FilterBar({
   activeDifficulty: string | undefined;
   dataSource?: DataSource | undefined;
   onSelectSource: (s: DataSource | undefined) => void;
+  activeQuality?: string | undefined;
+  onSelectQuality: (q: string | undefined) => void;
+  activeStudyStatus?: string | undefined;
+  onSelectStudyStatus: (s: string | undefined) => void;
+  activeBookmarked?: string | undefined;
+  onSelectBookmarked: (b: string | undefined) => void;
+  availableChapters: string[];
+  activeChapter?: string | undefined;
+  onSelectChapter: (c: string | undefined) => void;
+  showFilters: boolean;
+  onToggleFilters: () => void;
+  hasActiveFilters: boolean;
+  onClearAll: () => void;
 }) {
   return (
     <div className="space-y-2">
-      {/* 类型筛选 */}
+      {/* 第一行：资源类型 */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">
         <Filter className="w-4 h-4 text-gray-400 flex-shrink-0" />
         {FILTER_TYPES.map((t) => (
@@ -198,9 +293,25 @@ function FilterBar({
             {t ? RESOURCE_TYPE_LABELS[t] : '全部'}
           </button>
         ))}
+
+        {/* 展开/收起高级筛选 */}
+        <button
+          onClick={onToggleFilters}
+          className={`ml-auto px-3 py-1.5 rounded-xl text-xs font-medium whitespace-nowrap transition-all flex items-center gap-1.5 ${
+            showFilters || hasActiveFilters
+              ? 'bg-brand-50 text-brand-600 border border-brand-200'
+              : 'bg-white border border-gray-200 text-gray-400 hover:border-gray-300'
+          }`}
+        >
+          <SlidersHorizontal className="w-3.5 h-3.5" />
+          {showFilters ? '收起筛选' : '更多筛选'}
+          {hasActiveFilters && (
+            <span className="w-2 h-2 rounded-full bg-brand-500" />
+          )}
+        </button>
       </div>
 
-      {/* 难度 + 数据来源 */}
+      {/* 第二行：基础筛选（始终显示） */}
       <div className="flex items-center gap-4 flex-wrap">
         <div className="flex items-center gap-1.5">
           <span className="text-[10px] text-gray-400 flex-shrink-0">难度：</span>
@@ -234,7 +345,113 @@ function FilterBar({
             </button>
           ))}
         </div>
+
+        {/* 清空筛选按钮 */}
+        {hasActiveFilters && (
+          <button
+            onClick={onClearAll}
+            className="px-2.5 py-1 rounded-lg text-[10px] font-medium text-red-500 bg-red-50 border border-red-100 hover:bg-red-100 transition-all flex items-center gap-1"
+          >
+            <RotateCcw className="w-3 h-3" />
+            清空筛选
+          </button>
+        )}
       </div>
+
+      {/* 第三行：高级筛选（可折叠） */}
+      {showFilters && (
+        <div className="p-4 bg-gray-50/80 border border-gray-100 rounded-xl space-y-3 animate-fade-in-up">
+          {/* 章节 */}
+          {availableChapters.length > 0 && (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-[10px] text-gray-400 flex-shrink-0 flex items-center gap-1">
+                <Layers className="w-3 h-3" /> 章节：
+              </span>
+              <button
+                onClick={() => onSelectChapter(undefined)}
+                className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                  !activeChapter
+                    ? 'bg-gray-800 text-white'
+                    : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                不限
+              </button>
+              {availableChapters.map((ch) => (
+                <button
+                  key={ch}
+                  onClick={() => onSelectChapter(ch)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                    activeChapter === ch
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {ch}
+                </button>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-6 flex-wrap">
+            {/* 质检状态 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400 flex-shrink-0">质检：</span>
+              {QUALITY_STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value || 'all-qs'}
+                  onClick={() => onSelectQuality(opt.value)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                    activeQuality === opt.value
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 学习状态 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400 flex-shrink-0">状态：</span>
+              {STUDY_STATUS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value || 'all-ss'}
+                  onClick={() => onSelectStudyStatus(opt.value)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                    activeStudyStatus === opt.value
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+
+            {/* 收藏状态 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-gray-400 flex-shrink-0">收藏：</span>
+              {BOOKMARKED_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value || 'all-bm'}
+                  onClick={() => onSelectBookmarked(opt.value)}
+                  className={`px-2.5 py-1 rounded-lg text-[10px] font-medium transition-all ${
+                    activeBookmarked === opt.value
+                      ? 'bg-gray-800 text-white'
+                      : 'bg-white text-gray-500 border border-gray-200 hover:bg-gray-50'
+                  }`}
+                >
+                  {opt.value === 'true' ? <BookmarkCheck className="w-3 h-3 inline mr-0.5" /> :
+                   opt.value === 'false' ? <BookmarkX className="w-3 h-3 inline mr-0.5" /> : null}
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -504,36 +721,253 @@ function QuizAnswerer({ questions, resourceId }: {
 export default function ResourceLibrary() {
   const navigate = useNavigate();
   const params = useParams<{ id: string }>();
-  // 从 URL 读取筛选参数（阶段/task/搜索/资源ID）
+
+  // ── 从 URL 读取所有筛选参数 ──
   const urlParams = new URLSearchParams(window.location.search);
   const stageFilter = urlParams.get('relatedStageId') || '';
   const taskIdFilter = urlParams.get('taskId') || '';
   const searchFilter = urlParams.get('search') || '';
   const resourceIdsFilter = urlParams.get('resourceIds') || '';
-  const initialFilter: ResourceFilter | undefined = taskIdFilter
-    ? { taskId: taskIdFilter }
-    : stageFilter
-      ? { relatedStageId: stageFilter }
-      : searchFilter
-        ? { search: searchFilter }
-        : resourceIdsFilter
-          ? { resourceIds: resourceIdsFilter }
-          : undefined;
+  const typeFilter = urlParams.get('type') || '';
+  const difficultyFilter = urlParams.get('difficulty') || '';
+  const sourceFilter = urlParams.get('source') || '';
+  const chapterFilter = urlParams.get('chapter') || '';
+  const qualityFilter = urlParams.get('qualityStatus') || '';
+  const studyStatusFilter = urlParams.get('studyStatus') || '';
+  const bookmarkedFilter = urlParams.get('bookmarked') || '';
+  const sortFilter = urlParams.get('sortBy') || '';
+
+  // 构建初始筛选对象
+  const initialFilter: ResourceFilter | undefined = (taskIdFilter || stageFilter || searchFilter || resourceIdsFilter
+    || typeFilter || difficultyFilter || sourceFilter || chapterFilter || qualityFilter || studyStatusFilter || bookmarkedFilter || sortFilter)
+    ? Object.fromEntries(
+        Object.entries({
+          taskId: taskIdFilter || undefined,
+          relatedStageId: stageFilter || undefined,
+          search: searchFilter ? decodeURIComponent(searchFilter) : undefined,
+          resourceIds: resourceIdsFilter || undefined,
+          type: (typeFilter as ResourceType) || undefined,
+          difficulty: difficultyFilter || undefined,
+          source: sourceFilter || undefined,
+          chapter: chapterFilter || undefined,
+          qualityStatus: qualityFilter || undefined,
+          studyStatus: studyStatusFilter || undefined,
+          bookmarked: bookmarkedFilter || undefined,
+          sortBy: (sortFilter as SortBy) || undefined,
+        }).filter(([_, v]) => v !== undefined)
+      ) as ResourceFilter
+    : undefined;
+
   const { resources, total, loading, error, applyFilter, toggleBookmark, updateResource, refetch } = useResources(initialFilter);
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const profile = useProfileStore((s) => subjectId ? s.profiles[subjectId] ?? null : null);
   const hasCourse = profile?.dimensions?.some(d => d.key === 'knowledge_base');
+
   const [selected, setSelected] = useState<Resource | null>(null);
   const [search, setSearch] = useState(searchFilter ? decodeURIComponent(searchFilter) : '');
-  const [activeType, setActiveType] = useState<ResourceType | undefined>();
-  const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>();
-  const [activeSource, setActiveSource] = useState<DataSource | undefined>();
-  const [activeStageId, setActiveStageId] = useState<string | undefined>();
+  const [activeType, setActiveType] = useState<ResourceType | undefined>(typeFilter ? (typeFilter as ResourceType) : undefined);
+  const [activeDifficulty, setActiveDifficulty] = useState<string | undefined>(difficultyFilter || undefined);
+  const [activeSource, setActiveSource] = useState<DataSource | undefined>(sourceFilter as DataSource | undefined);
+  const [activeStageId, setActiveStageId] = useState<string | undefined>(stageFilter || undefined);
+  const [activeChapter, setActiveChapter] = useState<string | undefined>(chapterFilter || undefined);
+  const [activeQuality, setActiveQuality] = useState<string | undefined>(qualityFilter || undefined);
+  const [activeStudyStatus, setActiveStudyStatus] = useState<string | undefined>(studyStatusFilter || undefined);
+  const [activeBookmarked, setActiveBookmarked] = useState<string | undefined>(bookmarkedFilter || undefined);
+  const [activeSort, setActiveSort] = useState<SortBy>((sortFilter as SortBy) || 'default');
+  const [showFilters, setShowFilters] = useState(
+    !!(chapterFilter || qualityFilter || studyStatusFilter || bookmarkedFilter)
+  );
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
+  // ── 批量操作状态 ──
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchConfirm, setBatchConfirm] = useState<{
+    action: 'complete' | 'bookmark' | 'unbookmark' | 'export';
+    open: boolean;
+  }>({ action: 'complete', open: false });
+  const [batchExportText, setBatchExportText] = useState<string | null>(null);
+  const [batchProcessing, setBatchProcessing] = useState(false);
+
   const [prevResourceIds, setPrevResourceIds] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // 从 resources 中提取唯一的章节列表
+  const availableChapters = React.useMemo(() => {
+    const chapters = new Set<string>();
+    resources.forEach(r => {
+      if (r.relatedChapter) chapters.add(r.relatedChapter);
+    });
+    return Array.from(chapters).sort();
+  }, [resources]);
+
+  // 是否有任何活动筛选（非默认排序不算"筛选"，但仍展示标签）
+  const hasActiveFilters = !!(activeType || activeDifficulty || activeSource ||
+    activeChapter || activeQuality || activeStudyStatus || activeBookmarked ||
+    activeStageId || search);
+  const hasActiveSort = activeSort !== 'default';
+
+  // ── URL 参数同步（筛选变化时更新 URL） ──
+  const syncUrlParams = useCallback((filters: {
+    type?: string; difficulty?: string; source?: string; search?: string;
+    chapter?: string; qualityStatus?: string; studyStatus?: string; bookmarked?: string;
+    relatedStageId?: string; taskId?: string; resourceIds?: string; sortBy?: string;
+  }) => {
+    const params = new URLSearchParams();
+    Object.entries(filters).forEach(([key, value]) => {
+      if (value) params.set(key, value);
+    });
+    const searchStr = params.toString();
+    const newPath = searchStr ? `/resources?${searchStr}` : '/resources';
+    navigate(newPath, { replace: true });
+  }, [navigate]);
+
+  // ── 统一筛选：更新所有状态 + 调用 API + 同步 URL ──
+  const updateFilters = useCallback((updates: Partial<{
+    type: ResourceType | undefined;
+    difficulty: string | undefined;
+    source: DataSource | undefined;
+    search: string;
+    chapter: string | undefined;
+    qualityStatus: string | undefined;
+    studyStatus: string | undefined;
+    bookmarked: string | undefined;
+    relatedStageId: string | undefined;
+    taskId: string | undefined;
+    resourceIds: string | undefined;
+    sortBy: SortBy | undefined;
+  }>) => {
+    // 更新本地状态
+    if ('type' in updates) setActiveType(updates.type);
+    if ('difficulty' in updates) setActiveDifficulty(updates.difficulty);
+    if ('source' in updates) setActiveSource(updates.source);
+    if ('search' in updates) setSearch(updates.search ?? '');
+    if ('chapter' in updates) setActiveChapter(updates.chapter);
+    if ('qualityStatus' in updates) setActiveQuality(updates.qualityStatus);
+    if ('studyStatus' in updates) setActiveStudyStatus(updates.studyStatus);
+    if ('bookmarked' in updates) setActiveBookmarked(updates.bookmarked);
+    if ('relatedStageId' in updates) setActiveStageId(updates.relatedStageId);
+    if ('sortBy' in updates) setActiveSort(updates.sortBy ?? 'default');
+
+    // 调用 API
+    applyFilter(updates as Partial<ResourceFilter>);
+
+    // 同步 URL
+    const currentFilters = {
+      type: ('type' in updates ? updates.type : activeType) || '',
+      difficulty: ('difficulty' in updates ? updates.difficulty : activeDifficulty) || '',
+      source: ('source' in updates ? updates.source : activeSource) || '',
+      search: ('search' in updates ? (updates.search ?? '') : search) || '',
+      chapter: ('chapter' in updates ? updates.chapter : activeChapter) || '',
+      qualityStatus: ('qualityStatus' in updates ? updates.qualityStatus : activeQuality) || '',
+      studyStatus: ('studyStatus' in updates ? updates.studyStatus : activeStudyStatus) || '',
+      bookmarked: ('bookmarked' in updates ? updates.bookmarked : activeBookmarked) || '',
+      relatedStageId: ('relatedStageId' in updates ? updates.relatedStageId : activeStageId) || '',
+      sortBy: ('sortBy' in updates ? updates.sortBy : activeSort) || '',
+      taskId: taskIdFilter || '',
+      resourceIds: resourceIdsFilter || '',
+    };
+    syncUrlParams(currentFilters);
+  }, [activeType, activeDifficulty, activeSource, search, activeChapter,
+      activeQuality, activeStudyStatus, activeBookmarked, activeStageId, activeSort,
+      taskIdFilter, resourceIdsFilter, applyFilter, syncUrlParams]);
+
+  // ── 清空所有筛选 ──
+  // ── 选择工具 ──
+  const toggleSelect = useCallback((id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback(() => {
+    setSelectedIds(new Set(resources.map(r => r.id)));
+  }, [resources]);
+
+  const deselectAll = useCallback(() => {
+    setSelectedIds(new Set());
+  }, []);
+
+  const allSelected = resources.length > 0 && selectedIds.size === resources.length;
+
+  // ── 批量操作处理 ──
+  const executeBatchAction = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+    setBatchProcessing(true);
+    const sessionId = useChatStore.getState().currentSessionId;
+    try {
+      const { action } = batchConfirm;
+      if (action === 'complete') {
+        await resourcesApi.batchUpdateStudyStatus(sessionId, ids, 'completed');
+        setSelectedIds(new Set());
+        setSelectionMode(false);
+      } else if (action === 'bookmark') {
+        await resourcesApi.batchSetBookmark(sessionId, ids, true);
+        setSelectedIds(new Set());
+      } else if (action === 'unbookmark') {
+        await resourcesApi.batchSetBookmark(sessionId, ids, false);
+        setSelectedIds(new Set());
+      } else if (action === 'export') {
+        const result = await resourcesApi.batchExportResources(sessionId, ids);
+        setBatchExportText(result.export);
+      }
+      refetch();
+    } catch {
+      setErrorMsg('批量操作失败，请检查后端服务');
+      setTimeout(() => setErrorMsg(null), 3000);
+    } finally {
+      setBatchProcessing(false);
+      setBatchConfirm(prev => ({ ...prev, open: false }));
+    }
+  }, [selectedIds, batchConfirm, refetch]);
+
+  const clearAllFilters = useCallback(() => {
+    setActiveType(undefined);
+    setActiveDifficulty(undefined);
+    setActiveSource(undefined);
+    setActiveChapter(undefined);
+    setActiveQuality(undefined);
+    setActiveStudyStatus(undefined);
+    setActiveBookmarked(undefined);
+    setActiveStageId(undefined);
+    setActiveSort('default');
+    setSearch('');
+    setShowFilters(false);
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+    applyFilter({ sortBy: 'default' });
+    navigate('/resources', { replace: true });
+  }, [applyFilter, navigate]);
+
+  // ── 搜索防抖同步 URL ──
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => {
+      syncUrlParams({
+        type: activeType || '',
+        difficulty: activeDifficulty || '',
+        source: activeSource || '',
+        search,
+        chapter: activeChapter || '',
+        qualityStatus: activeQuality || '',
+        studyStatus: activeStudyStatus || '',
+        bookmarked: activeBookmarked || '',
+        relatedStageId: activeStageId || '',
+        sortBy: activeSort || '',
+        taskId: taskIdFilter || '',
+        resourceIds: resourceIdsFilter || '',
+      });
+    }, 500);
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
+  }, [search, activeType, activeDifficulty, activeSource, activeChapter,
+      activeQuality, activeStudyStatus, activeBookmarked, activeStageId, activeSort,
+      taskIdFilter, resourceIdsFilter, syncUrlParams]);
 
   // 阶段筛选在 useResources(initialFilter) 中已处理，这里仅同步 UI 状态
   useEffect(() => {
@@ -651,45 +1085,165 @@ export default function ResourceLibrary() {
       {/* ========== 头部 ========== */}
       <div className="mb-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">资源库</h1>
-          {activeStageId && (
+          <div>
+            <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">资源库</h1>
+            <p className="text-sm text-gray-500">
+              共 <span className="font-semibold text-gray-700">{total}</span> 个学习资源
+              {hasActiveFilters && <span className="text-gray-400">（已筛选）</span>}
+            </p>
+          </div>
+          {hasActiveFilters && (
             <button
-              onClick={() => { setActiveStageId(undefined); navigate('/resources'); }}
-              className="text-xs text-brand-500 hover:text-brand-600 flex items-center gap-1"
+              onClick={clearAllFilters}
+              className="text-xs text-red-500 hover:text-red-600 flex items-center gap-1 px-3 py-1.5 rounded-lg bg-red-50 border border-red-100 hover:bg-red-100 transition-all"
             >
-              ✕ 清除阶段筛选
+              <RotateCcw className="w-3 h-3" />
+              清空筛选
             </button>
           )}
         </div>
-        <p className="text-sm text-gray-500">
-          共 <span className="font-semibold text-gray-700">{total}</span> 个学习资源，由当前工作流按课程上下文整理
-          {activeStageId && <span className="text-brand-500 font-medium"> · 已筛选阶段：{activeStageId}</span>}
-          {searchFilter && <span className="text-purple-500 font-medium"> · 搜索：{decodeURIComponent(searchFilter)}</span>}
-          {resourceIdsFilter && <span className="text-purple-500 font-medium"> · 已筛选节点资源</span>}
-        </p>
+        {/* 当前活动筛选标签 */}
+        {hasActiveFilters && (
+          <div className="flex flex-wrap items-center gap-1.5 mt-2">
+            {activeType && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100">
+                {RESOURCE_TYPE_LABELS[activeType]}
+              </span>
+            )}
+            {activeDifficulty && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-100">
+                {difficultyLabel[activeDifficulty]}
+              </span>
+            )}
+            {activeSource && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-purple-50 text-purple-600 border border-purple-100">
+                {activeSource === 'agent_generated' ? '智能体生成' : activeSource === 'system_inferred' ? '系统推断' : activeSource === 'fallback' ? '兜底' : activeSource}
+              </span>
+            )}
+            {activeChapter && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100">
+                📖 {activeChapter}
+              </span>
+            )}
+            {activeQuality && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100">
+                质检：{activeQuality === 'passed' ? '已通过' : activeQuality === 'needs_review' ? '需复核' : '兜底通过'}
+              </span>
+            )}
+            {activeStudyStatus && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-cyan-50 text-cyan-600 border border-cyan-100">
+                {activeStudyStatus === 'new' ? '未开始' : activeStudyStatus === 'in_progress' ? '学习中' : '已完成'}
+              </span>
+            )}
+            {activeBookmarked && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-brand-50 text-brand-600 border border-brand-100">
+                {activeBookmarked === 'true' ? '⭐ 已收藏' : '未收藏'}
+              </span>
+            )}
+            {activeStageId && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                📍 阶段 {activeStageId.replace(/[^0-9]/g, '')}
+              </span>
+            )}
+            {search && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                🔍 "{search}"
+              </span>
+            )}
+            {hasActiveSort && (
+              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-brand-50 text-brand-600 border border-brand-100">
+                {SORT_OPTIONS.find(o => o.value === activeSort)?.icon} {SORT_OPTIONS.find(o => o.value === activeSort)?.label}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* ========== 搜索 + 筛选 ========== */}
       <div className="space-y-3 mb-6">
         <div className="relative max-w-md">
-          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <Search className="w-4 h-4 text-gray-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
           <input
             value={search}
             onChange={(e) => {
-              setSearch(e.target.value);
-              applyFilter({ search: e.target.value });
+              const val = e.target.value;
+              setSearch(val);
+              applyFilter({ search: val });
             }}
-            placeholder="搜索资源标题、知识点…"
-            className="w-full h-10 pl-10 pr-4 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent"
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') {
+                setSearch('');
+                applyFilter({ search: '' });
+              }
+            }}
+            placeholder="搜索标题、知识点、章节…"
+            className="w-full h-10 pl-10 pr-9 bg-white border border-gray-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
           />
+          {/* 清空按钮 */}
+          {search && (
+            <button
+              onClick={() => {
+                setSearch('');
+                applyFilter({ search: '' });
+              }}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 w-5 h-5 rounded-full bg-gray-200 hover:bg-gray-300 flex items-center justify-center transition-colors"
+              title="清空搜索"
+            >
+              <X className="w-3 h-3 text-gray-500" />
+            </button>
+          )}
         </div>
+
+        {/* ========== 排序 + 批量操作入口 ========== */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
+          <span className="text-[10px] text-gray-400 flex-shrink-0 mr-0.5">排序：</span>
+          {SORT_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => updateFilters({ sortBy: opt.value === 'default' ? undefined : opt.value })}
+              className={`px-2.5 py-1 rounded-lg text-[10px] font-medium whitespace-nowrap transition-all ${
+                activeSort === opt.value
+                  ? 'bg-brand-500 text-white shadow-sm'
+                  : 'bg-white border border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
+              }`}
+            >
+              {opt.icon} {opt.label}
+            </button>
+          ))}
+          <div className="w-px h-5 bg-gray-200 mx-1.5 flex-shrink-0" />
+          <button
+            onClick={() => { setSelectionMode(v => !v); if (selectionMode) setSelectedIds(new Set()); }}
+            className={`px-2.5 py-1 rounded-lg text-[10px] font-medium whitespace-nowrap transition-all flex items-center gap-1 ${
+              selectionMode
+                ? 'bg-brand-500 text-white shadow-sm'
+                : 'bg-white border border-gray-200 text-gray-500 hover:border-gray-300 hover:bg-gray-50'
+            }`}
+          >
+            <ListChecks className="w-3 h-3" />
+            {selectionMode ? '退出选择' : '批量操作'}
+          </button>
+        </div>
+
         <FilterBar
           active={activeType}
-          onFilter={(type) => { setActiveType(type); applyFilter({ type }); }}
-          onSelectDifficulty={(d) => { setActiveDifficulty(d); applyFilter({ difficulty: d }); }}
+          onFilter={(type) => updateFilters({ type: type || undefined })}
+          onSelectDifficulty={(d) => updateFilters({ difficulty: d || undefined })}
           activeDifficulty={activeDifficulty}
           dataSource={activeSource}
-          onSelectSource={(s) => { setActiveSource(s); applyFilter({ source: s }); }}
+          onSelectSource={(s) => updateFilters({ source: s || undefined })}
+          activeQuality={activeQuality}
+          onSelectQuality={(q) => updateFilters({ qualityStatus: q || undefined })}
+          activeStudyStatus={activeStudyStatus}
+          onSelectStudyStatus={(s) => updateFilters({ studyStatus: s || undefined })}
+          activeBookmarked={activeBookmarked}
+          onSelectBookmarked={(b) => updateFilters({ bookmarked: b || undefined })}
+          availableChapters={availableChapters}
+          activeChapter={activeChapter}
+          onSelectChapter={(c) => updateFilters({ chapter: c || undefined })}
+          showFilters={showFilters}
+          onToggleFilters={() => setShowFilters(v => !v)}
+          hasActiveFilters={hasActiveFilters}
+          onClearAll={clearAllFilters}
         />
       </div>
 
@@ -706,18 +1260,42 @@ export default function ResourceLibrary() {
       ) : !resources || resources.length === 0 ? (
         <div className="relative">
           {loading && <RefreshOverlay />}
-          <EmptyState
-            icon={<BookOpen className="w-8 h-8" />}
-            title={search || activeType || activeDifficulty ? '没有匹配的资源' : '暂无资源'}
-            description={
-              search || activeType || activeDifficulty
-                ? '尝试调整筛选条件或搜索关键词'
-                : hasCourse
+          {hasActiveFilters || search ? (
+            // 有筛选条件但没有匹配结果
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="w-16 h-16 rounded-2xl bg-gray-100 flex items-center justify-center mb-4">
+                <Search className="w-7 h-7 text-gray-300" />
+              </div>
+              <h3 className="text-base font-semibold text-gray-700 mb-1">
+                {search ? `未搜到"${search}"` : '没有匹配的资源'}
+              </h3>
+              <p className="text-sm text-gray-400 mb-1">
+                {search
+                  ? '尝试不同的关键词，搜索范围包括标题、知识点、章节名'
+                  : `当前筛选条件下未找到任何资源，共 ${total} 个资源被筛除`}
+              </p>
+              <p className="text-xs text-gray-300 mb-5 max-w-sm">
+                试试调整资源类型、难度、章节或关键词等条件
+              </p>
+              <button
+                onClick={clearAllFilters}
+                className="px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
+              >
+                <RotateCcw className="w-4 h-4" />
+                清空所有筛选条件
+              </button>
+            </div>
+          ) : (
+            // 没有任何资源
+            <EmptyState
+              icon={<BookOpen className="w-8 h-8" />}
+              title="暂无资源"
+              description={
+                hasCourse
                   ? '当前课程暂无资源，在对话中说"生成学习资源"来获得课程材料'
                   : '在对话中描述你的学习需求，系统会为你整理课程资源'
-            }
-            action={
-              !search && !activeType && !activeDifficulty ? (
+              }
+              action={
                 <button
                   onClick={() => navigate('/chat')}
                   className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
@@ -725,16 +1303,51 @@ export default function ResourceLibrary() {
                   <Sparkles className="w-4 h-4" />
                   去对话页生成资源
                 </button>
-              ) : undefined
-            }
-          />
+              }
+            />
+          )}
         </div>
       ) : (
         <div className="relative">
           {loading && <RefreshOverlay />}
+          {/* 选择模式顶部操作栏 */}
+          {selectionMode && (
+            <div className="flex items-center justify-between mb-3 px-1">
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={allSelected ? deselectAll : selectAll}
+                  className="flex items-center gap-1.5 text-xs text-gray-500 hover:text-gray-700 transition-colors"
+                >
+                  {allSelected ? (
+                    <CheckSquare className="w-4 h-4 text-brand-500" />
+                  ) : (
+                    <Square className="w-4 h-4" />
+                  )}
+                  {allSelected ? '取消全选' : '全选'}
+                </button>
+                <span className="text-xs text-gray-400">
+                  已选 <span className="font-semibold text-gray-600">{selectedIds.size}</span> / {resources.length}
+                </span>
+              </div>
+              <button
+                onClick={deselectAll}
+                className="text-xs text-gray-400 hover:text-gray-600 transition-colors"
+              >
+                清除选择
+              </button>
+            </div>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {resources.map((r) => (
-              <ResourceCard key={r.id} resource={r} onClick={() => openDetail(r)} />
+              <ResourceCard
+                key={r.id}
+                resource={r}
+                onClick={() => selectionMode ? toggleSelect(r.id) : openDetail(r)}
+                searchQuery={search}
+                selectionMode={selectionMode}
+                selected={selectedIds.has(r.id)}
+                onToggleSelect={() => toggleSelect(r.id)}
+              />
             ))}
           </div>
         </div>
@@ -800,7 +1413,9 @@ export default function ResourceLibrary() {
                   </div>
                   <div>
                     <p className="text-[10px] text-gray-400 font-medium">关联章节</p>
-                    <p className="text-xs font-semibold text-gray-700">{selected.relatedChapter}</p>
+                    <p className="text-xs font-semibold text-gray-700">
+                      <HighlightText text={selected.relatedChapter} query={search} />
+                    </p>
                   </div>
                 </div>
               )}
@@ -874,8 +1489,12 @@ export default function ResourceLibrary() {
             {/* 知识点标签 */}
             <div className="flex flex-wrap gap-1.5">
               {selected.knowledgePoints.map((kp) => (
-                <span key={kp} className="px-2 py-0.5 bg-brand-50 text-brand-600 rounded-md text-[10px] font-medium">
-                  {kp}
+                <span key={kp} className={`px-2 py-0.5 rounded-md text-[10px] font-medium ${
+                  search && matchesQuery(kp, search)
+                    ? 'bg-amber-100 text-amber-700 border border-amber-200'
+                    : 'bg-brand-50 text-brand-600'
+                }`}>
+                  <HighlightText text={kp} query={search} />
                 </span>
               ))}</div>
 
@@ -1114,6 +1733,121 @@ export default function ResourceLibrary() {
             <p className="text-[10px] text-gray-400 text-center pt-2">
               AI 生成内容仅供参考 · 如需深入学习请查阅课程教材
             </p>
+          </div>
+        )}
+      </Modal>
+
+      {/* ========== 浮动批量操作栏 ========== */}
+      {selectionMode && selectedIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 mx-auto max-w-2xl w-[calc(100%-3rem)]">
+          <div className="bg-gray-900/95 backdrop-blur-lg border border-gray-700 rounded-2xl shadow-2xl px-4 py-3 flex items-center justify-between gap-2 animate-fade-in-up">
+            <span className="text-xs text-gray-300 flex-shrink-0">
+              已选 <span className="font-bold text-white">{selectedIds.size}</span> 项
+            </span>
+            <div className="flex items-center gap-1.5 flex-wrap justify-end">
+              <button
+                onClick={() => setBatchConfirm({ action: 'complete', open: true })}
+                disabled={batchProcessing}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium bg-green-500 text-white hover:bg-green-600 disabled:opacity-40 transition-all flex items-center gap-1"
+              >
+                <CheckCircle2 className="w-3 h-3" />
+                标记完成
+              </button>
+              <button
+                onClick={() => setBatchConfirm({ action: 'bookmark', open: true })}
+                disabled={batchProcessing}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium bg-brand-500 text-white hover:bg-brand-600 disabled:opacity-40 transition-all flex items-center gap-1"
+              >
+                <BookmarkCheck className="w-3 h-3" />
+                收藏
+              </button>
+              <button
+                onClick={() => setBatchConfirm({ action: 'unbookmark', open: true })}
+                disabled={batchProcessing}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium bg-gray-600 text-white hover:bg-gray-500 disabled:opacity-40 transition-all flex items-center gap-1"
+              >
+                <BookmarkX className="w-3 h-3" />
+                取消收藏
+              </button>
+              <button
+                onClick={() => setBatchConfirm({ action: 'export', open: true })}
+                disabled={batchProcessing}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium bg-amber-500 text-white hover:bg-amber-600 disabled:opacity-40 transition-all flex items-center gap-1"
+              >
+                <Download className="w-3 h-3" />
+                导出
+              </button>
+              <button
+                onClick={deselectAll}
+                disabled={batchProcessing}
+                className="px-3 py-1.5 rounded-lg text-[10px] font-medium bg-gray-700 text-gray-300 hover:bg-gray-600 disabled:opacity-40 transition-all"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ========== 批量操作确认弹窗 ========== */}
+      <Modal open={batchConfirm.open} onClose={() => setBatchConfirm(prev => ({ ...prev, open: false }))} title="确认批量操作">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600">
+            {batchConfirm.action === 'complete' && `确定将选中的 ${selectedIds.size} 个资源标记为「已完成」？`}
+            {batchConfirm.action === 'bookmark' && `确定将选中的 ${selectedIds.size} 个资源加入「收藏」？`}
+            {batchConfirm.action === 'unbookmark' && `确定将选中的 ${selectedIds.size} 个资源取消「收藏」？`}
+            {batchConfirm.action === 'export' && `确定导出选中的 ${selectedIds.size} 个资源标题清单？`}
+          </p>
+          <div className="flex items-center gap-2 justify-end">
+            <button
+              onClick={() => setBatchConfirm(prev => ({ ...prev, open: false }))}
+              disabled={batchProcessing}
+              className="px-4 py-2 rounded-xl text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-all"
+            >
+              取消
+            </button>
+            <button
+              onClick={executeBatchAction}
+              disabled={batchProcessing}
+              className="px-4 py-2 rounded-xl text-xs font-medium bg-gray-900 text-white hover:bg-gray-800 disabled:opacity-40 transition-all flex items-center gap-1.5"
+            >
+              {batchProcessing ? (
+                <>处理中…</>
+              ) : (
+                <>确认{batchConfirm.action === 'export' ? '导出' : '执行'}</>
+              )}
+            </button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* ========== 导出结果弹窗 ========== */}
+      <Modal open={!!batchExportText} onClose={() => setBatchExportText(null)} title="资源导出清单" wide>
+        {batchExportText && (
+          <div className="space-y-4">
+            <pre className="text-xs text-gray-700 bg-gray-50 rounded-xl p-4 border border-gray-100 max-h-80 overflow-y-auto whitespace-pre-wrap font-mono leading-relaxed">
+              {batchExportText}
+            </pre>
+            <div className="flex items-center gap-2 justify-end">
+              <button
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(batchExportText);
+                    setErrorMsg('已复制到剪贴板');
+                    setTimeout(() => setErrorMsg(null), 2000);
+                  } catch { /* ignore */ }
+                }}
+                className="px-4 py-2 rounded-xl text-xs font-medium bg-white border border-gray-200 text-gray-500 hover:bg-gray-50 transition-all"
+              >
+                复制到剪贴板
+              </button>
+              <button
+                onClick={() => setBatchExportText(null)}
+                className="px-4 py-2 rounded-xl text-xs font-medium bg-gray-900 text-white hover:bg-gray-800 transition-all"
+              >
+                关闭
+              </button>
+            </div>
           </div>
         )}
       </Modal>

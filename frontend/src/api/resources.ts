@@ -48,3 +48,60 @@ export async function getResourceKnowledgeGraph(
   });
   return data;
 }
+
+// ── Batch operations ────────────────────────────────────────────────
+
+export interface BatchResult {
+  ok: boolean;
+  updated: number;
+  error?: string;
+  studyStatus?: string;
+  bookmarked?: boolean;
+}
+
+export interface BatchExportResult {
+  ok: boolean;
+  export: string;
+  count: number;
+  error?: string;
+}
+
+/** 批量标记完成/学习中/未开始 */
+export async function batchUpdateStudyStatus(
+  sessionId: string,
+  resourceIds: string[],
+  studyStatus: string,
+): Promise<BatchResult> {
+  const { data } = await client.post('/resources/batch/study-status', {
+    sessionId,
+    resourceIds,
+    studyStatus,
+  });
+  return data;
+}
+
+/** 批量收藏/取消收藏 */
+export async function batchSetBookmark(
+  sessionId: string,
+  resourceIds: string[],
+  bookmarked: boolean,
+): Promise<BatchResult> {
+  const { data } = await client.post('/resources/batch/bookmark', {
+    sessionId,
+    resourceIds,
+    bookmarked,
+  });
+  return data;
+}
+
+/** 批量导出资源标题清单 */
+export async function batchExportResources(
+  sessionId: string,
+  resourceIds?: string[],
+): Promise<BatchExportResult> {
+  const { data } = await client.post('/resources/batch/export', {
+    sessionId,
+    resourceIds: resourceIds || undefined,
+  });
+  return data;
+}

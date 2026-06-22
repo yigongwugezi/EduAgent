@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useLocation } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import client from '../api/client';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -17,6 +17,21 @@ import { formatDuration } from '../utils/format';
 /* ===================================================================
  * 类型
  * =================================================================== */
+interface WeakTopic {
+  topic: string;
+  wrongCount: number;
+  totalCount: number;
+  risk: number;
+  /** 来源: quiz, practice, feedback, diagnosis */
+  source: string[];
+  /** 优先级: high | medium | low */
+  priority?: string;
+  /** 掌握度 (0-100) */
+  mastery?: number;
+  /** 推荐原因 */
+  reason?: string;
+}
+
 interface AnalyticsData {
   eventCount: number;
   totalStudyMinutes: number;
@@ -24,7 +39,7 @@ interface AnalyticsData {
   eventBreakdown: Record<string, number>;
   topResources: { resourceId: string; count: number; title?: string }[];
   quizAccuracy: number | null;
-  weakTopics: { topic: string; wrongCount: number; totalCount: number; risk: number }[];
+  weakTopics: WeakTopic[];
   recommendations: string[];
   recentEvents: { event: string; resourceId?: string; timestamp?: number | string; metadata?: Record<string, unknown> }[];
   summary: string;
@@ -82,6 +97,7 @@ function ProgressRing({ pct, size = 80, strokeWidth = 6 }: { pct: number; size?:
  * =================================================================== */
 export default function LearningAnalyticsPage() {
   const location = useLocation();
+  const navigate = useNavigate();
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -397,18 +413,82 @@ export default function LearningAnalyticsPage() {
           {analytics.weakTopics.length === 0 ? (
             <p className="text-xs text-gray-400">暂无数据，完成练习后可自动分析</p>
           ) : (
-            <div className="space-y-2">
-              {analytics.weakTopics.map((topic, i) => (
-                <div
-                  key={i}
-                  className="flex items-center justify-between px-3 py-2 bg-red-50 border border-red-100 rounded-xl"
-                >
-                  <span className="text-xs font-medium text-red-700">{topic.topic}</span>
-                  <span className="text-xs text-red-400">
-                    {topic.wrongCount}/{topic.totalCount} · 风险 {(topic.risk * 100).toFixed(0)}%
-                  </span>
-                </div>
-              ))}
+            <div className="space-y-3">
+              {analytics.weakTopics.map((topic, i) => {
+                const riskPct = Math.round((topic.risk ?? 0) * 100);
+                const riskColor = riskPct >= 70 ? 'bg-red-50 border-red-200' : riskPct >= 40 ? 'bg-amber-50 border-amber-200' : 'bg-yellow-50 border-yellow-200';
+                const riskTextColor = riskPct >= 70 ? 'text-red-700' : riskPct >= 40 ? 'text-amber-700' : 'text-yellow-700';
+                return (
+                  <div key={i} className={`${riskColor} border rounded-xl p-3 space-y-2`}>
+                    {/* 第一行：知识点名 + 风险 */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className={`text-xs font-semibold ${riskTextColor} truncate`}>{topic.topic}</span>
+                        {/* 优先级徽章 */}
+                        {topic.priority === 'high' && (
+                          <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-red-200 text-red-700 flex-shrink-0">
+                            高优
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                        <span className="text-[10px] text-gray-400">
+                          错 {topic.wrongCount}/{topic.totalCount}
+                        </span>
+                        <div className="w-16 h-1.5 rounded-full bg-gray-200 overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${riskPct >= 70 ? 'bg-red-400' : riskPct >= 40 ? 'bg-amber-400' : 'bg-yellow-400'}`}
+                            style={{ width: `${riskPct}%` }}
+                          />
+                        </div>
+                        <span className={`text-[10px] font-medium ${riskTextColor}`}>{riskPct}%</span>
+                      </div>
+                    </div>
+
+                    {/* 第二行：来源标签 */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {topic.source?.map((src) => (
+                        <span
+                          key={src}
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-medium border ${
+                            src === 'quiz' ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                            src === 'practice' ? 'bg-cyan-50 text-cyan-600 border-cyan-200' :
+                            src === 'feedback' ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                            src === 'diagnosis' ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                            'bg-gray-50 text-gray-500 border-gray-200'
+                          }`}
+                        >
+                          {src === 'quiz' ? '📝 练习' : src === 'practice' ? '💻 实操' : src === 'feedback' ? '💬 反馈' : src === 'diagnosis' ? '🔍 诊断' : src}
+                        </span>
+                      ))}
+                      {/* 推荐理由 */}
+                      {topic.reason && (
+                        <span className="text-[9px] text-gray-400 ml-1 truncate max-w-[200px]" title={topic.reason}>
+                          {topic.reason}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* 第三行：操作按钮 */}
+                    <div className="flex items-center gap-2 pt-0.5">
+                      <button
+                        onClick={() => navigate(`/resources?knowledgePoint=${encodeURIComponent(topic.topic)}`)}
+                        className="px-2.5 py-1 rounded-lg text-[9px] font-medium bg-white border border-gray-200 text-gray-500 hover:border-brand-300 hover:text-brand-600 transition-all flex items-center gap-1"
+                      >
+                        <BookOpen className="w-3 h-3" />
+                        推荐资源
+                      </button>
+                      <button
+                        onClick={() => navigate(`/chat?prompt=${encodeURIComponent(`帮我讲解一下${topic.topic}，我这个地方掌握得不太好`)}`)}
+                        className="px-2.5 py-1 rounded-lg text-[9px] font-medium bg-white border border-gray-200 text-gray-500 hover:border-brand-300 hover:text-brand-600 transition-all flex items-center gap-1"
+                      >
+                        <MessageSquare className="w-3 h-3" />
+                        去提问
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           )}
         </div>

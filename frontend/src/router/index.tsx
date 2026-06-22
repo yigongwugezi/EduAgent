@@ -6,6 +6,7 @@ import ResourceLibrary from '../pages/ResourceLibrary';
 import LearningPathPage from '../pages/LearningPathPage';
 import ProfilePage from '../pages/ProfilePage';
 import LearningAnalyticsPage from '../pages/LearningAnalyticsPage';
+import LearningTimelinePage from '../pages/LearningTimelinePage';
 import LoginPage from '../pages/LoginPage';
 import NotFound from '../pages/NotFound';
 import { getCurrentLearner } from '../pages/LoginPage';
@@ -39,6 +40,7 @@ const router = createBrowserRouter([
       { path: 'path', element: <LearningPathPage /> },
       { path: 'profile', element: <ProfilePage /> },
       { path: 'analytics', element: <LearningAnalyticsPage /> },
+      { path: 'timeline', element: <LearningTimelinePage /> },
       { path: '*', element: <NotFound /> },
     ],
   },

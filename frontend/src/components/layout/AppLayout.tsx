@@ -39,7 +39,7 @@ function MobileTopBar({ collapsed }: { collapsed: boolean }) {
   const { pathname } = useLocation();
   const labels: Record<string, string> = {
     '/': '首页', '/chat': 'AI 对话', '/resources': '资源库',
-    '/path': '学习路径', '/profile': '学习画像', '/analytics': '学习分析',
+    '/path': '学习路径', '/profile': '学习画像', '/analytics': '学习分析', '/timeline': '时间线',
   };
 
   if (!collapsed) return null;

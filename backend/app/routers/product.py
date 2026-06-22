@@ -267,7 +267,10 @@ def _to_profile(result: dict[str, Any]) -> dict[str, Any]:
             "topic": point.get("name", "待补齐知识点"),
             "mastery": 42 if point.get("priority") == "high" else 58,
             "priority": 9 if point.get("priority") == "high" else 6,
+            "source": point.get("source", ["diagnosis"]),
+            "risk": point.get("risk", 0.7 if point.get("priority") == "high" else 0.4),
             "suggestedResources": [],
+            "reason": point.get("reason", ""),
         }
         for point in weak_points
     ]
@@ -1351,11 +1354,19 @@ def get_resources(
     relatedStageId: str = "",   # 从学习路径跳转时按阶段筛选
     resourceIds: str = "",       # 从节点跳转时按指定资源 ID 筛选（逗号分隔）
     taskId: str = "",             # 按 task_id 精确匹配（节点级筛选）
+    chapter: str = "",            # 按章节筛选
+    qualityStatus: str = "",      # 质检状态 passed|needs_review|fallback_passed
+    studyStatus: str = "",        # 学习状态 new|in_progress|completed
+    bookmarked: str = "",         # 收藏筛选 "true"|"false"
+    sortBy: str = "default",       # 排序: default|newest|shortest|easiest|hardest|status|stage
 ) -> dict[str, Any]:
-    """Read resources from DB. Supports filtering by type/difficulty/source/search/stage/node."""
+    """Read resources from DB. Supports multi-condition combined filtering and sorting."""
     session_id = _resolve_session_id(sessionId, subjectId)
     _resource_id_set: set[str] = set()
     _resource_id_suffixes: set[str] = set()
+    _bookmarked_filter: bool | None = None
+    if bookmarked:
+        _bookmarked_filter = bookmarked.lower() == "true"
     if resourceIds:
         for rid in resourceIds.split(","):
             rid = rid.strip()
@@ -1397,11 +1408,39 @@ def get_resources(
             title = (item.get("title") or "").lower()
             desc = (item.get("description") or "").lower()
             kps = " ".join(item.get("knowledgePoints", item.get("knowledge_points", []))).lower()
-            if q not in title and q not in desc and q not in kps and q not in item.get("id", "").lower():
+            item_chapter_s = (item.get("relatedChapter", item.get("related_chapter", "")) or "").lower()
+            tags = " ".join(item.get("tags", [])).lower()
+            if (
+                q not in title
+                and q not in desc
+                and q not in kps
+                and q not in item.get("id", "").lower()
+                and q not in item_chapter_s
+                and q not in tags
+            ):
                 return False
         if knowledgePoint:
             kps = item.get("knowledgePoints", item.get("knowledge_points", []))
             if knowledgePoint not in kps:
+                return False
+        # ── 章节筛选 ──
+        if chapter:
+            item_chapter = item.get("relatedChapter", item.get("related_chapter", ""))
+            if chapter not in item_chapter:
+                return False
+        # ── 质检状态筛选 ──
+        if qualityStatus:
+            item_qs = item.get("qualityStatus", item.get("quality_status", ""))
+            if item_qs != qualityStatus:
+                return False
+        # ── 学习状态筛选 ──
+        if studyStatus:
+            item_ss = item.get("studyStatus", item.get("study_status", "new"))
+            if item_ss != studyStatus:
+                return False
+        # ── 收藏状态筛选 ──
+        if _bookmarked_filter is not None:
+            if item.get("bookmarked", False) != _bookmarked_filter:
                 return False
         return True
 
@@ -1496,8 +1535,34 @@ def get_resources(
             seen_ids.add(rid)
             merged.append(item)
 
-    # Sort: completed resources to the end
-    merged.sort(key=lambda r: 1 if r.get("studyStatus") == "completed" else 0)
+    # ── 排序 ──
+    _DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
+
+    def _sort_key(r: dict[str, Any]) -> tuple:
+        study_status = r.get("studyStatus", "new")
+        difficulty = r.get("difficulty", "easy")
+        diff_order = _DIFFICULTY_ORDER.get(difficulty, 1)
+        created_at = r.get("createdAt", 0)
+        est_min = r.get("estimatedMinutes", 9999)
+        has_stage = 0 if r.get("relatedStageId") or r.get("related_chapter") else 1
+        is_completed = 0 if study_status == "completed" else 1
+
+        if sortBy == "newest":
+            return (-created_at,)
+        elif sortBy == "shortest":
+            return (est_min, is_completed)
+        elif sortBy == "easiest":
+            return (diff_order, is_completed)
+        elif sortBy == "hardest":
+            return (-diff_order, is_completed)
+        elif sortBy == "status":
+            return (is_completed, -created_at)
+        elif sortBy == "stage":
+            return (has_stage, is_completed, -created_at)
+        else:  # default: recommended — completed at end, then by stage, newest
+            return (is_completed, has_stage, -created_at)
+
+    merged.sort(key=_sort_key)
 
     return {"resources": merged, "total": len(merged), "page": 1, "sessionId": session_id}
 
@@ -1617,6 +1682,91 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
     finally:
         db.close()
     return {"ok": True, "studyStatus": study_status}
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Batch resource operations
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.post("/resources/batch/study-status")
+def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
+    """Batch update study status for multiple resources in a session."""
+    session_id = str(payload.get("sessionId", ""))
+    resource_ids: list[str] = payload.get("resourceIds", [])
+    study_status = str(payload.get("studyStatus", "completed"))
+    if not session_id or not resource_ids:
+        return {"ok": False, "error": "sessionId and resourceIds are required", "updated": 0}
+    try:
+        db = SessionLocal()
+        from app.db.repository import batch_update_study_status as repo_batch_status
+        updated = repo_batch_status(db, session_id, resource_ids, study_status)
+        return {"ok": True, "updated": updated, "studyStatus": study_status}
+    finally:
+        db.close()
+
+
+@router.post("/resources/batch/bookmark")
+def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
+    """Batch bookmark or un-bookmark multiple resources in a session."""
+    session_id = str(payload.get("sessionId", ""))
+    resource_ids: list[str] = payload.get("resourceIds", [])
+    bookmarked = bool(payload.get("bookmarked", True))
+    if not session_id or not resource_ids:
+        return {"ok": False, "error": "sessionId and resourceIds are required", "updated": 0}
+    try:
+        db = SessionLocal()
+        from app.db.repository import batch_set_bookmark as repo_batch_bookmark
+        updated = repo_batch_bookmark(db, session_id, resource_ids, bookmarked)
+        return {"ok": True, "updated": updated, "bookmarked": bookmarked}
+    finally:
+        db.close()
+
+
+@router.post("/resources/batch/export")
+def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
+    """Export resource titles as a text list. Optionally filter by resourceIds."""
+    session_id = str(payload.get("sessionId", ""))
+    resource_ids: list[str] | None = payload.get("resourceIds")
+    if not session_id:
+        return {"ok": False, "error": "sessionId is required", "export": ""}
+
+    # Gather all resources for this session
+    db_resources = ag_get_resources(session_id)
+    db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
+
+    state = conversation_store.get(session_id)
+    memory_resources: list[dict[str, Any]] = []
+    if state and state.last_result:
+        for item in state.last_result.get("resources", []):
+            normalized = _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
+            rid = normalized.get("id", "")
+            if rid and rid not in db_map:
+                db_map[rid] = normalized
+
+    # Apply resourceIds filter if provided
+    if resource_ids:
+        id_set = set(resource_ids)
+        items = [r for rid, r in db_map.items() if rid in id_set]
+    else:
+        items = list(db_map.values())
+
+    # Build export text
+    lines: list[str] = []
+    for i, r in enumerate(items, 1):
+        title = r.get("title", "未命名资源")
+        rtype = r.get("type", "lecture")
+        diff = r.get("difficulty", "easy")
+        chapter = r.get("relatedChapter", r.get("related_chapter", ""))
+        status = r.get("studyStatus", r.get("study_status", "new"))
+        status_label = {"new": "未开始", "in_progress": "学习中", "completed": "已完成"}.get(status, status)
+        chapter_part = f" [{chapter}]" if chapter else ""
+        lines.append(f"{i:3d}. [{rtype}] {title}{chapter_part} ({diff}) — {status_label}")
+
+    export_text = "\n".join(lines)
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+    header = f"EduAgent 资源导出 — {timestamp}\n共 {len(items)} 项资源\n{'─' * 48}\n"
+    return {"ok": True, "export": header + export_text, "count": len(items)}
 
 
 @router.post("/resources/generate")
@@ -1989,6 +2139,34 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
                 _update(next_id, "available", 0)
                 _log_node_progress(session_id, next_id, "available")
         _log_node_progress(session_id, task_id, "completed")
+
+        # 检查本阶段所有节点是否全部完成 → 触发 stage_complete
+        try:
+            from app.services.agent_service import get_learning_path as _get_lp
+            path = _get_lp(session_id)
+            if path and path.get("stages"):
+                for stage in path["stages"]:
+                    sid = stage.get("id", "")
+                    if sid and related_stage_id in sid:
+                        nodes = stage.get("nodes", [])
+                        all_completed = all(
+                            _has(node.get("id", ""))
+                            and _node_progress_store.get(_nkey(session_id, node.get("id", "")), {}).get("status") == "completed"
+                            for node in nodes
+                        ) if nodes else True
+                        if all_completed and nodes:
+                            learning_tracker.log({
+                                "event": "stage_complete",
+                                "resourceId": sid,
+                                "sessionId": session_id,
+                                "metadata": {
+                                    "stageId": sid,
+                                    "stageTitle": stage.get("title", ""),
+                                    "relatedStageId": sid,
+                                },
+                            }, session_id=session_id)
+        except Exception:
+            pass
     return {"ok": True}
 
 
@@ -2002,3 +2180,90 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
         **analytics,
         "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。",
     }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Learning timeline
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@router.get("/learning-events/timeline")
+def learning_timeline(
+    sessionId: str = "",
+    subjectId: str = "",
+    limit: int = 50,
+) -> dict[str, Any]:
+    """Get recent learning events as a timeline, enriched with resource metadata."""
+    session_id = _resolve_session_id(sessionId, subjectId)
+    if not session_id:
+        return {"events": [], "total": 0}
+
+    try:
+        db = SessionLocal()
+        from app.db.repository import get_events as repo_get_events
+        raw_events = repo_get_events(db, session_id, limit=limit)
+    finally:
+        db.close()
+
+    # Build resource title lookup from DB + memory
+    db_resources = ag_get_resources(session_id)
+    resource_titles: dict[str, str] = {}
+    resource_types: dict[str, str] = {}
+    resource_stages: dict[str, str] = {}
+    resource_chapters: dict[str, str] = {}
+    for r in db_resources:
+        rid = r.get("id", "")
+        if rid:
+            resource_titles[rid] = r.get("title", "") or ""
+            resource_types[rid] = r.get("type", "") or ""
+            resource_stages[rid] = r.get("related_stage_id", "") or r.get("relatedStageId", "") or ""
+            resource_chapters[rid] = r.get("related_chapter", "") or r.get("relatedChapter", "") or ""
+
+    state = conversation_store.get(session_id)
+    if state and state.last_result:
+        for item in state.last_result.get("resources", []):
+            normalized = _to_resource(item, state.last_result.get("course_id", "ai_intro"), session_id)
+            rid = normalized.get("id", "")
+            if rid and rid not in resource_titles:
+                resource_titles[rid] = normalized.get("title", "") or ""
+                resource_types[rid] = normalized.get("type", "") or ""
+                resource_stages[rid] = normalized.get("relatedStageId", "") or ""
+                resource_chapters[rid] = normalized.get("relatedChapter", "") or ""
+
+    # Event type → display config
+    EVENT_CONFIG: dict[str, dict[str, Any]] = {
+        "resource_view":     {"label": "查看了资源",     "icon": "👁️", "color": "blue"},
+        "resource_complete": {"label": "完成了资源",     "icon": "✅", "color": "green"},
+        "quiz_result":       {"label": "提交了练习",     "icon": "📝", "color": "amber"},
+        "practice_result":   {"label": "提交了实操",     "icon": "💻", "color": "cyan"},
+        "feedback":          {"label": "提交了反馈",     "icon": "💬", "color": "purple"},
+        "stage_complete":    {"label": "完成了阶段",     "icon": "🎯", "color": "rose"},
+        "node_progress":     {"label": "学习节点更新",   "icon": "📌", "color": "gray"},
+    }
+
+    events_out: list[dict[str, Any]] = []
+    for evt in raw_events:
+        rid = evt.resource_id or ""
+        meta = evt.metadata_ or {}
+        title = resource_titles.get(rid, meta.get("title", "") or "")
+        rtype = resource_types.get(rid, meta.get("type", "") or "")
+        stage_id = resource_stages.get(rid, meta.get("relatedStageId", meta.get("related_stage_id", "")) or "")
+        chapter = resource_chapters.get(rid, meta.get("relatedChapter", meta.get("related_chapter", "")) or "")
+        config = EVENT_CONFIG.get(evt.event_type, {"label": evt.event_type, "icon": "📋", "color": "gray"})
+
+        events_out.append({
+            "id": evt.id,
+            "event": evt.event_type,
+            "label": config["label"],
+            "icon": config["icon"],
+            "color": config["color"],
+            "resourceId": rid,
+            "resourceTitle": title,
+            "resourceType": rtype,
+            "relatedStageId": stage_id,
+            "relatedChapter": chapter,
+            "metadata": meta,
+            "timestamp": int(evt.created_at.timestamp() * 1000) if evt.created_at else 0,
+        })
+
+    return {"events": events_out, "total": len(events_out)}

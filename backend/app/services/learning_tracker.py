@@ -199,14 +199,25 @@ class LearningTracker:
     def _weak_topics(self, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
         from collections import defaultdict
         topic_stats: dict[str, dict[str, int]] = defaultdict(lambda: {"wrong": 0, "total": 0})
+        topic_sources: dict[str, set[str]] = defaultdict(set)
         for event in events:
             metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
             topic = metadata.get("topic") or metadata.get("knowledgePoint")
             if not topic:
                 continue
-            stat = topic_stats[str(topic)]
+            topic_key = str(topic)
+            stat = topic_stats[topic_key]
             stat["total"] += int(metadata.get("total", 1) or 1)
             stat["wrong"] += int(metadata.get("wrong", 0) or 0)
+
+            # 记录来源
+            evt_type = event.get("event", "")
+            if evt_type in ("quiz_result", "quiz_submit"):
+                topic_sources[topic_key].add("quiz")
+            elif evt_type == "practice_result":
+                topic_sources[topic_key].add("practice")
+            elif evt_type == "feedback":
+                topic_sources[topic_key].add("feedback")
 
         ranked = sorted(
             topic_stats.items(),
@@ -219,6 +230,8 @@ class LearningTracker:
                 "wrongCount": stat["wrong"],
                 "totalCount": stat["total"],
                 "risk": round(stat["wrong"] / max(1, stat["total"]), 2),
+                "source": sorted(topic_sources.get(topic, ["diagnosis"])),
+                "priority": "high" if stat["wrong"] / max(1, stat["total"]) > 0.5 else "medium",
             }
             for topic, stat in ranked[:5]
             if stat["wrong"] > 0

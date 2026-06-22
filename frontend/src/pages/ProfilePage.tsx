@@ -423,16 +423,36 @@ export default function ProfilePage() {
           </h3>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {profile.weaknesses.map((gap) => (
-              <div key={gap.topic} className="flex items-center justify-between p-3.5 bg-red-50/60 border border-red-100 rounded-xl hover:shadow-sm transition-shadow">
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-800 truncate">{gap.topic}</p>
-                  <p className="text-[10px] text-gray-400 mt-0.5">优先修复 P{gap.priority}</p>
-                </div>
-                <div className="text-right flex-shrink-0 ml-3">
-                  <div className="text-xs font-bold text-red-500">{gap.mastery}%</div>
-                  <div className="h-1.5 w-16 bg-red-100 rounded-full mt-1 overflow-hidden">
-                    <div className="h-full bg-red-400 rounded-full" style={{ width: `${gap.mastery}%` }} />
+              <div key={gap.topic} className="p-3.5 bg-red-50/60 border border-red-100 rounded-xl hover:shadow-sm transition-shadow space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-800 truncate">{gap.topic}</p>
                   </div>
+                  <div className="text-right flex-shrink-0 ml-3">
+                    <div className="text-xs font-bold text-red-500">{gap.mastery}%</div>
+                    <div className="h-1.5 w-16 bg-red-100 rounded-full mt-1 overflow-hidden">
+                      <div className="h-full bg-red-400 rounded-full" style={{ width: `${gap.mastery}%` }} />
+                    </div>
+                  </div>
+                </div>
+                {/* 来源标签 */}
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  {(gap.source as string[] | undefined)?.map((src) => (
+                    <span key={src} className={`px-1.5 py-0.5 rounded text-[9px] font-medium border ${
+                      src === 'quiz' ? 'bg-blue-50 text-blue-600 border-blue-200' :
+                      src === 'practice' ? 'bg-cyan-50 text-cyan-600 border-cyan-200' :
+                      src === 'feedback' ? 'bg-purple-50 text-purple-600 border-purple-200' :
+                      src === 'diagnosis' ? 'bg-amber-50 text-amber-600 border-amber-200' :
+                      'bg-gray-50 text-gray-500 border-gray-200'
+                    }`}>
+                      {src === 'quiz' ? '📝 练习' : src === 'practice' ? '💻 实操' : src === 'feedback' ? '💬 反馈' : src === 'diagnosis' ? '🔍 诊断' : src}
+                    </span>
+                  ))}
+                  {gap.priority != null && (
+                    <span className="px-1.5 py-0.5 rounded text-[9px] font-medium bg-red-100 text-red-600 border border-red-200">
+                      P{gap.priority}
+                    </span>
+                  )}
                 </div>
               </div>
             ))}

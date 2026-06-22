@@ -391,6 +391,48 @@ def get_bookmarked_ids(db: Session, session_id: str) -> set[str]:
     return {row[0] for row in rows}
 
 
+# ── Batch operations ──────────────────────────────────────────────────
+
+def batch_update_study_status(
+    db: Session,
+    session_id: str,
+    resource_ids: list[str],
+    study_status: str,
+) -> int:
+    """Batch update study status for multiple resources in a session.
+    Returns the number of resources updated."""
+    updated = (
+        db.query(ResourceModel)
+        .filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.id.in_(resource_ids),
+        )
+        .update({"study_status": study_status}, synchronize_session=False)
+    )
+    db.commit()
+    return updated
+
+
+def batch_set_bookmark(
+    db: Session,
+    session_id: str,
+    resource_ids: list[str],
+    bookmarked: bool,
+) -> int:
+    """Batch set bookmark state for multiple resources in a session.
+    Returns the number of resources updated."""
+    updated = (
+        db.query(ResourceModel)
+        .filter(
+            ResourceModel.session_id == session_id,
+            ResourceModel.id.in_(resource_ids),
+        )
+        .update({"bookmarked": bookmarked}, synchronize_session=False)
+    )
+    db.commit()
+    return updated
+
+
 # ── Learning Events ──────────────────────────────────────────────────────
 
 def log_event(
@@ -497,7 +539,25 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         normalized = [s * 100 if s <= 1 else s for s in quiz_scores]
         quiz_accuracy = round(sum(normalized) / len(normalized))
 
-    # Weak topics
+    # Weak topics — enhanced with source tracking
+    topic_sources: dict[str, set[str]] = {}
+    for evt in events:
+        meta = evt.metadata_ or {}
+        topic = meta.get("topic") or meta.get("knowledgePoint")
+        if not topic:
+            continue
+        tk = str(topic)
+        if tk not in topic_sources:
+            topic_sources[tk] = set()
+        if evt.event_type in ("quiz_result", "quiz_submit"):
+            topic_sources[tk].add("quiz")
+        elif evt.event_type == "practice_result":
+            topic_sources[tk].add("practice")
+        elif evt.event_type == "feedback":
+            topic_sources[tk].add("feedback")
+        elif evt.event_type == "diagnosis":
+            topic_sources[tk].add("diagnosis")
+
     ranked = sorted(
         topic_wrong.items(),
         key=lambda item: (item[1] / max(1, topic_total.get(item[0], 1)), item[1]),
@@ -509,6 +569,8 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             "wrongCount": wrong,
             "totalCount": topic_total.get(topic, 1),
             "risk": round(wrong / max(1, topic_total.get(topic, 1)), 2),
+            "source": sorted(topic_sources.get(topic, ["diagnosis"])),
+            "priority": "high" if wrong / max(1, topic_total.get(topic, 1)) > 0.5 else "medium",
         }
         for topic, wrong in ranked[:5]
         if wrong > 0

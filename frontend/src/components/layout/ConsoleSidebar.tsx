@@ -6,7 +6,7 @@ import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
 import SettingsModal from '../common/SettingsModal';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import {
-  Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp,
+  Brain, MessageSquare, Library, GitFork, User, Home, TrendingUp, Clock,
   LogOut, ChevronLeft, ChevronRight, Edit3, Check, X,
   Settings, Gift, HelpCircle, GraduationCap, Share2, Plus, Trash2,
 } from 'lucide-react';
@@ -221,6 +221,7 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         <NavBtn path="/chat" label="对话" icon={MessageSquare} active={location.pathname === '/chat'} navigate={navigate} />
         <NavBtn path="/profile" label="画像" icon={User} active={location.pathname === '/profile'} navigate={navigate} />
         <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
+        <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
       </div>
 
       {/* ===== 对话记录（按会话） ===== */}

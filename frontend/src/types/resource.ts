@@ -69,6 +69,15 @@ export interface PptSlide {
   notes?: string;
 }
 
+export type SortBy =
+  | 'default'    // 默认推荐：已完成靠后 → 有阶段优先 → 最新
+  | 'newest'     // 最新生成
+  | 'shortest'   // 预计时间短优先
+  | 'easiest'    // 难度从低到高
+  | 'hardest'    // 难度从高到低
+  | 'status'     // 已完成 / 未完成
+  | 'stage';     // 当前阶段优先
+
 export interface ResourceFilter {
   type?: ResourceType;
   difficulty?: string;
@@ -76,8 +85,16 @@ export interface ResourceFilter {
   knowledgePoint?: string;
   format?: ResourceFormat;
   search?: string;
-  sortBy?: 'newest' | 'relevance' | 'difficulty';
+  sortBy?: SortBy;
   relatedStageId?: string;
   taskId?: string;
   resourceIds?: string;
+  /** 章节筛选 */
+  chapter?: string;
+  /** 质检状态: passed | needs_review | fallback_passed */
+  qualityStatus?: string;
+  /** 学习状态: new | in_progress | completed */
+  studyStatus?: string;
+  /** 收藏筛选: "true" | "false" */
+  bookmarked?: string;
 }

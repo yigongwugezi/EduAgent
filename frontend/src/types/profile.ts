@@ -66,6 +66,12 @@ export interface KnowledgeGap {
   mastery: number;
   priority: number;
   suggestedResources: string[];
+  /** 来源: quiz, practice, feedback, diagnosis */
+  source?: string[];
+  /** 风险值 0-1 */
+  risk?: number;
+  /** 推荐原因 */
+  reason?: string;
 }
 
 export interface LearningPreferences {

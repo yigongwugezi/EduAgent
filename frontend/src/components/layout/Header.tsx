@@ -12,6 +12,7 @@ const navItems = [
   { path: '/path', label: '学习路径' },
   { path: '/profile', label: '学习画像' },
   { path: '/analytics', label: '学习分析' },
+  { path: '/timeline', label: '时间线' },
 ];
 
 export default function Header() {

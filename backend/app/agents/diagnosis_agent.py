@@ -36,6 +36,8 @@ class DiagnosisAgent(BaseAgent):
                     "priority": priority,
                     "difficulty": point.get("difficulty", "medium"),
                     "prerequisites": point.get("prerequisites", []),
+                    "source": ["diagnosis"],
+                    "risk": 0.7 if priority == "high" else 0.4,
                 }
             )
 
