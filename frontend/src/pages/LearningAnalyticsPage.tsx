@@ -465,13 +465,23 @@ export default function LearningAnalyticsPage() {
 
       {/* ========== 最近学习行为 ========== */}
       <div className="bg-white border border-gray-100 rounded-2xl p-6 shadow-sm mb-6">
-        <h3 className="text-sm font-semibold text-gray-700 mb-4 flex items-center gap-2">
-          <Activity className="w-4 h-4 text-brand-500" />
-          最近学习行为
-        </h3>
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+            <Activity className="w-4 h-4 text-brand-500" />
+            最近学习行为
+          </h3>
+          <button
+            onClick={() => navigate('/timeline')}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-[10px] font-medium text-brand-600 bg-brand-50 hover:bg-brand-100 transition-colors"
+          >
+            <Activity className="w-3 h-3" />
+            查看完整时间线
+            <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
         {analytics.recentEvents && analytics.recentEvents.length > 0 ? (
           <div className="space-y-0">
-            {[...analytics.recentEvents].reverse().slice(-10).reverse().map((evt, i) => {
+            {[...analytics.recentEvents].reverse().slice(-5).reverse().map((evt, i) => {
               const info = eventLabels[evt.event] || { label: evt.event, icon: '📌', color: 'text-gray-400' };
               const desc = eventDescription(evt);
               const timeStr = formatEventTime(evt.timestamp as number | string | undefined);
@@ -480,7 +490,7 @@ export default function LearningAnalyticsPage() {
                   {/* 时间线圆点 */}
                   <div className="flex flex-col items-center mt-1">
                     <div className={`w-2.5 h-2.5 rounded-full ${info.color.replace('text-', 'bg-')}/60 ring-2 ring-white`} />
-                    {i < Math.min(analytics.recentEvents.length - 1, 9) && (
+                    {i < Math.min(analytics.recentEvents.length - 1, 4) && (
                       <div className="w-px h-full min-h-[24px] bg-gray-100 mt-1" />
                     )}
                   </div>

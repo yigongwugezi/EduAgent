@@ -1,18 +1,38 @@
-import { useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useCallback, useMemo } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Clock, Eye, CheckCircle2, FileText, Code, MessageSquare,
   Target, BookOpen, ArrowRight, ExternalLink, History,
+  ListFilter, ChevronDown, ChevronUp, LayoutGrid,
 } from 'lucide-react';
 import type { TimelineEvent } from '../types/analytics';
 import { timeAgo } from '../utils/format';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
 import { useLearningEvents } from '../hooks/useLearningEvents';
+import TimelineSummaryCard from '../components/timeline/TimelineSummaryCard';
+import TimelineEventDetail from '../components/timeline/TimelineEventDetail';
 
 /* ===================================================================
- * 事件图标映射
+ * 常量
  * =================================================================== */
+const EVENT_TYPE_FILTERS = [
+  { value: '',         label: '全部',    icon: ListFilter },
+  { value: 'resource_view',     label: '查看资源', icon: Eye },
+  { value: 'resource_complete', label: '完成资源', icon: CheckCircle2 },
+  { value: 'quiz_result',       label: '测验',    icon: FileText },
+  { value: 'practice_result',   label: '实践',    icon: Code },
+  { value: 'feedback',          label: '反馈',    icon: MessageSquare },
+  { value: 'stage_complete',    label: '阶段更新', icon: Target },
+] as const;
+
+const TIME_RANGE_FILTERS = [
+  { value: '',    label: '全部' },
+  { value: '1',   label: '今天' },
+  { value: '7',   label: '最近 7 天' },
+  { value: '30',  label: '最近 30 天' },
+] as const;
+
 const EVENT_ICON: Record<string, React.ReactNode> = {
   resource_view:     <Eye className="w-4 h-4" />,
   resource_complete: <CheckCircle2 className="w-4 h-4" />,
@@ -33,31 +53,22 @@ const EVENT_COLOR_BG: Record<string, string> = {
   node_progress:     'bg-gray-100 text-gray-500',
 };
 
-const EVENT_LINE_COLOR: Record<string, string> = {
-  resource_view:     'border-blue-300',
-  resource_complete: 'border-green-300',
-  quiz_result:       'border-amber-300',
-  practice_result:   'border-cyan-300',
-  feedback:          'border-purple-300',
-  stage_complete:    'border-rose-300',
-  node_progress:     'border-gray-200',
-};
-
 /* ===================================================================
- * 时间线条目
+ * TimelineItem — 支持展开详情
  * =================================================================== */
 function TimelineItem({
   event,
   onNavigate,
+  defaultExpanded,
 }: {
   event: TimelineEvent;
   onNavigate: (resourceId: string, stageId: string) => void;
+  defaultExpanded?: boolean;
 }) {
-  // 从 metadata 提取 stage title
+  const [expanded, setExpanded] = useState(defaultExpanded ?? false);
   const stageTitle = event.metadata?.stageTitle as string | undefined;
   const nodeStatus = event.metadata?.status as string | undefined;
 
-  // 构建描述
   let description = '';
   if (event.resourceTitle) {
     description = event.resourceTitle;
@@ -71,81 +82,154 @@ function TimelineItem({
     description = `节点状态：${nodeStatus === 'completed' ? '已完成' : nodeStatus === 'in_progress' ? '学习中' : '已解锁'}`;
   }
 
-  // quiz_result 显示正确率
+  // 摘要标签
   let detail = '';
   if (event.event === 'quiz_result' && event.metadata) {
     const correct = event.metadata.correct as number | undefined;
     const total = event.metadata.total as number | undefined;
-    if (correct != null && total != null) {
-      detail = `${correct}/${total} 正确`;
-    }
+    if (correct != null && total != null) detail = `${correct}/${total}`;
     const accuracy = event.metadata.accuracy as number | undefined;
-    if (accuracy != null && !detail) {
-      detail = `正确率 ${accuracy}%`;
-    }
+    if (accuracy != null && !detail) detail = `${accuracy}%`;
   }
   if (event.event === 'feedback' && event.metadata) {
     const rating = event.metadata.rating as number | undefined;
-    if (rating != null) {
-      detail = `评分 ${'⭐'.repeat(rating)}`;
-    }
+    if (rating != null) detail = `${'⭐'.repeat(rating)}`;
   }
 
   const iconBg = EVENT_COLOR_BG[event.event] || 'bg-gray-100 text-gray-500';
-  const lineColor = EVENT_LINE_COLOR[event.event] || 'border-gray-200';
 
   return (
-    <div className="relative flex gap-4 pb-6 group">
-      {/* 时间线竖线 */}
-      <div className={`absolute left-[1.125rem] top-10 bottom-0 w-px border-l-2 border-dashed ${lineColor} last:hidden`} />
-
-      {/* 图标 */}
-      <div className={`relative z-10 w-9 h-9 rounded-xl ${iconBg} flex items-center justify-center flex-shrink-0 shadow-sm`}>
-        {EVENT_ICON[event.event] || <History className="w-4 h-4" />}
-      </div>
-
-      {/* 内容 */}
-      <div className="flex-1 min-w-0 pt-0.5">
-        <div className="flex items-start justify-between gap-2">
-          <div>
-            <p className="text-sm font-semibold text-gray-800">{event.label}</p>
-            {description && (
-              <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{description}</p>
-            )}
-            {detail && (
-              <span className="inline-block mt-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-gray-50 text-gray-500 border border-gray-100">
-                {detail}
-              </span>
+    <div className="relative pb-4 group">
+      <div
+        className="flex gap-4 cursor-pointer rounded-xl transition-colors hover:bg-gray-50/50 -mx-2 px-2 py-1"
+        onClick={() => setExpanded(!expanded)}
+      >
+        {/* 时间线竖线 — 使用伪元素替代 last:hidden */}
+        <div className="relative flex flex-col items-center flex-shrink-0">
+          <div className={`relative z-10 w-9 h-9 rounded-xl ${iconBg} flex items-center justify-center shadow-sm`}>
+            {EVENT_ICON[event.event] || <History className="w-4 h-4" />}
+          </div>
+          {/* 展开/折叠图标 */}
+          <div className="mt-0.5">
+            {expanded ? (
+              <ChevronUp className="w-3 h-3 text-gray-300" />
+            ) : (
+              <ChevronDown className="w-3 h-3 text-gray-300" />
             )}
           </div>
-          <span className="text-[10px] text-gray-400 whitespace-nowrap flex-shrink-0 mt-0.5">
-            {timeAgo(event.timestamp)}
-          </span>
         </div>
 
-        {/* 跳转按钮 */}
-        {(event.resourceId || event.relatedStageId) && (
-          <div className="flex items-center gap-2 mt-2">
-            {event.resourceId && (
-              <button
-                onClick={() => onNavigate(event.resourceId, '')}
-                className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-500 hover:text-brand-600 transition-colors"
-              >
-                <ExternalLink className="w-3 h-3" />
-                查看资源
-              </button>
-            )}
-            {event.relatedStageId && (
-              <button
-                onClick={() => onNavigate('', event.relatedStageId)}
-                className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-400 hover:text-gray-600 transition-colors"
-              >
-                <ArrowRight className="w-3 h-3" />
-                跳转阶段
-              </button>
-            )}
+        {/* 内容 */}
+        <div className="flex-1 min-w-0 pt-0.5">
+          <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-gray-800">{event.label}</p>
+              {description && (
+                <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{description}</p>
+              )}
+              {detail && (
+                <span className="inline-block mt-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-gray-50 text-gray-500 border border-gray-100">
+                  {detail}
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] text-gray-400 whitespace-nowrap flex-shrink-0 mt-0.5">
+              {timeAgo(event.timestamp)}
+            </span>
           </div>
-        )}
+
+          {/* 跳转按钮（阻止冒泡以免触发展开） */}
+          {(event.resourceId || event.relatedStageId) && (
+            <div className="flex items-center gap-2 mt-2" onClick={(e) => e.stopPropagation()}>
+              {event.resourceId && (
+                <button
+                  onClick={() => onNavigate(event.resourceId, '')}
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-brand-500 hover:text-brand-600 transition-colors"
+                >
+                  <ExternalLink className="w-3 h-3" />
+                  查看资源
+                </button>
+              )}
+              {event.relatedStageId && (
+                <button
+                  onClick={() => onNavigate('', event.relatedStageId)}
+                  className="inline-flex items-center gap-1 text-[10px] font-medium text-gray-400 hover:text-gray-600 transition-colors"
+                >
+                  <ArrowRight className="w-3 h-3" />
+                  跳转阶段
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* 展开详情面板 */}
+      {expanded && <TimelineEventDetail event={event} />}
+    </div>
+  );
+}
+
+/* ===================================================================
+ * 过滤器横条
+ * =================================================================== */
+function FilterBar({
+  eventType,
+  timeRange,
+  onEventTypeChange,
+  onTimeRangeChange,
+}: {
+  eventType: string;
+  timeRange: string;
+  onEventTypeChange: (v: string) => void;
+  onTimeRangeChange: (v: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 mb-6">
+      {/* 事件类型筛选 */}
+      <div className="flex items-center gap-1.5">
+        <ListFilter className="w-3.5 h-3.5 text-gray-400" />
+        <div className="flex flex-wrap gap-1">
+          {EVENT_TYPE_FILTERS.map((f) => {
+            const Icon = f.icon;
+            const active = eventType === f.value;
+            return (
+              <button
+                key={f.value}
+                onClick={() => onEventTypeChange(f.value)}
+                className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-[10px] font-medium transition-all ${
+                  active
+                    ? 'bg-gray-900 text-white shadow-sm'
+                    : 'bg-gray-50 text-gray-500 hover:bg-gray-100'
+                }`}
+              >
+                <Icon className="w-3 h-3" />
+                {f.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* 时间范围筛选 */}
+      <div className="flex items-center gap-1 ml-auto">
+        <Clock className="w-3 h-3 text-gray-400" />
+        {TIME_RANGE_FILTERS.map((f) => {
+          const active = timeRange === f.value;
+          return (
+            <button
+              key={f.value}
+              onClick={() => onTimeRangeChange(f.value)}
+              className={`px-2 py-1 rounded-md text-[10px] font-medium transition-all ${
+                active
+                  ? 'bg-gray-900 text-white'
+                  : 'text-gray-400 hover:text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {f.label}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -156,10 +240,41 @@ function TimelineItem({
  * =================================================================== */
 export default function LearningTimelinePage() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // 筛选状态 ← URL 参数
+  const eventType = searchParams.get('type') ?? '';
+  const timeRange = searchParams.get('range') ?? '';
+
+  const updateFilter = useCallback((key: string, value: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) {
+        next.set(key, value);
+      } else {
+        next.delete(key);
+      }
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+
   const { events, total, loading, error, refetch } = useLearningEvents(100);
 
+  // 筛选
+  const filtered = useMemo(() => {
+    let result = events;
+    if (eventType) {
+      result = result.filter((e) => e.event === eventType);
+    }
+    if (timeRange) {
+      const cutoff = Date.now() - parseInt(timeRange) * 86400000;
+      result = result.filter((e) => e.timestamp >= cutoff);
+    }
+    return result;
+  }, [events, eventType, timeRange]);
+
   // 按天分组
-  const grouped = groupByDate(events);
+  const grouped = useMemo(() => groupByDate(filtered), [filtered]);
 
   const handleNavigate = useCallback((resourceId: string, stageId: string) => {
     if (resourceId) {
@@ -170,7 +285,7 @@ export default function LearningTimelinePage() {
   }, [navigate]);
 
   return (
-    <div className="max-w-3xl mx-auto px-4 py-6 md:py-8">
+    <div className="max-w-6xl mx-auto px-4 py-6 md:py-8">
       {/* ========== 头部 ========== */}
       <div className="mb-6">
         <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1 flex items-center gap-2">
@@ -179,10 +294,15 @@ export default function LearningTimelinePage() {
         </h1>
         <p className="text-sm text-gray-500">
           共 <span className="font-semibold text-gray-700">{total}</span> 条学习行为记录
+          {filtered.length !== events.length && (
+            <span className="text-gray-400">
+              ，筛选后 <span className="font-semibold">{filtered.length}</span> 条
+            </span>
+          )}
         </p>
       </div>
 
-      {/* ========== 列表 ========== */}
+      {/* ========== 内容区：左列（时间线）+ 右列（统计卡片） ========== */}
       {loading ? (
         <Loading text="加载时间线…" />
       ) : error ? (
@@ -193,7 +313,7 @@ export default function LearningTimelinePage() {
           <h3 className="text-base font-semibold text-gray-700 mb-1">加载失败</h3>
           <p className="text-sm text-gray-400 mb-5">{error}</p>
           <button
-            onClick={() => window.location.reload()}
+            onClick={refetch}
             className="px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all"
           >
             刷新重试
@@ -215,27 +335,60 @@ export default function LearningTimelinePage() {
           }
         />
       ) : (
-        <div className="space-y-1">
-          {grouped.map(([dateLabel, dateEvents]) => (
-            <div key={dateLabel}>
-              {/* 日期分组标题 */}
-              <div className="flex items-center gap-2 mb-3 mt-5 first:mt-0">
-                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 text-gray-500 text-[10px] font-medium">
-                  <Clock className="w-3 h-3" />
-                  {dateLabel}
-                </div>
-                <div className="flex-1 h-px bg-gray-100" />
-                <span className="text-[10px] text-gray-300">{dateEvents.length} 条</span>
-              </div>
+        <div className="flex flex-col lg:flex-row gap-6">
+          {/* 左列：时间线 */}
+          <div className="flex-1 min-w-0">
+            {/* 筛选栏 */}
+            <FilterBar
+              eventType={eventType}
+              timeRange={timeRange}
+              onEventTypeChange={(v) => updateFilter('type', v)}
+              onTimeRangeChange={(v) => updateFilter('range', v)}
+            />
 
-              {/* 当天的事件 */}
-              <div className="pl-1">
-                {dateEvents.map((evt) => (
-                  <TimelineItem key={evt.id} event={evt} onNavigate={handleNavigate} />
-                ))}
-              </div>
+            {/* 时间线列表 */}
+            <div className="space-y-1">
+              {grouped.length === 0 ? (
+                <div className="flex flex-col items-center py-16 text-center">
+                  <LayoutGrid className="w-10 h-10 text-gray-200 mb-3" />
+                  <p className="text-sm text-gray-400">当前筛选条件下没有记录</p>
+                  <button
+                    onClick={() => {
+                      setSearchParams({}, { replace: true });
+                    }}
+                    className="mt-3 px-4 py-2 bg-gray-100 text-gray-500 rounded-lg text-xs font-medium hover:bg-gray-200 transition-colors"
+                  >
+                    清除筛选
+                  </button>
+                </div>
+              ) : (
+                grouped.map(([dateLabel, dateEvents]) => (
+                  <div key={dateLabel}>
+                    <div className="flex items-center gap-2 mb-3 mt-5 first:mt-0">
+                      <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 text-gray-500 text-[10px] font-medium">
+                        <Clock className="w-3 h-3" />
+                        {dateLabel}
+                      </div>
+                      <div className="flex-1 h-px bg-gray-100" />
+                      <span className="text-[10px] text-gray-300">{dateEvents.length} 条</span>
+                    </div>
+                    <div className="pl-1">
+                      {dateEvents.map((evt) => (
+                        <TimelineItem key={evt.id} event={evt} onNavigate={handleNavigate} />
+                      ))}
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
-          ))}
+          </div>
+
+          {/* 右列：统计卡片 */}
+          <div className="w-full lg:w-64 flex-shrink-0">
+            <div className="lg:sticky lg:top-6">
+              <TimelineSummaryCard events={filtered} total={total} />
+            </div>
+          </div>
         </div>
       )}
     </div>
