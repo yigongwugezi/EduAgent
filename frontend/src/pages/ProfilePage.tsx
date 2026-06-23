@@ -6,7 +6,7 @@ import { DIMENSION_COLORS } from '../utils/constants';
 import { formatDuration, timeAgo } from '../utils/format';
 import {
   User, Clock, Target, TrendingUp, Zap, BookOpen, Brain,
-  Sparkles, AlertCircle, ArrowRight, Info, RefreshCw,
+  Sparkles, AlertCircle, ArrowRight, Info, RefreshCw, ShieldAlert,
 } from 'lucide-react';
 import {
   PageLoading,
@@ -116,7 +116,7 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
   const color = DIMENSION_COLORS[index % DIMENSION_COLORS.length];
   const sourceInfo = SOURCE_LABELS[dim.source];
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-2 group">
       <div className="w-16 text-[10px] text-gray-500 text-right flex-shrink-0 truncate" title={dim.label}>{dim.label}</div>
       <div className="flex-1 h-2 bg-gray-100 rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-700" style={{ width: `${dim.score}%`, backgroundColor: color }} />
@@ -125,6 +125,12 @@ function DimensionBar({ dim, index }: { dim: ProfileDimension; index: number }) 
       {sourceInfo && (
         <span className={`px-1.5 py-0.5 rounded text-[8px] font-medium border flex-shrink-0 ${sourceInfo.color}`}>
           {sourceInfo.label}
+        </span>
+      )}
+      {dim.confidence < 0.5 && dim.source !== 'user_input' && (
+        <span className="text-[8px] text-amber-400 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-0.5" title={`置信度：${Math.round(dim.confidence * 100)}%`}>
+          <ShieldAlert className="w-2.5 h-2.5" />
+          低可信
         </span>
       )}
     </div>
@@ -183,7 +189,7 @@ export default function ProfilePage() {
   const background = profile.dimensions.find((d) => d.key === 'major_background');
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-6 md:py-8 relative">
+    <div className="max-w-7xl mx-auto px-4 py-6 md:py-8 relative">
       {/* ========== 刷新遮罩 ========== */}
       {loading && profile && <RefreshOverlay />}
 

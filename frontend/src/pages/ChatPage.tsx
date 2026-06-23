@@ -485,6 +485,7 @@ export default function ChatPage() {
         <button
           onClick={() => setHistoryOpen(true)}
           className="absolute top-3 right-3 z-10 flex items-center gap-1.5 px-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs text-gray-500 hover:text-gray-700 hover:border-gray-300 shadow-sm transition-all"
+          title="查看对话历史" aria-label="打开对话历史"
         >
           <History className="w-3.5 h-3.5" />
           历史
@@ -565,6 +566,7 @@ export default function ChatPage() {
         <button
           onClick={() => scrollToBottom(true)}
           className="absolute bottom-24 left-1/2 -translate-x-1/2 w-8 h-8 bg-white border border-gray-200 rounded-full flex items-center justify-center shadow-md hover:shadow-lg transition-all z-10"
+          title="滚动到底部" aria-label="滚动到最新消息"
         >
           <ChevronDown className="w-4 h-4 text-gray-500" />
         </button>

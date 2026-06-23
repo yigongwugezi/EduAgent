@@ -2,7 +2,7 @@ import { useState } from 'react';
 import {
   Clock, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, BookmarkCheck, CheckCircle2, ChevronRight,
-  CheckSquare, Square, ChevronDown, ChevronUp,
+  CheckSquare, Square, ChevronDown, ChevronUp, Shield,
 } from 'lucide-react';
 import type { Resource } from '../../types/resource';
 import type { ResourceType } from '../../types/resource';
@@ -133,6 +133,13 @@ export default function ResourceCard({ resource, onClick, searchQuery, selected,
         <div className="flex items-center justify-between text-[10px] text-gray-400 pt-1">
           <span className="flex items-center gap-1"><Clock className="w-3 h-3" />{formatDuration(resource.estimatedMinutes)}</span>
           <div className="flex items-center gap-2">
+            {/* fallback 温和标识 */}
+            {resource.source === 'system_inferred' && (
+              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] bg-slate-50 text-slate-400 border border-slate-100" title="此资源由系统规则生成">
+                <Shield className="w-2.5 h-2.5" />
+                兜底
+              </span>
+            )}
             {resource.bookmarked && <span className="flex items-center gap-0.5 text-brand-500"><BookmarkCheck className="w-3 h-3" /></span>}
             <SourceBadge source={resource.source || 'system_inferred'} size="xs" />
             <span className="flex items-center gap-0.5 text-brand-500 opacity-0 group-hover:opacity-100 transition-opacity">查看详情 <ChevronRight className="w-3 h-3" /></span>

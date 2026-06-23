@@ -4,7 +4,7 @@ import {
   Search, Filter, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, Clock, Star, ChevronRight, BookmarkPlus,
   BookmarkCheck, CheckCircle2, MessageSquare, X, Send, Sparkles,
-  HelpCircle, Check, XCircle, RefreshCw, AlertCircle, RotateCcw,
+  HelpCircle, Check, XCircle, RefreshCw, AlertCircle, AlertTriangle, RotateCcw,
   SlidersHorizontal, BookmarkX, Layers, TrendingUp,
   Download, ListChecks, Square, CheckSquare, ChevronUp, ChevronDown,
 } from 'lucide-react';
@@ -28,6 +28,10 @@ import { updateStudyStatus, autoAdvanceNode } from '../api/resources';
 import SourceBadge from '../components/common/SourceBadge';
 import { SourceTag, RefreshOverlay, PageError } from '../components/common/PageState';
 import ExpandableText from '../components/common/ExpandableText';
+import QualityStatusPopover, {
+  ReviewStatusBadge,
+  FallbackNotice,
+} from '../components/common/QualityStatusPopover';
 
 /* ===================================================================
  * 长内容折叠组件
@@ -1157,14 +1161,18 @@ export default function ResourceLibrary() {
               <span className="text-xs text-gray-400">· {formatDuration(selected.estimatedMinutes)}</span>
               <span className="text-xs text-gray-400">· {timeAgo(selected.createdAt)}</span>
               <SourceBadge source={selected.source || 'system_inferred'} size="sm" />
-              {selected.qualityStatus && selected.qualityStatus !== 'passed' && (
-                <span className={`px-2 py-0.5 rounded-md text-[10px] font-medium border ${
-                  selected.qualityStatus === 'fallback_passed'
-                    ? 'bg-amber-50 text-amber-600 border-amber-200'
-                    : 'bg-red-50 text-red-600 border-red-200'
-                }`}>
-                  {selected.qualityStatus === 'fallback_passed' ? '🛡️ 兜底内容' : '⚠️ 需复核'}
-                </span>
+              {/* 质检状态 — 可点击查看说明 */}
+              {selected.qualityStatus && (
+                <QualityStatusPopover
+                  qualityStatus={selected.qualityStatus}
+                  reviewStatus={(selected as any).reviewStatus}
+                  reviewIssues={(selected as any).reviewIssues}
+                  reviewSuggestions={(selected as any).reviewSuggestions}
+                />
+              )}
+              {/* 审核状态标签 */}
+              {(selected as any).reviewStatus && !selected.qualityStatus && (
+                <ReviewStatusBadge status={(selected as any).reviewStatus} />
               )}
               {selected.studyStatus === 'completed' && (
                 <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-green-50 text-green-600 border border-green-200">
@@ -1227,7 +1235,7 @@ export default function ResourceLibrary() {
                   </div>
                 </div>
               )}
-              {/* 质检状态 */}
+              {/* 质检状态 — 点击查看详细说明 */}
               {selected.qualityStatus && (
                 <div className="flex items-start gap-2.5">
                   <div className={`w-7 h-7 rounded-lg flex items-center justify-center flex-shrink-0 ${
@@ -1244,27 +1252,75 @@ export default function ResourceLibrary() {
                   </div>
                   <div>
                     <p className="text-[10px] text-gray-400 font-medium">质检状态</p>
-                    <p className={`text-xs font-semibold ${
-                      selected.qualityStatus === 'passed' ? 'text-green-600' :
-                      selected.qualityStatus === 'fallback_passed' ? 'text-amber-600' : 'text-red-600'
-                    }`}>
-                      {selected.qualityStatus === 'passed' ? '已通过' :
-                       selected.qualityStatus === 'fallback_passed' ? '兜底通过' : '需人工复核'}
-                    </p>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className={`text-xs font-semibold ${
+                        selected.qualityStatus === 'passed' ? 'text-green-600' :
+                        selected.qualityStatus === 'fallback_passed' ? 'text-amber-600' : 'text-red-600'
+                      }`}>
+                        {selected.qualityStatus === 'passed' ? '已通过' :
+                         selected.qualityStatus === 'fallback_passed' ? '兜底通过' : '需人工复核'}
+                      </span>
+                      <QualityStatusPopover
+                        qualityStatus={selected.qualityStatus}
+                        reviewStatus={(selected as any).reviewStatus}
+                        reviewIssues={(selected as any).reviewIssues}
+                        reviewSuggestions={(selected as any).reviewSuggestions}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+              {/* 审核问题列表 */}
+              {(selected as any).reviewIssues && (selected as any).reviewIssues.length > 0 && (
+                <div className="sm:col-span-2">
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                    <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
+                      审核问题（{(selected as any).reviewIssues.length}）
+                    </span>
+                  </div>
+                  <div className="space-y-1.5">
+                    {(selected as any).reviewIssues.map((issue: any, i: number) => (
+                      <div
+                        key={i}
+                        className={`p-2 rounded-lg border text-[11px] ${
+                          issue.severity === 'error' ? 'bg-red-50 border-red-100' :
+                          issue.severity === 'warning' ? 'bg-amber-50 border-amber-100' :
+                          'bg-blue-50 border-blue-100'
+                        }`}
+                      >
+                        <div className="flex items-start gap-1.5">
+                          <span className={`flex-shrink-0 ${
+                            issue.severity === 'error' ? 'text-red-500' :
+                            issue.severity === 'warning' ? 'text-amber-500' : 'text-blue-500'
+                          }`}>
+                            {issue.severity === 'error' ? '✗' : issue.severity === 'warning' ? '!' : 'i'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-gray-700">{issue.issue}</p>
+                            {issue.location && (
+                              <p className="text-[10px] text-gray-400 mt-0.5">位置：{issue.location}</p>
+                            )}
+                            {issue.suggestion && (
+                              <p className="text-[10px] text-gray-500 mt-0.5">建议：{issue.suggestion}</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
             </div>
 
-            {/* 来源说明 / fallback 标签 */}
+            {/* 来源说明 / fallback 提示 */}
             {selected.source === 'system_inferred' && (
-              <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
-                <p className="text-xs text-amber-700 font-medium mb-0.5">🛡️ 兜底资源</p>
-                <p className="text-[10px] text-amber-500">
-                  此资源由系统规则生成，内容与当前课程信息的匹配度可能有限。
-                  建议在对话中补充详细信息以获取更准确的课程资源。
-                </p>
-              </div>
+              <FallbackNotice
+                message="此资源由系统规则生成，内容与当前课程信息的匹配度可能有限。建议在对话中补充详细信息以获取更准确的课程资源。"
+              />
+            )}
+            {selected.source === 'fallback' && (
+              <FallbackNotice subtle />
             )}
             {selected.source === 'agent_generated' && (
               <div className="p-3 bg-green-50/70 border border-green-100 rounded-xl">

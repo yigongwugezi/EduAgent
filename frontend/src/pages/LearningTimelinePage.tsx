@@ -5,7 +5,7 @@ import {
   Target, BookOpen, ArrowRight, ExternalLink, History,
   ListFilter, ChevronDown, ChevronUp, LayoutGrid,
 } from 'lucide-react';
-import type { TimelineEvent } from '../types/analytics';
+import type { TimelineEvent } from '../types/timeline';
 import { timeAgo } from '../utils/format';
 import Loading from '../components/common/Loading';
 import EmptyState from '../components/common/EmptyState';
@@ -187,9 +187,9 @@ function FilterBar({
   return (
     <div className="flex flex-wrap items-center gap-3 mb-6">
       {/* 事件类型筛选 */}
-      <div className="flex items-center gap-1.5">
-        <ListFilter className="w-3.5 h-3.5 text-gray-400" />
-        <div className="flex flex-wrap gap-1">
+      <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-thin">
+        <ListFilter className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
+        <div className="flex gap-1 flex-nowrap">
           {EVENT_TYPE_FILTERS.map((f) => {
             const Icon = f.icon;
             const active = eventType === f.value;
@@ -350,7 +350,7 @@ export default function LearningTimelinePage() {
                 </button>
               </div>
             ) : (
-              <div className="space-y-1">
+              <div className="space-y-1 scrollable-list">
                 {grouped.map(([dateLabel, dateEvents]) => (
                   <div key={dateLabel}>
                     <div className="flex items-center gap-2 mb-3 mt-5 first:mt-0">
