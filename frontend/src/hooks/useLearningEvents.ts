@@ -9,10 +9,11 @@ import { useSubjectStore } from '../store/subjectStore';
  *
  * 特性：
  * - sessionId / subjectId 变化时自动刷新
+ * - 支持事件类型 (type) 和时间范围 (range) 筛选 — 后端过滤
  * - 暴露 loading / error / refetch
  * - 内置不重复请求保护
  */
-export function useLearningEvents(limit = 100) {
+export function useLearningEvents(limit = 100, type?: string, range?: number) {
   const sessionId = useChatStore((s) => s.currentSessionId);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
   const [events, setEvents] = useState<TimelineEvent[]>([]);
@@ -26,7 +27,7 @@ export function useLearningEvents(limit = 100) {
     setLoading(true);
     setError(null);
     try {
-      const res = await getLearningTimeline(sessionId, subjectId, limit);
+      const res = await getLearningTimeline(sessionId, subjectId, limit, type, range);
       setEvents(res.events || []);
       setTotal(res.total || 0);
     } catch (e) {
@@ -36,15 +37,15 @@ export function useLearningEvents(limit = 100) {
     } finally {
       setLoading(false);
     }
-  }, [sessionId, subjectId, limit]);
+  }, [sessionId, subjectId, limit, type, range]);
 
   useEffect(() => {
-    const key = sessionId ? `${sessionId}:${subjectId}:${limit}` : undefined;
+    const key = sessionId ? `${sessionId}:${subjectId}:${limit}:${type ?? ''}:${range ?? 0}` : undefined;
     if (key && lastKeyRef.current !== key) {
       lastKeyRef.current = key;
       fetchEvents();
     }
-  }, [sessionId, subjectId, limit, fetchEvents]);
+  }, [sessionId, subjectId, limit, type, range, fetchEvents]);
 
   return { events, total, loading, error, refetch: fetchEvents };
 }

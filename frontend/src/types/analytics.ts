@@ -52,6 +52,12 @@ export interface AnalyticsSummary {
   eventCount: number;
   totalStudyMinutes: number;
   activeResourceCount: number;
+  /** 查看资源次数（后端直接返回，前端也可从 eventBreakdown 推导） */
+  resourceViewCount?: number;
+  /** 完成资源次数 */
+  resourceCompleteCount?: number;
+  /** 最近学习时间（epoch ms，后端直接返回） */
+  lastStudyTime?: number | null;
   eventBreakdown: Record<string, number>;
   topResources: TopResource[];
   quizAccuracy: number | null;

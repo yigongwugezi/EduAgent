@@ -142,6 +142,21 @@ export default function LearningAnalyticsPage() {
 
   const isFallback = !analytics.summary || analytics.recommendations.length === 0;
 
+  // 从 eventBreakdown 推导统计（优先使用后端直接返回的字段）
+  const resourceViewCount = analytics.resourceViewCount ?? analytics.eventBreakdown['resource_view'] ?? 0;
+  const resourceCompleteCount = analytics.resourceCompleteCount ?? analytics.eventBreakdown['resource_complete'] ?? 0;
+
+  // 最近学习时间（优先使用后端 lastStudyTime，再回退到前端推导）
+  const lastEventTime = analytics.lastStudyTime
+    ? analytics.lastStudyTime
+    : analytics.recentEvents.length > 0
+    ? Math.max(
+        ...analytics.recentEvents
+          .map((e) => (typeof e.timestamp === 'number' ? e.timestamp : e.timestamp ? new Date(e.timestamp).getTime() : 0))
+          .filter(Boolean),
+      )
+    : null;
+
   /** 格式化时间戳（后端可能返回 epoch ms 或 ISO 字符串） */
   const formatEventTime = (ts: number | string | undefined): string => {
     if (!ts) return '';
@@ -182,9 +197,20 @@ export default function LearningAnalyticsPage() {
 
       {/* 头部 */}
       <div className="mb-8">
-        <div className="flex items-center gap-2 mb-2">
-          <TrendingUp className="w-5 h-5 text-brand-500" />
-          <span className="text-xs font-bold text-brand-500 uppercase tracking-wider">Learning Analytics</span>
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <TrendingUp className="w-5 h-5 text-brand-500" />
+            <span className="text-xs font-bold text-brand-500 uppercase tracking-wider">Learning Analytics</span>
+          </div>
+          <button
+            onClick={refetch}
+            disabled={loading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-medium text-gray-500 bg-gray-50 hover:bg-gray-100 hover:text-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            title="刷新分析数据"
+          >
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            刷新
+          </button>
         </div>
         <h1 className="text-2xl md:text-3xl font-extrabold text-gray-900 mb-1">学习分析</h1>
         <div className="flex items-center gap-2 mt-1">
@@ -235,7 +261,7 @@ export default function LearningAnalyticsPage() {
       </div>
 
       {/* 核心指标卡片 */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-8">
         <StatCard
           icon={<Clock className="w-5 h-5 text-blue-500" />}
           label="学习时长"
@@ -243,9 +269,15 @@ export default function LearningAnalyticsPage() {
           color="bg-blue-50"
         />
         <StatCard
-          icon={<BookOpen className="w-5 h-5 text-green-500" />}
-          label="学习资源"
-          value={analytics.activeResourceCount}
+          icon={<Eye className="w-5 h-5 text-indigo-500" />}
+          label="查看资源"
+          value={resourceViewCount}
+          color="bg-indigo-50"
+        />
+        <StatCard
+          icon={<CheckCircle2 className="w-5 h-5 text-green-500" />}
+          label="完成资源"
+          value={resourceCompleteCount}
           color="bg-green-50"
         />
         <StatCard
@@ -259,6 +291,12 @@ export default function LearningAnalyticsPage() {
           label="学习事件"
           value={analytics.eventCount}
           color="bg-purple-50"
+        />
+        <StatCard
+          icon={<Clock className="w-5 h-5 text-rose-500" />}
+          label="最近学习"
+          value={lastEventTime ? formatEventTime(lastEventTime) : '--'}
+          color="bg-rose-50"
         />
       </div>
 

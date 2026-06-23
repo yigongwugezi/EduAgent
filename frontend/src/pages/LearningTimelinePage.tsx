@@ -258,23 +258,14 @@ export default function LearningTimelinePage() {
     }, { replace: true });
   }, [setSearchParams]);
 
-  const { events, total, loading, error, refetch } = useLearningEvents(100);
-
-  // 筛选
-  const filtered = useMemo(() => {
-    let result = events;
-    if (eventType) {
-      result = result.filter((e) => e.event === eventType);
-    }
-    if (timeRange) {
-      const cutoff = Date.now() - parseInt(timeRange) * 86400000;
-      result = result.filter((e) => e.timestamp >= cutoff);
-    }
-    return result;
-  }, [events, eventType, timeRange]);
+  const { events, total, loading, error, refetch } = useLearningEvents(
+    100,
+    eventType || undefined,
+    timeRange ? parseInt(timeRange) : undefined,
+  );
 
   // 按天分组
-  const grouped = useMemo(() => groupByDate(filtered), [filtered]);
+  const grouped = useMemo(() => groupByDate(events), [events]);
 
   const handleNavigate = useCallback((resourceId: string, stageId: string) => {
     if (resourceId) {
@@ -294,9 +285,9 @@ export default function LearningTimelinePage() {
         </h1>
         <p className="text-sm text-gray-500">
           共 <span className="font-semibold text-gray-700">{total}</span> 条学习行为记录
-          {filtered.length !== events.length && (
+          {events.length < total && (
             <span className="text-gray-400">
-              ，筛选后 <span className="font-semibold">{filtered.length}</span> 条
+              ，筛选后 <span className="font-semibold">{events.length}</span> 条
             </span>
           )}
         </p>
@@ -386,7 +377,7 @@ export default function LearningTimelinePage() {
           {/* 右列：统计卡片 */}
           <div className="w-full lg:w-64 flex-shrink-0">
             <div className="lg:sticky lg:top-6">
-              <TimelineSummaryCard events={filtered} total={total} />
+              <TimelineSummaryCard events={events} total={total} />
             </div>
           </div>
         </div>

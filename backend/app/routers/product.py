@@ -2232,8 +2232,18 @@ def learning_timeline(
     sessionId: str = "",
     subjectId: str = "",
     limit: int = 50,
+    type: str = "",
+    range: int = 0,
 ) -> dict[str, Any]:
-    """Get recent learning events as a timeline, enriched with resource metadata."""
+    """Get recent learning events as a timeline, enriched with resource metadata.
+
+    Args:
+        sessionId: Session identifier.
+        subjectId: Optional subject identifier.
+        limit: Max events to return (default 50).
+        type: Filter by event type (e.g. ``resource_view``, ``quiz_result``). Empty = all.
+        range: Time range in days. 0 = all. 1 = today, 7 = last 7 days, 30 = last 30 days.
+    """
     session_id = _resolve_session_id(sessionId, subjectId)
     if not session_id:
         return {"events": [], "total": 0}
@@ -2244,6 +2254,13 @@ def learning_timeline(
         raw_events = repo_get_events(db, session_id, limit=limit)
     finally:
         db.close()
+
+    # Server-side filtering
+    if type:
+        raw_events = [e for e in raw_events if e.event_type == type]
+    if range > 0:
+        cutoff = time.time() - range * 86400
+        raw_events = [e for e in raw_events if e.created_at and e.created_at.timestamp() >= cutoff]
 
     # Build resource title lookup from DB + memory
     db_resources = ag_get_resources(session_id)
