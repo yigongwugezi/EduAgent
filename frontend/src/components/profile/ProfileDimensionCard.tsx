@@ -72,7 +72,13 @@ export default function ProfileDimensionCard({ dim, index }: Props) {
         <div className="flex-1 h-1 bg-gray-100 rounded-full overflow-hidden">
           <div className="h-full rounded-full" style={{ width: `${dim.confidence * 100}%`, backgroundColor: color }} />
         </div>
-        <span className="tabular-nums">置信度 {(dim.confidence * 100).toFixed(0)}%</span>
+        {dim.confidence < 0.5 ? (
+          <span className="tabular-nums text-amber-500" title="需要更多学习数据确认">需更多数据</span>
+        ) : dim.confidence < 0.75 ? (
+          <span className="tabular-nums text-gray-400">{(dim.confidence * 100).toFixed(0)}%</span>
+        ) : (
+          <span className="tabular-nums text-green-500">{(dim.confidence * 100).toFixed(0)}%</span>
+        )}
       </div>
     </div>
   );

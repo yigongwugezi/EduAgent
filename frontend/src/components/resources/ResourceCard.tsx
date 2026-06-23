@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import {
   Clock, BookOpen, Brain, Code, FileText, Lightbulb,
   Play, Presentation, BookmarkCheck, CheckCircle2, ChevronRight,
-  CheckSquare, Square,
+  CheckSquare, Square, ChevronDown, ChevronUp,
 } from 'lucide-react';
 import type { Resource } from '../../types/resource';
 import type { ResourceType } from '../../types/resource';
@@ -41,6 +42,8 @@ interface Props {
 }
 
 export default function ResourceCard({ resource, onClick, searchQuery, selected, onToggleSelect, selectionMode }: Props) {
+  const [showAllKps, setShowAllKps] = useState(false);
+  const hasManyKps = resource.knowledgePoints.length > 3;
   const colorMap: Record<string, string> = {
     lecture: 'from-blue-400 to-blue-500', mindmap: 'from-purple-400 to-purple-500',
     quiz: 'from-amber-400 to-orange-500', case_study: 'from-cyan-400 to-teal-500',
@@ -102,13 +105,22 @@ export default function ResourceCard({ resource, onClick, searchQuery, selected,
               <HighlightText text={tag} query={searchQuery} />
             </span>
           ))}
-          {resource.knowledgePoints.slice(0, 3).map((kp) => (
+          {(showAllKps ? resource.knowledgePoints : resource.knowledgePoints.slice(0, 3)).map((kp) => (
             <span key={kp} className={`px-2 py-0.5 rounded-md text-[10px] ${
               searchQuery && matchesQuery(kp, searchQuery) ? 'bg-amber-100 text-amber-700 font-medium border border-amber-200' : 'bg-brand-50 text-brand-600 border border-brand-100'
             }`}>
               <HighlightText text={kp} query={searchQuery} />
             </span>
           ))}
+          {hasManyKps && (
+            <button
+              onClick={(e) => { e.stopPropagation(); setShowAllKps(!showAllKps); }}
+              className="px-2 py-0.5 rounded-md text-[10px] font-medium text-gray-400 bg-gray-50 border border-gray-100 hover:bg-gray-100 hover:text-gray-600 transition-colors inline-flex items-center gap-0.5"
+            >
+              {showAllKps ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+              {showAllKps ? '收起' : `+${resource.knowledgePoints.length - 3}`}
+            </button>
+          )}
         </div>
 
         {(resource.relatedStageId || resource.relatedChapter) && (

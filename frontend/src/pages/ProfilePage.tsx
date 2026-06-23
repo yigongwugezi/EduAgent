@@ -258,6 +258,12 @@ export default function ProfilePage() {
                 <Zap className="w-3.5 h-3.5" />
                 {profile.history.streak > 0 ? `连续 ${profile.history.streak} 天` : '暂无连续记录'}
               </span>
+              {profile.updatedAt && (
+                <span className="flex items-center gap-1">
+                  <Clock className="w-3.5 h-3.5" />
+                  更新于 {timeAgo(profile.updatedAt)}
+                </span>
+              )}
             </div>
           </div>
 
@@ -275,6 +281,24 @@ export default function ProfilePage() {
               <div className="text-[10px] text-green-400">已完成</div>
             </div>
           </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => navigate('/path')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-brand-500 text-white hover:bg-brand-600 transition-all shadow-sm"
+          >
+            <Target className="w-3.5 h-3.5" />
+            查看学习路径
+            <ArrowRight className="w-3 h-3" />
+          </button>
+          <button
+            onClick={() => navigate('/chat')}
+            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            完善画像
+          </button>
         </div>
 
         <div className="mt-5 pt-4 border-t border-gray-50">

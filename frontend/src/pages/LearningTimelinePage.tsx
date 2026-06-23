@@ -310,26 +310,11 @@ export default function LearningTimelinePage() {
             刷新重试
           </button>
         </div>
-      ) : events.length === 0 ? (
-        <EmptyState
-          icon={<History className="w-8 h-8" />}
-          title="暂无学习行为记录"
-          description="开始学习后，你的资源查看、练习提交、阶段完成等行为将显示在这里"
-          action={
-            <button
-              onClick={() => navigate('/resources')}
-              className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
-            >
-              <BookOpen className="w-4 h-4" />
-              前往资源库
-            </button>
-          }
-        />
       ) : (
         <div className="flex flex-col lg:flex-row gap-6">
           {/* 左列：时间线 */}
           <div className="flex-1 min-w-0">
-            {/* 筛选栏 */}
+            {/* 筛选栏 — 始终显示（已加载数据时） */}
             <FilterBar
               eventType={eventType}
               timeRange={timeRange}
@@ -338,22 +323,35 @@ export default function LearningTimelinePage() {
             />
 
             {/* 时间线列表 */}
-            <div className="space-y-1">
-              {grouped.length === 0 ? (
-                <div className="flex flex-col items-center py-16 text-center">
-                  <LayoutGrid className="w-10 h-10 text-gray-200 mb-3" />
-                  <p className="text-sm text-gray-400">当前筛选条件下没有记录</p>
+            {events.length === 0 && total === 0 ? (
+              <EmptyState
+                icon={<History className="w-8 h-8" />}
+                title="暂无学习行为记录"
+                description="开始学习后，你的资源查看、练习提交、阶段完成等行为将显示在这里"
+                action={
                   <button
-                    onClick={() => {
-                      setSearchParams({}, { replace: true });
-                    }}
-                    className="mt-3 px-4 py-2 bg-gray-100 text-gray-500 rounded-lg text-xs font-medium hover:bg-gray-200 transition-colors"
+                    onClick={() => navigate('/resources')}
+                    className="mt-3 px-5 py-2.5 bg-gray-900 text-white rounded-xl text-sm font-semibold hover:bg-gray-800 transition-all inline-flex items-center gap-2"
                   >
-                    清除筛选
+                    <BookOpen className="w-4 h-4" />
+                    前往资源库
                   </button>
-                </div>
-              ) : (
-                grouped.map(([dateLabel, dateEvents]) => (
+                }
+              />
+            ) : events.length === 0 && total > 0 ? (
+              <div className="flex flex-col items-center py-16 text-center">
+                <LayoutGrid className="w-10 h-10 text-gray-200 mb-3" />
+                <p className="text-sm text-gray-400">当前筛选条件下没有记录</p>
+                <button
+                  onClick={() => setSearchParams({}, { replace: true })}
+                  className="mt-3 px-4 py-2 bg-gray-100 text-gray-500 rounded-lg text-xs font-medium hover:bg-gray-200 transition-colors"
+                >
+                  清除筛选
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {grouped.map(([dateLabel, dateEvents]) => (
                   <div key={dateLabel}>
                     <div className="flex items-center gap-2 mb-3 mt-5 first:mt-0">
                       <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-gray-100 text-gray-500 text-[10px] font-medium">
@@ -369,17 +367,19 @@ export default function LearningTimelinePage() {
                       ))}
                     </div>
                   </div>
-                ))
-              )}
-            </div>
+                ))}
+              </div>
+            )}
           </div>
 
-          {/* 右列：统计卡片 */}
-          <div className="w-full lg:w-64 flex-shrink-0">
-            <div className="lg:sticky lg:top-6">
-              <TimelineSummaryCard events={events} total={total} />
+          {/* 右列：统计卡片 — 有事件时才显示 */}
+          {events.length > 0 && (
+            <div className="w-full lg:w-64 flex-shrink-0">
+              <div className="lg:sticky lg:top-6">
+                <TimelineSummaryCard events={events} total={total} />
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
     </div>

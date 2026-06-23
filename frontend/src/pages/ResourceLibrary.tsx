@@ -135,21 +135,30 @@ function FeedbackForm({
 }) {
   const [rating, setRating] = useState(0);
   const [hoverRating, setHoverRating] = useState(0);
+  const [feedbackCategory, setFeedbackCategory] = useState<string>('');
   const [difficultyMatch, setDifficultyMatch] = useState<string>('');
   const [comment, setComment] = useState('');
   const [submitting, setSubmitting] = useState(false);
 
+  const FEEDBACK_CATEGORIES = [
+    { value: 'helpful',    label: '有帮助', emoji: '👍' },
+    { value: 'too_hard',   label: '太难',   emoji: '😓' },
+    { value: 'too_easy',   label: '太简单',  emoji: '😅' },
+    { value: 'unclear',    label: '内容不清楚', emoji: '🤔' },
+    { value: 'irrelevant', label: '不相关',  emoji: '👎' },
+    { value: 'other',      label: '其他',   emoji: '💬' },
+  ];
+
   const handleSubmit = async () => {
-    if (rating === 0) return;
+    if (rating === 0 && !feedbackCategory) return;
     setSubmitting(true);
     try {
-      await submitFeedback({ sessionId: useChatStore.getState().currentSessionId, resourceId, rating, difficultyMatch: difficultyMatch as any, comment: comment || undefined });
-      // 同时上报学习事件，使学习分析页能看到反馈行为
+      await submitFeedback({ sessionId: useChatStore.getState().currentSessionId, resourceId, rating, difficultyMatch: difficultyMatch as any, category: feedbackCategory, comment: comment || undefined });
       await logStudyEvent({
         event: 'feedback',
         resourceId,
         sessionId: useChatStore.getState().currentSessionId,
-        metadata: { rating, difficultyMatch, hasComment: !!comment },
+        metadata: { rating, difficultyMatch, feedbackType: feedbackCategory, hasComment: !!comment, content: comment || '' },
       });
       onSubmit();
     } catch { /* ignore */ }
@@ -163,9 +172,29 @@ function FeedbackForm({
         对这份资源评价
       </h4>
 
+      {/* 反馈分类 */}
+      <div>
+        <p className="text-xs text-gray-500 mb-1.5">你觉得这份资源怎么样？</p>
+        <div className="flex flex-wrap gap-1.5">
+          {FEEDBACK_CATEGORIES.map((cat) => (
+            <button
+              key={cat.value}
+              onClick={() => setFeedbackCategory(feedbackCategory === cat.value ? '' : cat.value)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all inline-flex items-center gap-1 ${
+                feedbackCategory === cat.value
+                  ? 'bg-brand-500 text-white shadow-sm'
+                  : 'bg-white border border-gray-200 text-gray-500 hover:border-brand-300'
+              }`}
+            >
+              {cat.emoji} {cat.label}
+            </button>
+          ))}
+        </div>
+      </div>
+
       {/* 星级评分 */}
       <div>
-        <p className="text-xs text-gray-500 mb-1.5">综合评分</p>
+        <p className="text-xs text-gray-500 mb-1.5">综合评分（选填）</p>
         <div className="flex items-center gap-1">
           {[1, 2, 3, 4, 5].map((i) => (
             <button
@@ -188,7 +217,7 @@ function FeedbackForm({
 
       {/* 难度匹配 */}
       <div>
-        <p className="text-xs text-gray-500 mb-1.5">难度匹配</p>
+        <p className="text-xs text-gray-500 mb-1.5">难度匹配（选填）</p>
         <div className="flex gap-1.5">
           {[
             { value: 'too_easy', label: '太简单' },
@@ -197,7 +226,7 @@ function FeedbackForm({
           ].map((opt) => (
             <button
               key={opt.value}
-              onClick={() => setDifficultyMatch(opt.value)}
+              onClick={() => setDifficultyMatch(difficultyMatch === opt.value ? '' : opt.value)}
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 difficultyMatch === opt.value
                   ? 'bg-brand-500 text-white'
@@ -222,7 +251,7 @@ function FeedbackForm({
       <div className="flex items-center gap-2">
         <button
           onClick={handleSubmit}
-          disabled={rating === 0 || submitting}
+          disabled={(!rating && !feedbackCategory) || submitting}
           className="flex items-center gap-1.5 px-4 py-2 bg-gray-900 text-white rounded-xl text-xs font-semibold hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
         >
           <Send className="w-3 h-3" />
@@ -482,6 +511,7 @@ export default function ResourceLibrary() {
   );
   const [showFeedback, setShowFeedback] = useState(false);
   const [showThanks, setShowThanks] = useState(false);
+  const [practiceNotes, setPracticeNotes] = useState('');
   // ── 批量操作状态 ──
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -728,7 +758,7 @@ export default function ResourceLibrary() {
           event: 'practice_result',
           resourceId: resource.id,
           sessionId: useChatStore.getState().currentSessionId,
-          metadata: { type: resource.type, subjectId, title: resource.title },
+          metadata: { type: resource.type, subjectId, title: resource.title, completionNotes: practiceNotes || '' },
         });
       }
     }
@@ -739,6 +769,8 @@ export default function ResourceLibrary() {
 
   // 打开资源详情
   const openDetail = useCallback(async (resource: Resource) => {
+    // 保存当前滚动位置
+    try { sessionStorage.setItem('resourceListScrollY', String(window.scrollY)); } catch { /* noop */ }
     setSelected(resource);
     setShowFeedback(false);
     setShowThanks(false);
@@ -774,6 +806,22 @@ export default function ResourceLibrary() {
     const found = resources.find(r => r.id === params.id);
     if (found) openDetail(found);
   }, [params.id, resources, loading, openDetail, prevResourceIds]);
+
+  // 从详情返回时恢复滚动位置
+  useEffect(() => {
+    if (!params.id && !loading) {
+      try {
+        const saved = sessionStorage.getItem('resourceListScrollY');
+        if (saved) {
+          const scrollY = parseInt(saved, 10);
+          if (!isNaN(scrollY)) {
+            requestAnimationFrame(() => window.scrollTo(0, scrollY));
+          }
+          sessionStorage.removeItem('resourceListScrollY');
+        }
+      } catch { /* noop */ }
+    }
+  }, [params.id, loading]);
 
 
   return (
@@ -836,42 +884,49 @@ export default function ResourceLibrary() {
             <span className="text-xs font-semibold text-gray-600">{completionRate}%</span>
           </div>
         )}
-        {/* 当前活动筛选标签 */}
+        {/* 当前活动筛选标签 — 可单独删除 */}
         {hasActiveFilters && (
           <div className="flex flex-wrap items-center gap-1.5 mt-2">
             {activeType && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-blue-50 text-blue-600 border border-blue-100 group">
                 {RESOURCE_TYPE_LABELS[activeType]}
+                <button onClick={() => updateFilters({ type: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-blue-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除类型筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeDifficulty && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-100 group">
                 {difficultyLabel[activeDifficulty]}
+                <button onClick={() => updateFilters({ difficulty: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-amber-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除难度筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeSource && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-purple-50 text-purple-600 border border-purple-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-purple-50 text-purple-600 border border-purple-100 group">
                 {activeSource === 'agent_generated' ? '智能体生成' : activeSource === 'system_inferred' ? '系统推断' : activeSource === 'fallback' ? '兜底' : activeSource}
+                <button onClick={() => updateFilters({ source: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-purple-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除来源筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeChapter && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-emerald-50 text-emerald-600 border border-emerald-100 group">
                 📖 {activeChapter}
+                <button onClick={() => updateFilters({ chapter: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-emerald-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除章节筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeQuality && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-rose-50 text-rose-600 border border-rose-100 group">
                 质检：{activeQuality === 'passed' ? '已通过' : activeQuality === 'needs_review' ? '需复核' : '兜底通过'}
+                <button onClick={() => updateFilters({ qualityStatus: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-rose-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除质检筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeStudyStatus && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-cyan-50 text-cyan-600 border border-cyan-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-cyan-50 text-cyan-600 border border-cyan-100 group">
                 {activeStudyStatus === 'new' ? '未开始' : activeStudyStatus === 'in_progress' ? '学习中' : '已完成'}
+                <button onClick={() => updateFilters({ studyStatus: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-cyan-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除状态筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeBookmarked && (
-              <span className="px-2 py-0.5 rounded-md text-[10px] font-medium bg-brand-50 text-brand-600 border border-brand-100">
+              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-medium bg-brand-50 text-brand-600 border border-brand-100 group">
                 {activeBookmarked === 'true' ? '⭐ 已收藏' : '未收藏'}
+                <button onClick={() => updateFilters({ bookmarked: undefined })} className="w-3.5 h-3.5 rounded-full hover:bg-brand-200 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity" title="移除收藏筛选"><X className="w-2.5 h-2.5" /></button>
               </span>
             )}
             {activeStageId && (
@@ -1232,6 +1287,17 @@ export default function ResourceLibrary() {
                   <HighlightText text={kp} query={search} />
                 </span>
               ))}</div>
+
+            {/* 实操完成说明 */}
+            {selected.type === 'case_study' && selected.studyStatus !== 'completed' && (
+              <textarea
+                value={practiceNotes}
+                onChange={(e) => setPracticeNotes(e.target.value)}
+                placeholder="完成说明（选填）：描述你完成了什么…"
+                rows={2}
+                className="w-full resize-none bg-white border border-gray-200 rounded-xl px-3 py-2 text-[11px] outline-none focus:ring-2 focus:ring-brand-500"
+              />
+            )}
 
             {/* 操作按钮组 */}
             <div className="flex flex-wrap items-center gap-2 pt-1">
