@@ -490,6 +490,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
     topic_wrong: dict[str, int] = {}
     topic_total: dict[str, int] = {}
 
+    # Compute last study time (max timestamp)
+    last_study_ts: float | None = None
+
     for evt in events:
         meta = evt.metadata_ or {}
         # Duration
@@ -498,6 +501,12 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             total_minutes += max(0, int(duration))
         except (TypeError, ValueError):
             pass
+
+        # Last study time
+        if evt.created_at:
+            ts = evt.created_at.timestamp()
+            if last_study_ts is None or ts > last_study_ts:
+                last_study_ts = ts
 
         # Resource counter (only real resource events, not node_progress)
         _RESOURCE_EVENTS = {"resource_view", "resource_complete", "quiz_result", "quiz_submit", "feedback"}
@@ -669,6 +678,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
         "activeResourceCount": len(resource_counts),
+        "resourceViewCount": event_counts.get("resource_view", 0),
+        "resourceCompleteCount": event_counts.get("resource_complete", 0),
+        "lastStudyTime": int(last_study_ts * 1000) if last_study_ts else None,
         "eventBreakdown": event_counts,
         "topResources": [
             {"resourceId": rid, "count": cnt, "title": resource_titles.get(rid, "")} for rid, cnt in top_resources
@@ -686,6 +698,6 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                 "metadata": evt.metadata_,
                 "timestamp": evt.created_at.isoformat() if evt.created_at else None,
             }
-            for evt in events[-10:]
+            for evt in events[-5:]
         ],
     }

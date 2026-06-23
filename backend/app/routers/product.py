@@ -849,9 +849,13 @@ def _feedback_reply(message: str, session_id: str) -> str:
 
 def _unknown_reply(intent: dict[str, Any]) -> str:
     return (
-        "我还不确定你这句话想让我做什么。\n\n"
-        f"当前判断：{intent['intent']}，置信度 {intent['confidence']:.0%}。\n\n"
-        "你可以说明你是想：规划学习路径、解释知识点、生成学习资源，还是反馈学习进度。"
+        "我还不太确定你想让我做什么，请选择一个方向。\n\n"
+        "你可以告诉我你是想：\n"
+        "• 生成我的学习画像\n"
+        "• 规划学习路径\n"
+        "• 推荐学习资源\n"
+        "• 诊断薄弱点\n"
+        "• 反馈学习进度"
     )
 
 
@@ -1028,9 +1032,9 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                 # profile_update triggered agents — show completed stages
                 for stage_key, stage_label, pct in GEN_STAGES:
                     yield f"data: {json.dumps({'stage': stage_label, 'agentName': stage_key, 'progress': pct, 'done': False}, ensure_ascii=False)}\n\n"
-            else:
-                intent_line = f"意图识别：{intent['intent']}（{intent['confidence']:.0%}）\n\n"
-                yield f"data: {json.dumps({'content': intent_line, 'done': False}, ensure_ascii=False)}\n\n"
+            elif intent.get("intent") == "unknown":
+                # 低置信度 unknown — 告知前端展示 clarification 交互面板
+                yield f"data: {json.dumps({'isClarification': True, 'done': False}, ensure_ascii=False)}\n\n"
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
@@ -2121,13 +2125,39 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
-    """Log a node_progress event to the learning tracker."""
+    """Log a node_progress event to the learning tracker with rich metadata."""
     try:
+        # Try to enrich with stage title and node name from learning path
+        stage_title = ""
+        node_name = ""
+        stage_id_part = node_id.rsplit("_node_", 1)[0] if "_node_" in node_id else ""
+        if stage_id_part:
+            try:
+                from app.services.agent_service import get_learning_path as _lp
+                path = _lp(session_id)
+                if path:
+                    for stage in path.get("stages", []):
+                        sid = stage.get("id", "")
+                        if sid and stage_id_part in sid:
+                            stage_title = stage.get("title", "")
+                            for n in stage.get("nodes", []):
+                                if n.get("id") == node_id:
+                                    node_name = n.get("topic", "")
+                                    break
+                            break
+            except Exception:
+                pass
         learning_tracker.log({
             "event": "node_progress",
             "resourceId": node_id,
             "sessionId": session_id,
-            "metadata": {"nodeId": node_id, "status": status},
+            "metadata": {
+                "nodeId": node_id,
+                "nodeName": node_name or "",
+                "status": status,
+                "stageTitle": stage_title or "",
+                "relatedStageId": stage_id_part,
+            },
         }, session_id=session_id)
     except Exception:
         pass
@@ -2234,8 +2264,18 @@ def learning_timeline(
     sessionId: str = "",
     subjectId: str = "",
     limit: int = 50,
+    type: str = "",
+    range: int = 0,
 ) -> dict[str, Any]:
-    """Get recent learning events as a timeline, enriched with resource metadata."""
+    """Get recent learning events as a timeline, enriched with resource metadata.
+
+    Args:
+        sessionId: Session identifier.
+        subjectId: Optional subject identifier.
+        limit: Max events to return (default 50).
+        type: Filter by event type (e.g. ``resource_view``, ``quiz_result``). Empty = all.
+        range: Time range in days. 0 = all. 1 = today, 7 = last 7 days, 30 = last 30 days.
+    """
     session_id = _resolve_session_id(sessionId, subjectId)
     if not session_id:
         return {"events": [], "total": 0}
@@ -2246,6 +2286,13 @@ def learning_timeline(
         raw_events = repo_get_events(db, session_id, limit=limit)
     finally:
         db.close()
+
+    # Server-side filtering
+    if type:
+        raw_events = [e for e in raw_events if e.event_type == type]
+    if range > 0:
+        cutoff = time.time() - range * 86400
+        raw_events = [e for e in raw_events if e.created_at and e.created_at.timestamp() >= cutoff]
 
     # Build resource title lookup from DB + memory
     db_resources = ag_get_resources(session_id)
@@ -2283,15 +2330,49 @@ def learning_timeline(
         "node_progress":     {"label": "学习节点更新",   "icon": "📌", "color": "gray"},
     }
 
+    # Build resource knowledge points lookup
+    resource_kps: dict[str, list[str]] = {}
+    for r in db_resources:
+        rid = r.get("id", "")
+        if rid:
+            kps = r.get("knowledge_points") or r.get("knowledgePoints") or []
+            if isinstance(kps, list):
+                resource_kps[rid] = kps
+
     events_out: list[dict[str, Any]] = []
     for evt in raw_events:
         rid = evt.resource_id or ""
-        meta = evt.metadata_ or {}
+        meta = dict(evt.metadata_ or {})
         title = resource_titles.get(rid, meta.get("title", "") or "")
         rtype = resource_types.get(rid, meta.get("type", "") or "")
         stage_id = resource_stages.get(rid, meta.get("relatedStageId", meta.get("related_stage_id", "")) or "")
         chapter = resource_chapters.get(rid, meta.get("relatedChapter", meta.get("related_chapter", "")) or "")
         config = EVENT_CONFIG.get(evt.event_type, {"label": evt.event_type, "icon": "📋", "color": "gray"})
+
+        # ── Enrich node_progress metadata with stage/node names ──
+        if evt.event_type == "node_progress" and not meta.get("stageTitle") and meta.get("nodeId"):
+            nid = str(meta.get("nodeId", ""))
+            stage_id_part = nid.rsplit("_node_", 1)[0] if "_node_" in nid else ""
+            if stage_id_part:
+                try:
+                    from app.services.agent_service import get_learning_path as _lp
+                    path = _lp(session_id)
+                    if path:
+                        for stage in path.get("stages", []):
+                            sid = stage.get("id", "")
+                            if sid and stage_id_part in sid:
+                                meta["stageTitle"] = stage.get("title", "")
+                                for n in stage.get("nodes", []):
+                                    if n.get("id") == nid:
+                                        meta["nodeName"] = n.get("topic", "")
+                                        break
+                                break
+                except Exception:
+                    pass
+
+        # ── Enrich resource events with knowledge points ──
+        if rid and rid in resource_kps:
+            meta["knowledgePoints"] = resource_kps[rid]
 
         events_out.append({
             "id": evt.id,
