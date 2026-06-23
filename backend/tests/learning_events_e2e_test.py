@@ -178,6 +178,29 @@ def test_weak_topics() -> None:
     print(f"PASS weakTopics[0] = {t['topic']} (wrong={t['wrongCount']}, total={t['totalCount']}, risk={t['risk']})")
 
 
+def test_practice_result_contributes_to_weak_topics() -> None:
+    """A scored practice with a topic should contribute behavior evidence."""
+    _post_event(
+        "practice_result",
+        resourceId="res_practice_tree",
+        metadata={
+            "title": "Tree Practice",
+            "topic": "二叉树遍历",
+            "correct": 1,
+            "wrong": 3,
+            "total": 4,
+            "accuracy": 25,
+        },
+    )
+
+    analytics = _get_analytics()
+    topics = {item["topic"]: item for item in analytics["weakTopics"]}
+    assert "二叉树遍历" in topics
+    assert topics["二叉树遍历"]["wrongCount"] >= 3
+    assert topics["二叉树遍历"]["risk"] >= 0.75
+    print("PASS scored practice_result contributes to weakTopics")
+
+
 def test_recent_events() -> None:
     """recentEvents should contain the most recent events with correct structure."""
     analytics = _get_analytics()
@@ -356,6 +379,7 @@ if __name__ == "__main__":
         test_top_resources,
         test_quiz_accuracy,
         test_weak_topics,
+        test_practice_result_contributes_to_weak_topics,
         test_recent_events,
         test_recommendations,
         test_event_breakdown_labels,

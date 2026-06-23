@@ -10,6 +10,7 @@ sys.path.insert(0, str(ROOT))
 from app.agents.intent_agent import IntentAgent  # noqa: E402
 from app.routers import product  # noqa: E402
 from app.services.conversation_state import conversation_store  # noqa: E402
+from app.services.learning_tracker import learning_tracker  # noqa: E402
 
 
 def classify(message: str) -> dict:
@@ -207,6 +208,8 @@ def test_intent_classify_diagnosis_question() -> None:
 def test_diagnosis_route_returns_structured_result() -> None:
     sid = "regression_diagnosis_route"
     conversation_store.reset(sid)
+    learning_tracker.enable_db()
+    learning_tracker.reset(sid)
     conversation_store.set_result(
         sid,
         {
@@ -239,6 +242,20 @@ def test_diagnosis_route_returns_structured_result() -> None:
             ],
         },
     )
+    learning_tracker.log(
+        {
+            "event": "quiz_result",
+            "resourceId": f"{sid}_res_stack",
+            "metadata": {
+                "topic": "栈",
+                "wrong": 3,
+                "correct": 1,
+                "total": 4,
+                "accuracy": 25,
+            },
+        },
+        session_id=sid,
+    )
 
     response = product.send_chat({"sessionId": sid, "message": "我哪里比较薄弱"})
     content = response["reply"]["content"]
@@ -251,7 +268,8 @@ def test_diagnosis_route_returns_structured_result() -> None:
     assert diagnosis["weak_topics"][0]["topic"] == "栈"
     assert diagnosis["weak_topics"][0]["recommended_stage_id"] == "stage_stack"
     assert diagnosis["weak_topics"][0]["recommended_resource_ids"] == [f"{sid}_res_stack"]
-    assert any("行为数据" in item for item in diagnosis["limitations"])
+    assert any("栈" in item and "错误 3/4" in item for item in diagnosis["evidence"])
+    assert any("累计正确率 25%" in item for item in diagnosis["evidence"])
 
 
 def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:

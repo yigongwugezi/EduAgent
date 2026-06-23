@@ -3,6 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import app.services.orchestrator as orchestrator_module
 from app.services.orchestrator import AgentOrchestrator
 from app.agents.diagnosis_agent import DiagnosisAgent
 from app.config import settings
@@ -145,9 +146,159 @@ def test_diagnosis_uses_profile_path_and_resources() -> None:
     )
 
 
+def test_diagnosis_uses_analytics_and_skips_completed_resources() -> None:
+    diagnosis = DiagnosisAgent().run(
+        {
+            "learning_path": [
+                {
+                    "stage_id": "stage_tree",
+                    "title": "树与二叉树",
+                    "goal": "掌握二叉树遍历",
+                    "tasks": ["实现遍历算法"],
+                }
+            ],
+            "resources": [
+                {
+                    "resource_id": "res_tree_done",
+                    "title": "二叉树基础讲解",
+                    "related_stage_id": "stage_tree",
+                    "related_knowledge_points": ["二叉树"],
+                },
+                {
+                    "resource_id": "res_tree_practice",
+                    "title": "二叉树遍历练习",
+                    "related_stage_id": "stage_tree",
+                    "related_knowledge_points": ["二叉树"],
+                },
+            ],
+            "analytics": {
+                "eventCount": 5,
+                "quizAccuracy": 62,
+                "weakTopics": [
+                    {"topic": "二叉树", "wrongCount": 3, "totalCount": 4, "risk": 0.75}
+                ],
+                "eventBreakdown": {
+                    "quiz_result": 1,
+                    "resource_view": 1,
+                    "resource_complete": 1,
+                    "feedback": 1,
+                    "node_progress": 1,
+                },
+                "topResources": [
+                    {"resourceId": "res_tree_practice", "count": 3, "title": "二叉树遍历练习"},
+                    {"resourceId": "res_tree_done", "count": 2, "title": "二叉树基础讲解"},
+                ],
+                "recentEvents": [
+                    {
+                        "event": "quiz_result",
+                        "resourceId": "res_tree_practice",
+                        "metadata": {"topic": "二叉树", "wrong": 3, "total": 4, "accuracy": 25},
+                    },
+                    {"event": "resource_view", "resourceId": "res_tree_practice", "metadata": {}},
+                    {"event": "resource_complete", "resourceId": "res_tree_done", "metadata": {}},
+                    {
+                        "event": "feedback",
+                        "resourceId": "res_tree_practice",
+                        "metadata": {"rating": 2, "difficultyMatch": False},
+                    },
+                    {
+                        "event": "node_progress",
+                        "resourceId": "node_tree",
+                        "metadata": {"stageId": "stage_tree", "status": "in_progress"},
+                    },
+                ],
+            },
+        }
+    )["diagnosis"]
+
+    assert_true(diagnosis["weak_topics"][0]["topic"] == "二叉树", "quiz risk should drive weak topic")
+    assert_true(
+        diagnosis["recommended_resource_ids"] == ["res_tree_practice"],
+        "completed resources should be excluded while viewed unfinished resources remain",
+    )
+    assert_true(any("累计正确率 62%" in item for item in diagnosis["evidence"]), "quizAccuracy should be evidence")
+    assert_true(any("错误 3/4" in item for item in diagnosis["evidence"]), "quiz result should be behavior evidence")
+    assert_true(any("评分 2" in item for item in diagnosis["evidence"]), "negative feedback should be evidence")
+    assert_true(any("状态 in_progress" in item for item in diagnosis["evidence"]), "node progress should be evidence")
+    assert_true(any("已浏览但未完成" in item for item in diagnosis["next_actions"]), "viewed resources should be completed first")
+
+
+def test_orchestrator_injects_session_analytics_into_diagnosis() -> None:
+    captured: dict[str, object] = {}
+
+    class TrackerStub:
+        def summary(self, session_id: str) -> dict[str, object]:
+            assert session_id == "orchestrator_analytics_session"
+            return {"eventCount": 1, "quizAccuracy": 60, "weakTopics": []}
+
+    class DiagnosisProbe:
+        agent_id = "diagnosis_agent"
+        agent_name = "diagnosis probe"
+
+        def run(self, context: dict[str, object]) -> dict[str, object]:
+            captured["analytics"] = context.get("analytics")
+            return {
+                "diagnosis": {"receivedAnalytics": bool(context.get("analytics"))},
+                "agent_step": {"status": "completed", "summary": "captured"},
+            }
+
+        def validate_result(self, result: dict[str, object]) -> None:
+            return None
+
+    original_tracker = orchestrator_module.learning_tracker
+    orchestrator_module.learning_tracker = TrackerStub()
+    try:
+        orchestrator = AgentOrchestrator()
+        orchestrator._build_agents = lambda: [DiagnosisProbe()]
+        result = orchestrator.run(
+            session_id="orchestrator_analytics_session",
+            course_id="data_structures",
+            user_message="diagnose",
+        )
+    finally:
+        orchestrator_module.learning_tracker = original_tracker
+
+    assert_true(captured["analytics"] == {"eventCount": 1, "quizAccuracy": 60, "weakTopics": []}, "orchestrator should inject session analytics")
+    assert_true(result["diagnosis"]["receivedAnalytics"] is True, "diagnosis step should receive analytics")
+
+
+def test_unscored_practice_does_not_create_a_weak_topic() -> None:
+    diagnosis = DiagnosisAgent().run(
+        {
+            "analytics": {
+                "eventCount": 1,
+                "quizAccuracy": None,
+                "weakTopics": [],
+                "eventBreakdown": {"practice_result": 1},
+                "topResources": [],
+                "recentEvents": [
+                    {
+                        "event": "practice_result",
+                        "resourceId": "res_duration_only",
+                        "metadata": {"title": "Practice Lab", "duration": 30},
+                    }
+                ],
+            }
+        }
+    )["diagnosis"]
+
+    assert_true(diagnosis["weak_topics"] == [], "unscored practice must not invent a weak topic")
+    assert_true(
+        any("缺少 topic 或 knowledgePoint" in item for item in diagnosis["limitations"]),
+        "unscored practice should disclose the missing topic limitation",
+    )
+    assert_true(
+        any("缺少知识点标注或结果字段" in item for item in diagnosis["evidence"]),
+        "unscored practice may only be supporting evidence",
+    )
+
+
 if __name__ == "__main__":
     test_agents_generate_from_course_knowledge_base()
     test_demo_mock_fallback_is_not_product_default()
     test_diagnosis_does_not_read_demo_when_knowledge_is_empty()
     test_diagnosis_uses_profile_path_and_resources()
+    test_diagnosis_uses_analytics_and_skips_completed_resources()
+    test_orchestrator_injects_session_analytics_into_diagnosis()
+    test_unscored_practice_does_not_create_a_weak_topic()
     print("PASS agent_generation_test")
