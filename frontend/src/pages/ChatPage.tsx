@@ -13,6 +13,7 @@ import {
 import Markdown from '../utils/markdown';
 import ChatHistorySidebar from '../components/chat/ChatHistorySidebar';
 import ChatClarification from '../components/chat/ChatClarification';
+import PromptTemplates from '../components/chat/PromptTemplates';
 
 /* ===================================================================
  * 生成流程管线定义
@@ -104,8 +105,20 @@ function MessageBubble({ msg, onClarificationSelect }: { msg: ChatMessage; onCla
         </div>
 
         {/* 时间戳 */}
-        <span className="text-[10px] text-gray-300 px-1">
+        <span className="text-[10px] text-gray-300 px-1 flex items-center gap-1.5">
           {timeAgo(msg.timestamp)}
+          {!isUser && !msg.streaming && msg.content && !msg.error && !msg.isClarification && (
+            <span className="w-1 h-1 rounded-full bg-green-300" title="生成完成" />
+          )}
+          {!isUser && msg.streaming && (
+            <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" title="生成中" />
+          )}
+          {msg.error && (
+            <span className="w-1 h-1 rounded-full bg-red-400" title="生成失败" />
+          )}
+          {!isUser && msg.isClarification && (
+            <span className="text-[9px] text-amber-400">引导</span>
+          )}
         </span>
       </div>
 
@@ -559,7 +572,12 @@ export default function ChatPage() {
 
       {/* 输入区域 */}
       <div className="border-t border-gray-100 bg-white px-4 py-3">
-        <div className="max-w-4xl mx-auto flex items-end gap-2">
+        <div className="max-w-4xl mx-auto">
+          {/* 快捷输入模板 */}
+          {messages.length > 0 && !isStreaming && (
+            <PromptTemplates onSelect={(prompt) => { setInput(prompt); inputRef.current?.focus(); }} />
+          )}
+          <div className="flex items-end gap-2">
           {/* 输入框 */}
           <textarea
             ref={inputRef}
@@ -593,6 +611,7 @@ export default function ChatPage() {
               <Send className="w-4 h-4" />
             </button>
           )}
+        </div>
         </div>
 
         {/* 字数统计 + 免责声明 */}
