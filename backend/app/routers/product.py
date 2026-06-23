@@ -2119,13 +2119,39 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
-    """Log a node_progress event to the learning tracker."""
+    """Log a node_progress event to the learning tracker with rich metadata."""
     try:
+        # Try to enrich with stage title and node name from learning path
+        stage_title = ""
+        node_name = ""
+        stage_id_part = node_id.rsplit("_node_", 1)[0] if "_node_" in node_id else ""
+        if stage_id_part:
+            try:
+                from app.services.agent_service import get_learning_path as _lp
+                path = _lp(session_id)
+                if path:
+                    for stage in path.get("stages", []):
+                        sid = stage.get("id", "")
+                        if sid and stage_id_part in sid:
+                            stage_title = stage.get("title", "")
+                            for n in stage.get("nodes", []):
+                                if n.get("id") == node_id:
+                                    node_name = n.get("topic", "")
+                                    break
+                            break
+            except Exception:
+                pass
         learning_tracker.log({
             "event": "node_progress",
             "resourceId": node_id,
             "sessionId": session_id,
-            "metadata": {"nodeId": node_id, "status": status},
+            "metadata": {
+                "nodeId": node_id,
+                "nodeName": node_name or "",
+                "status": status,
+                "stageTitle": stage_title or "",
+                "relatedStageId": stage_id_part,
+            },
         }, session_id=session_id)
     except Exception:
         pass
@@ -2298,15 +2324,49 @@ def learning_timeline(
         "node_progress":     {"label": "学习节点更新",   "icon": "📌", "color": "gray"},
     }
 
+    # Build resource knowledge points lookup
+    resource_kps: dict[str, list[str]] = {}
+    for r in db_resources:
+        rid = r.get("id", "")
+        if rid:
+            kps = r.get("knowledge_points") or r.get("knowledgePoints") or []
+            if isinstance(kps, list):
+                resource_kps[rid] = kps
+
     events_out: list[dict[str, Any]] = []
     for evt in raw_events:
         rid = evt.resource_id or ""
-        meta = evt.metadata_ or {}
+        meta = dict(evt.metadata_ or {})
         title = resource_titles.get(rid, meta.get("title", "") or "")
         rtype = resource_types.get(rid, meta.get("type", "") or "")
         stage_id = resource_stages.get(rid, meta.get("relatedStageId", meta.get("related_stage_id", "")) or "")
         chapter = resource_chapters.get(rid, meta.get("relatedChapter", meta.get("related_chapter", "")) or "")
         config = EVENT_CONFIG.get(evt.event_type, {"label": evt.event_type, "icon": "📋", "color": "gray"})
+
+        # ── Enrich node_progress metadata with stage/node names ──
+        if evt.event_type == "node_progress" and not meta.get("stageTitle") and meta.get("nodeId"):
+            nid = str(meta.get("nodeId", ""))
+            stage_id_part = nid.rsplit("_node_", 1)[0] if "_node_" in nid else ""
+            if stage_id_part:
+                try:
+                    from app.services.agent_service import get_learning_path as _lp
+                    path = _lp(session_id)
+                    if path:
+                        for stage in path.get("stages", []):
+                            sid = stage.get("id", "")
+                            if sid and stage_id_part in sid:
+                                meta["stageTitle"] = stage.get("title", "")
+                                for n in stage.get("nodes", []):
+                                    if n.get("id") == nid:
+                                        meta["nodeName"] = n.get("topic", "")
+                                        break
+                                break
+                except Exception:
+                    pass
+
+        # ── Enrich resource events with knowledge points ──
+        if rid and rid in resource_kps:
+            meta["knowledgePoints"] = resource_kps[rid]
 
         events_out.append({
             "id": evt.id,

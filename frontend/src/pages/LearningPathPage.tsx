@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useRef, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLearningPath } from '../hooks/useLearningPath';
 import { useChatStore } from '../store/chatStore';
 import { useSubjectStore } from '../store/subjectStore';
@@ -428,9 +428,21 @@ function StageSection({ stage, defaultExpanded, onStatusChange, onViewResources,
  * =================================================================== */
 export default function LearningPathPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { path, loading, error, fetchPath, updateNodeStatus } = useLearningPath();
   const dataVersion = useChatStore((state) => state.dataVersion);
   const subjectId = useSubjectStore((s) => s.activeSubject?.id);
+  const stageRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  // —— URL 参数 ?stage=xxx → 自动滚动到对应阶段 ——
+  const targetStage = searchParams.get('stage');
+  useEffect(() => {
+    if (targetStage && stageRefs.current[targetStage]) {
+      setTimeout(() => {
+        stageRefs.current[targetStage]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 300);
+    }
+  }, [targetStage, path]);
 
   // —— 完成阶段：标记所有未完成节点为 mastered + 记录学习事件 ——
   // —— 跳转到资源库并筛选当前阶段 ——
@@ -610,14 +622,15 @@ export default function LearningPathPage() {
       {/* ========== 阶段列表 ========== */}
       <div>
         {path.stages.map((stage, idx) => (
-          <StageSection
-            key={stage.id}
-            stage={stage}
-            defaultExpanded={idx === 0 || idx === firstAvailableStage}
-            onStatusChange={updateNodeStatus}
-            onViewResources={handleViewResources}
-            resourceStats={path.stageResourceStats?.[stage.id]}
-          />
+          <div key={stage.id} ref={(el) => { stageRefs.current[stage.id] = el; }}>
+            <StageSection
+              stage={stage}
+              defaultExpanded={idx === 0 || idx === firstAvailableStage}
+              onStatusChange={updateNodeStatus}
+              onViewResources={handleViewResources}
+              resourceStats={path.stageResourceStats?.[stage.id]}
+            />
+          </div>
         ))}
       </div>
 

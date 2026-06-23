@@ -271,7 +271,7 @@ export default function LearningTimelinePage() {
     if (resourceId) {
       navigate(`/resources/${resourceId}`);
     } else if (stageId) {
-      navigate(`/resources?relatedStageId=${encodeURIComponent(stageId)}`);
+      navigate(`/path?stage=${encodeURIComponent(stageId)}`);
     }
   }, [navigate]);
 

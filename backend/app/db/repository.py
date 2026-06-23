@@ -698,6 +698,6 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                 "metadata": evt.metadata_,
                 "timestamp": evt.created_at.isoformat() if evt.created_at else None,
             }
-            for evt in events[-10:]
+            for evt in events[-5:]
         ],
     }
