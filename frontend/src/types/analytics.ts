@@ -56,6 +56,12 @@ export interface AnalyticsSummary {
   resourceViewCount?: number;
   /** 完成资源次数 */
   resourceCompleteCount?: number;
+  /** 查看资源次数（同 resourceViewCount，语义化命名） */
+  viewedResources: number;
+  /** 完成资源次数（同 resourceCompleteCount，语义化命名） */
+  completedResources: number;
+  /** 实践次数 */
+  practiceCount: number;
   /** 最近学习时间（epoch ms，后端直接返回） */
   lastStudyTime?: number | null;
   eventBreakdown: Record<string, number>;

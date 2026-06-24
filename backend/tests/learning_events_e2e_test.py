@@ -79,14 +79,17 @@ def test_all_six_event_types_logged() -> None:
     print("PASS All 6 event types logged and present in breakdown")
 
 
-def test_all_nine_analytics_fields_returned() -> None:
-    """Verify all 9 analytics fields are present and have correct types."""
+def test_all_analytics_fields_returned() -> None:
+    """Verify all analytics fields are present and have correct types."""
     analytics = _get_analytics()
 
     required_fields = [
         "eventCount",
         "totalStudyMinutes",
         "activeResourceCount",
+        "viewedResources",
+        "completedResources",
+        "practiceCount",
         "eventBreakdown",
         "topResources",
         "quizAccuracy",
@@ -102,6 +105,9 @@ def test_all_nine_analytics_fields_returned() -> None:
     assert isinstance(analytics["eventCount"], int)
     assert isinstance(analytics["totalStudyMinutes"], int)
     assert isinstance(analytics["activeResourceCount"], int)
+    assert isinstance(analytics["viewedResources"], int)
+    assert isinstance(analytics["completedResources"], int)
+    assert isinstance(analytics["practiceCount"], int)
     assert isinstance(analytics["eventBreakdown"], dict)
     assert isinstance(analytics["topResources"], list)
     assert analytics["quizAccuracy"] is None or isinstance(analytics["quizAccuracy"], int)
@@ -109,7 +115,7 @@ def test_all_nine_analytics_fields_returned() -> None:
     assert isinstance(analytics["recommendations"], list)
     assert isinstance(analytics["recentEvents"], list)
 
-    print("PASS All 9 analytics fields present with correct types")
+    print("PASS All analytics fields present with correct types")
 
 
 def test_event_count_accuracy() -> None:
@@ -207,14 +213,36 @@ def test_practice_result_contributes_to_weak_topics() -> None:
 
 
 def test_recent_events() -> None:
-    """recentEvents should contain the most recent events with correct structure."""
+    """recentEvents should contain the most recent events with correct structure, newest first."""
     analytics = _get_analytics()
     recent = analytics["recentEvents"]
     assert len(recent) >= 1, "Should have at least 1 recent event"
-    evt = recent[-1]  # Most recent is last (events[-10:] in backend)
+    # Newest event should be first (reverse chronological order)
+    evt = recent[0]
     assert "event" in evt
     assert "timestamp" in evt
-    print(f"PASS recentEvents has {len(recent)} events, newest={evt['event']}")
+    print(f"PASS recentEvents has {len(recent)} events, newest first: {evt['event']}")
+
+
+def test_recent_events_reverse_chronological_order() -> None:
+    """recentEvents must be in reverse chronological order (newest first)."""
+    # Post two events with a small time gap so ordering is deterministic
+    _post_event("resource_view", resourceId="order_res_1")
+    import time
+    time.sleep(1.1)  # Ensure distinct timestamps
+    _post_event("resource_complete", resourceId="order_res_2", metadata={"duration": 5})
+
+    analytics = _get_analytics()
+    recent = analytics["recentEvents"]
+    # Find our two events in recentEvents
+    order_events = [e for e in recent if e.get("resourceId") in ("order_res_1", "order_res_2")]
+    assert len(order_events) >= 2, f"Expected at least 2 order events, got {len(order_events)}"
+    # Newer event (resource_complete on order_res_2) should appear first
+    assert order_events[0]["resourceId"] == "order_res_2", (
+        f"Expected newest event first, got {order_events[0]['resourceId']}"
+    )
+    assert order_events[0]["event"] == "resource_complete"
+    print("PASS recentEvents is in reverse chronological order")
 
 
 def test_recommendations() -> None:
@@ -426,18 +454,99 @@ def test_subject_id_recorded_in_event() -> None:
     print("PASS subject_id recorded in event metadata")
 
 
+def test_viewed_resources_count() -> None:
+    """viewedResources should reflect the number of resource_view events."""
+    analytics = _get_analytics()
+    viewed = analytics["viewedResources"]
+    breakdown_views = analytics["eventBreakdown"].get("resource_view", 0)
+    assert viewed == breakdown_views, (
+        f"viewedResources {viewed} should match eventBreakdown.resource_view {breakdown_views}"
+    )
+    assert viewed >= 2, f"Expected >= 2 viewedResources, got {viewed}"
+    print(f"PASS viewedResources = {viewed}")
+
+
+def test_completed_resources_count() -> None:
+    """completedResources should reflect the number of resource_complete events."""
+    analytics = _get_analytics()
+    completed = analytics["completedResources"]
+    breakdown_completes = analytics["eventBreakdown"].get("resource_complete", 0)
+    assert completed == breakdown_completes, (
+        f"completedResources {completed} should match eventBreakdown.resource_complete {breakdown_completes}"
+    )
+    assert completed >= 1, f"Expected >= 1 completedResources, got {completed}"
+    print(f"PASS completedResources = {completed}")
+
+
+def test_practice_count() -> None:
+    """practiceCount should reflect the number of practice_result events."""
+    analytics = _get_analytics()
+    practice = analytics["practiceCount"]
+    breakdown_practice = analytics["eventBreakdown"].get("practice_result", 0)
+    assert practice == breakdown_practice, (
+        f"practiceCount {practice} should match eventBreakdown.practice_result {breakdown_practice}"
+    )
+    assert practice >= 1, f"Expected >= 1 practiceCount, got {practice}"
+    print(f"PASS practiceCount = {practice}")
+
+
+def test_empty_analytics_returns_default_structure() -> None:
+    """Analytics for a session with no events should return default (zero) values."""
+    empty_session = f"e2e_empty_{uuid.uuid4().hex[:8]}"
+    r = client.get("/api/learning-analytics", params={"sessionId": empty_session})
+    assert r.status_code == 200
+    data = _response_data(r)
+
+    assert data["eventCount"] == 0
+    assert data["totalStudyMinutes"] == 0
+    assert data["activeResourceCount"] == 0
+    assert data["viewedResources"] == 0
+    assert data["completedResources"] == 0
+    assert data["practiceCount"] == 0
+    assert data["eventBreakdown"] == {}
+    assert data["topResources"] == []
+    assert data["quizAccuracy"] is None
+    assert data["weakTopics"] == []
+    assert isinstance(data["recommendations"], list)
+    assert data["recentEvents"] == []
+
+    print("PASS Empty analytics returns default structure with zero values")
+
+
+def test_resource_complete_affects_completed_resources() -> None:
+    """Posting a resource_complete event should increase completedResources."""
+    analytics_before = _get_analytics()
+    before = analytics_before["completedResources"]
+
+    _post_event("resource_complete", resourceId="res_complete_test",
+                metadata={"duration": 10, "title": "Complete Test"})
+
+    analytics_after = _get_analytics()
+    after = analytics_after["completedResources"]
+    assert after == before + 1, (
+        f"completedResources should increase from {before} to {before + 1}, got {after}"
+    )
+    print(f"PASS resource_complete increases completedResources: {before} → {after}")
+
+
 if __name__ == "__main__":
     tests = [
         test_all_six_event_types_logged,
-        test_all_nine_analytics_fields_returned,
+        test_all_analytics_fields_returned,
         test_event_count_accuracy,
         test_total_study_minutes,
         test_active_resource_count,
+        test_viewed_resources_count,
+        test_completed_resources_count,
+        test_practice_count,
+        test_empty_analytics_returns_default_structure,
         test_top_resources,
         test_quiz_accuracy,
         test_weak_topics,
         test_practice_result_contributes_to_weak_topics,
         test_recent_events,
+        test_recent_events_reverse_chronological_order,
+        test_resource_complete_affects_completed_resources,
         test_recommendations,
         test_event_breakdown_labels,
         test_session_isolation,

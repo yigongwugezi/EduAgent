@@ -139,6 +139,9 @@ class LearningTracker:
             "eventCount": len(events),
             "totalStudyMinutes": total_minutes,
             "activeResourceCount": len(resource_counter),
+            "viewedResources": event_counter.get("resource_view", 0),
+            "completedResources": event_counter.get("resource_complete", 0),
+            "practiceCount": event_counter.get("practice_result", 0),
             "eventBreakdown": dict(event_counter),
             "topResources": [
                 {"resourceId": resource_id, "count": count, "title": resource_titles.get(resource_id, "")}
@@ -147,7 +150,7 @@ class LearningTracker:
             "quizAccuracy": quiz_accuracy,
             "weakTopics": weak_topics,
             "recommendations": recommendations,
-            "recentEvents": events[-10:],
+            "recentEvents": list(reversed(events[-10:])),
         }
 
     def reset(self, session_id: str | None = None) -> None:

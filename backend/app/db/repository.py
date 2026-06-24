@@ -695,6 +695,9 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
         "eventCount": len(events),
         "totalStudyMinutes": total_minutes,
         "activeResourceCount": len(resource_counts),
+        "viewedResources": event_counts.get("resource_view", 0),
+        "completedResources": event_counts.get("resource_complete", 0),
+        "practiceCount": event_counts.get("practice_result", 0),
         "resourceViewCount": event_counts.get("resource_view", 0),
         "resourceCompleteCount": event_counts.get("resource_complete", 0),
         "lastStudyTime": int(last_study_ts * 1000) if last_study_ts else None,
@@ -715,6 +718,6 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
                 "metadata": evt.metadata_,
                 "timestamp": evt.created_at.isoformat() if evt.created_at else None,
             }
-            for evt in events[-5:]
+            for evt in events[:5]
         ],
     }

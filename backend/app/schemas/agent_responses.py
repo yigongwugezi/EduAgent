@@ -160,6 +160,9 @@ class LearningAnalyticsData(BaseModel):
     eventCount: int = 0
     totalStudyMinutes: int = 0
     activeResourceCount: int = 0
+    viewedResources: int = 0
+    completedResources: int = 0
+    practiceCount: int = 0
     eventBreakdown: dict[str, int] = Field(default_factory=dict)
     topResources: list[dict[str, Any]] = Field(default_factory=list)
     quizAccuracy: int | None = None
