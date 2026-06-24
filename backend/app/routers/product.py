@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
+from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.intent_agent import IntentAgent
 from app.config import settings
 from app.db.engine import SessionLocal
@@ -205,8 +206,8 @@ def _classify_intent(message: str) -> dict[str, Any]:
 
 
 def _run_agents(
-    message: str = "我想学习人工智能导论",
-    session_id: str = "",
+    message: str,
+    session_id: str,
     progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
@@ -458,6 +459,11 @@ def _to_resource(
         "relatedChapter": related_chapter,
         "relatedKnowledgePoints": related_knowledge_points if isinstance(related_knowledge_points, list) else [related_knowledge_points],
         "qualityStatus": quality_status,
+        "sourceType": item.get("source_type", ""),
+        "generationMode": item.get("generation_mode", ""),
+        "reason": item.get("reason", ""),
+        "evidence": item.get("evidence", []),
+        "fallbackReason": item.get("fallback_reason", ""),
     }
 
 
@@ -661,7 +667,9 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     )
 
 
-def _casual_reply(session_id: str = "") -> str:
+def _casual_reply(session_id: str) -> str:
+    if not session_id:
+        raise ValueError("session_id is required for _casual_reply")
     state = conversation_store.get(session_id)
     known = "\n".join(conversation_store.known_lines(state))
     if known:
@@ -902,6 +910,74 @@ def _resource_request_reply(message: str, session_id: str, progress_callback: Ca
     )
 
 
+def _diagnosis_context(message: str, session_id: str) -> dict[str, Any]:
+    state = conversation_store.get(session_id)
+    cached = state.last_result or {}
+
+    try:
+        stored_profile = ag_get_profile(session_id)
+    except Exception:
+        stored_profile = None
+    try:
+        stored_path = ag_get_learning_path(session_id)
+    except Exception:
+        stored_path = None
+    try:
+        stored_resources = ag_get_resources(session_id)
+    except Exception:
+        stored_resources = []
+    try:
+        analytics = ag_get_analytics(session_id)
+    except Exception:
+        analytics = {}
+
+    profile = cached.get("profile") or ((stored_profile or {}).get("dimensions") or [])
+    learning_path = cached.get("learning_path") or ((stored_path or {}).get("stages") or [])
+    resources = cached.get("resources") or stored_resources or []
+
+    return {
+        "session_id": session_id,
+        "user_message": message,
+        "profile": profile,
+        "profile_facts": dict(state.facts),
+        "learning_path": learning_path,
+        "resources": resources,
+        "knowledge_context": cached.get("knowledge_context") or {},
+        "analytics": analytics,
+    }
+
+
+def _run_diagnosis(message: str, session_id: str) -> dict[str, Any]:
+    result = DiagnosisAgent(mock_data={}).run(_diagnosis_context(message, session_id))
+    diagnosis = result["diagnosis"]
+    conversation_store.set_diagnosis(session_id, diagnosis)
+    return diagnosis
+
+
+def _diagnosis_reply(message: str, session_id: str) -> str:
+    diagnosis = _run_diagnosis(message, session_id)
+    weak_topics = diagnosis.get("weak_topics") or []
+    if weak_topics:
+        topic_lines = "\n".join(
+            f"- {item.get('topic', '待确认知识点')}（{item.get('priority', 'medium')}）：{item.get('reason', '')}"
+            for item in weak_topics
+        )
+    else:
+        topic_lines = "- 暂无足够证据确认具体薄弱点"
+
+    action_lines = "\n".join(f"- {action}" for action in diagnosis.get("next_actions") or [])
+    limitation_lines = "\n".join(f"- {item}" for item in diagnosis.get("limitations") or [])
+    return (
+        "学习诊断结果\n\n"
+        f"{diagnosis.get('summary', '')}\n\n"
+        f"薄弱点/待验证重点：\n{topic_lines}\n\n"
+        f"下一步：\n{action_lines or '- 完成一次练习后重新诊断'}\n\n"
+        f"诊断限制：\n{limitation_lines or '- 当前未发现额外限制'}\n\n"
+        f"诊断来源：{diagnosis.get('source', 'rule_based_diagnosis')}；"
+        f"置信度：{float(diagnosis.get('confidence', 0)):.0%}"
+    )
+
+
 def _feedback_reply(message: str, session_id: str) -> str:
     learning_tracker.log({"event": "chat_feedback", "metadata": {"message": message}}, session_id=session_id)
     return (
@@ -958,7 +1034,7 @@ def _reply_for_intent(
     if name == "tutoring":
         return _tutoring_reply(message), False
     if name == "diagnosis":
-        return _feedback_reply(message, session_id), False
+        return _diagnosis_reply(message, session_id), True
     if name == "full_workflow":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "progress_feedback":
@@ -998,9 +1074,7 @@ GEN_STAGES = [
 @router.post("/chat/stream")
 def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "")).strip()
-    if not session_id:
-        raise MissingSessionIdError()
+    session_id = _payload_session_id(payload)
     _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
@@ -1102,7 +1176,11 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
-        yield 'data: {"done":true}\n\n'
+        final_event: dict[str, Any] = {"done": True}
+        if intent["intent"] == "diagnosis":
+            result = conversation_store.get(session_id).last_result or {}
+            final_event["diagnosis"] = result.get("diagnosis", {})
+        yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -1110,9 +1188,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 @router.post("/chat/send")
 def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     message = str(payload.get("message", "我想学习人工智能导论"))
-    session_id = str(payload.get("sessionId", "")).strip()
-    if not session_id:
-        raise MissingSessionIdError()
+    session_id = _payload_session_id(payload)
     _validate_message(message)
 
     conversation_store.append_message(session_id, "user", message)
@@ -1120,16 +1196,20 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     conversation_store.set_intent(session_id, intent)
     reply, _ = _reply_for_intent(message, intent, session_id)
     conversation_store.append_message(session_id, "assistant", reply)
-    return _product_response(
-        {
-            "sessionId": session_id,
-            "reply": {
-                "id": "assistant_msg_001",
-                "role": "assistant",
-                "content": reply,
-                "timestamp": int(time.time() * 1000),
-            },
+    response = {
+        "sessionId": session_id,
+        "reply": {
+            "id": "assistant_msg_001",
+            "role": "assistant",
+            "content": reply,
+            "timestamp": int(time.time() * 1000),
         },
+    }
+    if intent["intent"] == "diagnosis":
+        result = conversation_store.get(session_id).last_result or {}
+        response["diagnosis"] = result.get("diagnosis", {})
+    return _product_response(
+        response,
         session_id=session_id, source="agent",
     )
 
@@ -1211,30 +1291,20 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════
 
 
-def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
-    """Resolve session_id from query parameters.
-
-    sessionId is the data ownership key. subjectId is course context only
-    and MUST NOT be used as a session identifier.
-    Raises MissingSessionIdError if sessionId is empty.
-    """
-    sid = sessionId.strip() if sessionId else ""
-    if not sid:
+def _require_session_id(value: Any) -> str:
+    session_id = str(value or "").strip()
+    if not session_id:
         raise MissingSessionIdError()
-    return sid
+    return session_id
+
+
+def _resolve_session_id(sessionId: str = "", subjectId: str = "") -> str:
+    # subjectId remains course context only; it must never identify a session.
+    return _require_session_id(sessionId)
 
 
 def _payload_session_id(payload: dict[str, Any]) -> str:
-    """Extract session_id from a request body.
-
-    Only sessionId from the payload is accepted. subjectId in the body
-    is NOT used as a sessionId fallback.
-    Raises MissingSessionIdError if sessionId is missing or empty.
-    """
-    sid = str(payload.get("sessionId") or "").strip()
-    if not sid:
-        raise MissingSessionIdError()
-    return sid
+    return _require_session_id(payload.get("sessionId"))
 
 
 @router.get("/profile")
@@ -1579,6 +1649,11 @@ def get_resources(
             "relatedChapter": item.get("relatedChapter", item.get("related_chapter", "")),
             "relatedKnowledgePoints": item.get("relatedKnowledgePoints", item.get("related_knowledge_points", [])),
             "qualityStatus": item.get("qualityStatus", item.get("quality_status", "")),
+            "sourceType": item.get("sourceType", item.get("source_type", "")),
+            "generationMode": item.get("generationMode", item.get("generation_mode", "")),
+            "reason": item.get("reason", ""),
+            "evidence": item.get("evidence", []),
+            "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
         }
 
     # Merge DB resources with in-memory resources.
@@ -1757,7 +1832,7 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
     try:
         db = SessionLocal()
         # Ensure resource exists in DB before toggling bookmark
-        from app.db.repository import upsert_resource as repo_upsert_resource
+        from app.db.repository import get_resource as repo_get_resource, save_resource as repo_save_resource
         state = conversation_store.get(session_id)
         if state.last_result:
             for item in state.last_result.get("resources", []):
@@ -1770,8 +1845,23 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                         "content": item.get("content", ""),
                     })
                     break
-        bookmarked = toggle_bookmark(db, session_id, resource_id)
-        return _product_response({"bookmarked": bookmarked if bookmarked is not None else True}, session_id=session_id, subject_id=subjectId, source="user_action")
+        resource = repo_get_resource(db, resource_id)
+        if resource is None or resource.session_id != session_id:
+            return _product_response(
+                {"bookmarked": False, "ok": False, "error": "resource does not belong to this session"},
+                session_id=session_id,
+                subject_id=subjectId,
+                status="error",
+                message="resource does not belong to this session",
+                source="user_action",
+            )
+        bookmarked = toggle_bookmark(db, resource_id)
+        return _product_response(
+            {"bookmarked": bool(bookmarked), "ok": True},
+            session_id=session_id,
+            subject_id=subjectId,
+            source="user_action",
+        )
     finally:
         db.close()
 
@@ -2223,8 +2313,13 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
         try:
             from app.db.repository import get_resource as _get_res
             db = SessionLocal()
-            res = _get_res(db, session_id, payload["resourceId"])
-            if res and res.estimated_minutes and not payload.get("duration"):
+            res = _get_res(db, payload["resourceId"])
+            if (
+                res
+                and res.session_id == session_id
+                and res.estimated_minutes
+                and not payload.get("duration")
+            ):
                 payload["duration"] = res.estimated_minutes
             db.close()
         except Exception:

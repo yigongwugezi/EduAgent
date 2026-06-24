@@ -21,6 +21,7 @@ from app.agents import (
     ReviewAgent,
 )
 from app.config import settings
+from app.services.learning_tracker import learning_tracker
 from app.services.llm_client import get_llm_client
 
 
@@ -106,6 +107,7 @@ class AgentOrchestrator:
             "course_id": course_id,
             "user_message": user_message,
             "profile_facts": profile_facts or {},
+            "analytics": self._session_analytics(session_id),
         }
 
         result: dict[str, Any] = {
@@ -166,6 +168,14 @@ class AgentOrchestrator:
                 result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
 
         return result
+
+    def _session_analytics(self, session_id: str) -> dict[str, Any]:
+        """Load session-scoped behavior evidence without failing the agent pipeline."""
+        try:
+            analytics = learning_tracker.summary(session_id)
+        except Exception:
+            return {}
+        return analytics if isinstance(analytics, dict) else {}
 
     # ── Agent construction ─────────────────────────────────────────────
 

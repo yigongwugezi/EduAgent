@@ -256,15 +256,16 @@ class ConversationStore:
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def get(self, session_id: str | None) -> ConversationState:
-        """Get or create the conversation state for *session_id*.
-
-        Raises MissingSessionIdError if session_id is None or empty — sessionId
-        is the data ownership key and must always be provided.
-        """
-        if not session_id or not session_id.strip():
+    @staticmethod
+    def _require_session_id(session_id: str | None) -> str:
+        sid = str(session_id or "").strip()
+        if not sid:
             raise MissingSessionIdError()
-        sid = session_id.strip()
+        return sid
+
+    def get(self, session_id: str | None) -> ConversationState:
+        """Get or create conversation state for an explicit session id."""
+        sid = self._require_session_id(session_id)
         with self._lock:
             if sid not in self._sessions:
                 state = ConversationState(session_id=sid)
@@ -280,7 +281,7 @@ class ConversationStore:
         Use this when you want to check whether a session already has data
         without creating phantom sessions.
         """
-        sid = session_id.strip()
+        sid = str(session_id or "").strip()
         if not sid:
             return None
         if sid in self._sessions:
@@ -298,9 +299,7 @@ class ConversationStore:
 
     def reset(self, session_id: str | None) -> ConversationState:
         """Reset all state for a session (in-memory + DB)."""
-        if not session_id or not session_id.strip():
-            raise ValueError("session_id is required and must not be empty")
-        sid = session_id.strip()
+        sid = self._require_session_id(session_id)
         self._sessions[sid] = ConversationState(session_id=sid)
         if self._db_enabled:
             try:
@@ -454,6 +453,15 @@ class ConversationStore:
             finally:
                 if db is not None:
                     db.close()
+
+    def set_diagnosis(self, session_id: str, diagnosis: dict[str, Any]) -> None:
+        """Attach a diagnosis to the current session without regenerating other artifacts."""
+        state = self.get(session_id)
+        result = dict(state.last_result or {})
+        result.setdefault("session_id", state.session_id)
+        result["diagnosis"] = diagnosis
+        state.last_result = result
+        state.updated_at = time.time()
 
     # ── Fact extraction (unchanged, pure processing logic) ─────────────
 
