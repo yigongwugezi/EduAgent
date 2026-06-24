@@ -271,6 +271,7 @@ def test_diagnosis_route_returns_structured_result() -> None:
     )
 
     response = product.send_chat({"sessionId": sid, "message": "我哪里比较薄弱"})
+    response = response.get("data", response)
     content = response["reply"]["content"]
     diagnosis = response.get("diagnosis") or {}
 
@@ -293,7 +294,7 @@ def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
         try:
             product.send_chat(payload)
         except HTTPException as exc:
-            assert exc.status_code == 400
+            assert exc.status_code == 422
             assert "sessionId is required" in str(exc.detail)
         else:
             raise AssertionError("chat must reject requests without an explicit sessionId")

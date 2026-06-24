@@ -3,7 +3,8 @@
 Design principles (Stage 2):
 - **Read endpoints** (GET) read directly from the database — they NEVER trigger agent runs.
 - **Write/trigger endpoints** (POST) call ``agent_service.run_agents()``, persist results, and return them.
-- All responses use the ``ApiResponse`` envelope for stable frontend contracts.
+- All responses use the unified ``_product_response()`` envelope with fields:
+  ``status``, ``data``, ``message``, ``warnings``, ``source``, ``sessionId``, ``subjectId``.
 - Every endpoint requires ``sessionId`` — no hardcoded default.
 """
 
@@ -48,6 +49,7 @@ from app.services.conversation_state import conversation_store
 from app.services.course_catalog import course_catalog
 from app.services.learning_tracker import learning_tracker
 from app.services.llm_client import get_llm_client
+from app.schemas.product import ProductApiResponse
 
 router = APIRouter(tags=["product"])
 
@@ -75,6 +77,28 @@ def _profile_item(
         "source": source,
         "explanation": explanation or value,
         "evidence": evidence or value,
+    }
+
+
+def _product_response(
+    data: dict[str, Any],
+    *,
+    session_id: str = "",
+    subject_id: str = "",
+    message: str = "success",
+    status: str = "success",
+    source: str = "runtime_kit",
+    warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    """Build a unified response dict with consistent envelope fields."""
+    return {
+        "status": status,
+        "data": data,
+        "message": message,
+        "warnings": warnings or [],
+        "source": source,
+        "sessionId": session_id,
+        "subjectId": subject_id,
     }
 
 
@@ -148,8 +172,6 @@ def _run_agents(
     progress_callback: Callable | None = None,
 ) -> dict[str, Any]:
     """Trigger the full multi-agent pipeline via AgentService and persist results."""
-    if not session_id:
-        raise ValueError("_run_agents requires a non-empty session_id")
     state = conversation_store.get(session_id)
     user_topic = state.facts.get("target_course") or message
     selected_course = course_catalog.match_course(user_topic)
@@ -1140,7 +1162,10 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     if intent["intent"] == "diagnosis":
         result = conversation_store.get(session_id).last_result or {}
         response["diagnosis"] = result.get("diagnosis", {})
-    return response
+    return _product_response(
+        response,
+        session_id=session_id, source="agent",
+    )
 
 
 @router.get("/chat/sessions")
@@ -1148,8 +1173,8 @@ def list_sessions() -> dict[str, Any]:
     try:
         db = SessionLocal()
         sessions = repo_list_sessions(db)
-        return {
-            "sessions": [
+        return _product_response(
+            {"sessions": [
                 {
                     "id": sess.id,
                     "title": sess.title,
@@ -1158,8 +1183,9 @@ def list_sessions() -> dict[str, Any]:
                     "updatedAt": int(sess.updated_at.timestamp() * 1000) if sess.updated_at else 0,
                 }
                 for sess in sessions
-            ]
-        }
+            ]},
+            source="db",
+        )
     finally:
         db.close()
 
@@ -1169,18 +1195,21 @@ def get_chat_session(session_id: str) -> dict[str, Any]:
     try:
         db = SessionLocal()
         messages = repo_get_messages(db, session_id)
-        return {
-            "sessionId": session_id,
-            "messages": [
-                {
-                    "id": f"msg_{msg.id}",
-                    "role": msg.role,
-                    "content": msg.content,
-                    "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
-                }
-                for msg in messages
-            ],
-        }
+        return _product_response(
+            {
+                "sessionId": session_id,
+                "messages": [
+                    {
+                        "id": f"msg_{msg.id}",
+                        "role": msg.role,
+                        "content": msg.content,
+                        "timestamp": int(msg.created_at.timestamp() * 1000) if msg.created_at else 0,
+                    }
+                    for msg in messages
+                ],
+            },
+            session_id=session_id, source="db",
+        )
     finally:
         db.close()
 
@@ -1188,23 +1217,27 @@ def get_chat_session(session_id: str) -> dict[str, Any]:
 @router.post("/chat/sessions/{session_id}/reset")
 def reset_session(session_id: str) -> dict[str, Any]:
     conversation_store.reset(session_id)
-    return {"ok": True, "sessionId": session_id}
+    return _product_response({"ok": True}, session_id=session_id, source="system")
 
 
 @router.get("/chat/quick-commands")
 def quick_commands() -> dict[str, Any]:
-    return {
-        "commands": [
+    return _product_response(
+        {"commands": [
             {"id": "ai_intro", "label": "AI 入门", "icon": "AI", "prompt": "我是大二学生，想两周入门人工智能"},
             {"id": "nn", "label": "神经网络", "icon": "NN", "prompt": "我想重点学习神经网络，希望多给图解和代码"},
             {"id": "data_structures", "label": "数据结构", "icon": "DS", "prompt": "我是软件工程大二学生，想复习数据结构，为了考试通过"},
-        ]
-    }
+        ]},
+        source="mock",
+    )
 
 
 @router.get("/chat/progress/{task_id}")
 def generation_progress(task_id: str) -> dict[str, Any]:
-    return {"progress": {"stage": "多智能体生成中", "progress": 100, "agentName": "EduAgent", "detail": task_id}}
+    return _product_response(
+        {"progress": {"stage": "多智能体生成中", "progress": 100, "agentName": "EduAgent", "detail": task_id}},
+        source="mock",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1215,7 +1248,11 @@ def generation_progress(task_id: str) -> dict[str, Any]:
 def _require_session_id(value: Any) -> str:
     session_id = str(value or "").strip()
     if not session_id:
-        raise HTTPException(status_code=400, detail="sessionId is required")
+        raise HTTPException(status_code=422, detail={
+            "ok": False,
+            "error": "sessionId is required",
+            "code": "MISSING_SESSION_ID",
+        })
     return session_id
 
 
@@ -1259,8 +1296,8 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
         finally:
             db.close()
 
-        return {
-            "profile": {
+        return _product_response(
+            {"profile": {
                 "id": session_id,
                 "learnerId": learner_id,
                 "nickname": nickname,
@@ -1272,8 +1309,9 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
                 "updatedAt": int(time.time() * 1000),
                 "source": "db",
                 "readiness": readiness,
-            }
-        }
+            }},
+            session_id=session_id, subject_id=subjectId, source="db",
+        )
 
     # Fall back to in-memory last_result if available (transitional)
     state = conversation_store.get(session_id)
@@ -1282,10 +1320,10 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
         readiness = conversation_store.readiness(state)
         profile["source"] = "agent_generated"
         profile["readiness"] = readiness
-        return {"profile": profile}
+        return _product_response({"profile": profile}, session_id=session_id, subject_id=subjectId, source="agent")
 
     # No data at all — return empty structure
-    return {"profile": _empty_profile(session_id)}
+    return _product_response({"profile": _empty_profile(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
 
 
 @router.post("/profile/build")
@@ -1303,7 +1341,7 @@ def build_profile(payload: dict[str, Any]) -> dict[str, Any]:
     readiness = conversation_store.readiness(state)
     profile["readiness"] = readiness
 
-    return {"profile": profile}
+    return _product_response({"profile": profile}, session_id=session_id, source="agent")
 
 
 @router.patch("/profile")
@@ -1385,7 +1423,7 @@ def update_profile(payload: dict[str, Any]) -> dict[str, Any]:
                     existing["source"] = "user_input"
                     existing["confidence"] = 1.0
 
-    return {"profile": profile}
+    return _product_response({"profile": profile}, session_id=session_id, source="user_input")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1400,7 +1438,10 @@ def get_learner_endpoint(learner_id: str) -> dict[str, Any]:
         db = SessionLocal()
         learner = get_learner(db, learner_id)
         if not learner:
-            return {"error": "Learner not found", "learner": None}
+            return _product_response(
+                {"learner": None}, session_id=learner_id,
+                status="error", message="Learner not found", source="db",
+            )
 
         sessions = get_learner_sessions(db, learner_id)
         aggregated = get_learner_aggregated_profile(db, learner_id)
@@ -1409,8 +1450,8 @@ def get_learner_endpoint(learner_id: str) -> dict[str, Any]:
         if aggregated and aggregated.get("dimensions"):
             aggregated["dimensions"] = normalize_profile_dimensions(aggregated["dimensions"])
 
-        return {
-            "learner": {
+        return _product_response(
+            {"learner": {
                 "id": learner.id,
                 "nickname": learner.nickname,
                 "createdAt": int(learner.created_at.timestamp() * 1000) if learner.created_at else 0,
@@ -1426,8 +1467,9 @@ def get_learner_endpoint(learner_id: str) -> dict[str, Any]:
                     for s in sessions
                 ],
                 "aggregatedProfile": aggregated,
-            }
-        }
+            }},
+            session_id=learner_id, source="db",
+        )
     finally:
         db.close()
 
@@ -1664,15 +1706,18 @@ def get_resources(
     completed_count = sum(1 for r in merged if r.get("studyStatus") == "completed")
     total_count = len(merged)
 
-    return {
-        "resources": merged,
-        "total": total_count,
-        "completedCount": completed_count,
-        "incompleteCount": total_count - completed_count,
-        "completionRate": round(completed_count / total_count * 100) if total_count > 0 else 0,
-        "page": 1,
-        "sessionId": session_id,
-    }
+    return _product_response(
+        {
+            "resources": merged,
+            "total": total_count,
+            "completedCount": completed_count,
+            "incompleteCount": total_count - completed_count,
+            "completionRate": round(completed_count / total_count * 100) if total_count > 0 else 0,
+            "page": 1,
+            "sessionId": session_id,
+        },
+        session_id=session_id, subject_id=subjectId, source="db",
+    )
 
 
 @router.get("/resources/{resource_id}")
@@ -1685,26 +1730,29 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
         bookmarks = _get_bookmarks(session_id)
-        return {"resource": {
-            "id": db_match["id"],
-            "type": _resource_type(db_match.get("type", "lecture")),
-            "title": db_match.get("title", "学习资源"),
-            "description": db_match.get("description", ""),
-            "content": db_match.get("content", ""),
-            "knowledgePoints": db_match.get("knowledge_points", []),
-            "tags": db_match.get("tags", []),
-            "difficulty": db_match.get("difficulty", "easy"),
-            "estimatedMinutes": db_match.get("estimated_minutes", 20),
-            "format": db_match.get("format", "text"),
-            "mermaidDef": db_match.get("mermaid_def"),
-            "codeBlocks": db_match.get("code_blocks"),
-            "questions": db_match.get("questions"),
-            "pptOutline": db_match.get("ppt_outline"),
-            "createdAt": int(datetime.fromisoformat(db_match["created_at"]).timestamp() * 1000) if db_match.get("created_at") else int(time.time() * 1000),
-            "bookmarked": db_match["id"] in bookmarks,
-            "studyStatus": db_match.get("study_status", "new"),
-            "source": _source_label(db_match.get("source", "")),
-        }}
+        return _product_response(
+            {"resource": {
+                "id": db_match["id"],
+                "type": _resource_type(db_match.get("type", "lecture")),
+                "title": db_match.get("title", "学习资源"),
+                "description": db_match.get("description", ""),
+                "content": db_match.get("content", ""),
+                "knowledgePoints": db_match.get("knowledge_points", []),
+                "tags": db_match.get("tags", []),
+                "difficulty": db_match.get("difficulty", "easy"),
+                "estimatedMinutes": db_match.get("estimated_minutes", 20),
+                "format": db_match.get("format", "text"),
+                "mermaidDef": db_match.get("mermaid_def"),
+                "codeBlocks": db_match.get("code_blocks"),
+                "questions": db_match.get("questions"),
+                "pptOutline": db_match.get("ppt_outline"),
+                "createdAt": int(datetime.fromisoformat(db_match["created_at"]).timestamp() * 1000) if db_match.get("created_at") else int(time.time() * 1000),
+                "bookmarked": db_match["id"] in bookmarks,
+                "studyStatus": db_match.get("study_status", "new"),
+                "source": _source_label(db_match.get("source", "")),
+            }},
+            session_id=session_id, subject_id=subjectId, source="db",
+        )
 
     # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
@@ -1715,18 +1763,19 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
         ]
         match = next((item for item in resources if item["id"] == resource_id), None)
         if match:
-            return {"resource": match}
+            return _product_response({"resource": match}, session_id=session_id, subject_id=subjectId, source="memory")
 
-    return {
-        "resource": {
+    return _product_response(
+        {"resource": {
             "id": resource_id,
             "type": "lecture",
             "title": "资源未找到",
             "description": "",
             "content": "",
             "source": "none",
-        }
-    }
+        }},
+        session_id=session_id, subject_id=subjectId, source="none",
+    )
 
 
 @router.post("/resources/{resource_id}/bookmark")
@@ -1750,9 +1799,21 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
                     break
         resource = repo_get_resource(db, resource_id)
         if resource is None or resource.session_id != session_id:
-            return {"bookmarked": False, "ok": False, "error": "resource does not belong to this session"}
+            return _product_response(
+                {"bookmarked": False, "ok": False, "error": "resource does not belong to this session"},
+                session_id=session_id,
+                subject_id=subjectId,
+                status="error",
+                message="resource does not belong to this session",
+                source="user_action",
+            )
         bookmarked = toggle_bookmark(db, resource_id)
-        return {"bookmarked": bool(bookmarked), "ok": True}
+        return _product_response(
+            {"bookmarked": bool(bookmarked), "ok": True},
+            session_id=session_id,
+            subject_id=subjectId,
+            source="user_action",
+        )
     finally:
         db.close()
 
@@ -1769,7 +1830,7 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
         if resource:
             # 校验资源属于当前 session，防止跨 session 修改
             if resource.session_id != session_id:
-                return {"ok": False, "error": "resource does not belong to this session"}
+                return _product_response({"ok": False}, session_id=session_id, subject_id=subjectId, status="error", message="resource does not belong to this session", source="user_action")
             resource.study_status = study_status
             db.commit()
         else:
@@ -1792,7 +1853,7 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
                         break
     finally:
         db.close()
-    return {"ok": True, "studyStatus": study_status}
+    return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1803,16 +1864,16 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
 @router.post("/resources/batch/study-status")
 def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
     """Batch update study status for multiple resources in a session."""
-    session_id = str(payload.get("sessionId", ""))
+    session_id = _payload_session_id(payload)
     resource_ids: list[str] = payload.get("resourceIds", [])
     study_status = str(payload.get("studyStatus", "completed"))
-    if not session_id or not resource_ids:
-        return {"ok": False, "error": "sessionId and resourceIds are required", "updated": 0}
+    if not resource_ids:
+        return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
     try:
         db = SessionLocal()
         from app.db.repository import batch_update_study_status as repo_batch_status
         updated = repo_batch_status(db, session_id, resource_ids, study_status)
-        return {"ok": True, "updated": updated, "studyStatus": study_status}
+        return _product_response({"ok": True, "updated": updated, "studyStatus": study_status}, session_id=session_id, source="user_action")
     finally:
         db.close()
 
@@ -1820,16 +1881,16 @@ def batch_update_study_status(payload: dict[str, Any]) -> dict[str, Any]:
 @router.post("/resources/batch/bookmark")
 def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
     """Batch bookmark or un-bookmark multiple resources in a session."""
-    session_id = str(payload.get("sessionId", ""))
+    session_id = _payload_session_id(payload)
     resource_ids: list[str] = payload.get("resourceIds", [])
     bookmarked = bool(payload.get("bookmarked", True))
-    if not session_id or not resource_ids:
-        return {"ok": False, "error": "sessionId and resourceIds are required", "updated": 0}
+    if not resource_ids:
+        return _product_response({"ok": False, "updated": 0}, session_id=session_id, status="error", message="resourceIds is required", source="user_action")
     try:
         db = SessionLocal()
         from app.db.repository import batch_set_bookmark as repo_batch_bookmark
         updated = repo_batch_bookmark(db, session_id, resource_ids, bookmarked)
-        return {"ok": True, "updated": updated, "bookmarked": bookmarked}
+        return _product_response({"ok": True, "updated": updated, "bookmarked": bookmarked}, session_id=session_id, source="user_action")
     finally:
         db.close()
 
@@ -1837,10 +1898,8 @@ def batch_set_bookmark(payload: dict[str, Any]) -> dict[str, Any]:
 @router.post("/resources/batch/export")
 def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
     """Export resource titles as a text list. Optionally filter by resourceIds."""
-    session_id = str(payload.get("sessionId", ""))
+    session_id = _payload_session_id(payload)
     resource_ids: list[str] | None = payload.get("resourceIds")
-    if not session_id:
-        return {"ok": False, "error": "sessionId is required", "export": ""}
 
     # Gather all resources for this session
     db_resources = ag_get_resources(session_id)
@@ -1877,7 +1936,7 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
     export_text = "\n".join(lines)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
     header = f"EduAgent 资源导出 — {timestamp}\n共 {len(items)} 项资源\n{'─' * 48}\n"
-    return {"ok": True, "export": header + export_text, "count": len(items)}
+    return _product_response({"ok": True, "export": header + export_text, "count": len(items)}, session_id=session_id, source="user_action")
 
 
 @router.post("/resources/generate")
@@ -1893,7 +1952,7 @@ def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
         for item in result.get("resources", [])
     ]
     primary = resources[0] if resources else {"id": "res_new", "title": f"{topic} 个性化资源", "source": "none"}
-    return {"resource": primary}
+    return _product_response({"resource": primary}, session_id=session_id, source="agent")
 
 
 @router.get("/resources/{resource_id}/knowledge-graph")
@@ -1901,15 +1960,21 @@ def resource_knowledge_graph(resource_id: str, sessionId: str = "", subjectId: s
     session_id = _resolve_session_id(sessionId, subjectId)
     resource = _find_resource_for_graph(resource_id, session_id)
     if not resource:
-        return {"mermaidDef": "", "source": "none", "resourceId": resource_id}
+        return _product_response(
+            {"mermaidDef": "", "source": "none", "resourceId": resource_id},
+            session_id=session_id, subject_id=subjectId, source="none",
+        )
 
     existing = str(resource.get("mermaidDef") or resource.get("mermaid_def") or "").strip()
     if existing:
-        return {
-            "mermaidDef": existing,
-            "source": _source_label(str(resource.get("source", ""))),
-            "resourceId": resource_id,
-        }
+        return _product_response(
+            {
+                "mermaidDef": existing,
+                "source": _source_label(str(resource.get("source", ""))),
+                "resourceId": resource_id,
+            },
+            session_id=session_id, subject_id=subjectId, source="db",
+        )
 
     title = str(resource.get("title") or resource_id).strip()
     knowledge_points = [
@@ -1922,11 +1987,14 @@ def resource_knowledge_graph(resource_id: str, sessionId: str = "", subjectId: s
     lines = ["mindmap", f"  root(({_safe_mermaid_label(title)}))"]
     for child in children[:8]:
         lines.append(f"    {_safe_mermaid_label(child)}")
-    return {
-        "mermaidDef": "\n".join(lines),
-        "source": _source_label(str(resource.get("source", ""))),
-        "resourceId": resource_id,
-    }
+    return _product_response(
+        {
+            "mermaidDef": "\n".join(lines),
+            "source": _source_label(str(resource.get("source", ""))),
+            "resourceId": resource_id,
+        },
+        session_id=session_id, subject_id=subjectId, source="generated",
+    )
 
 
 def _find_resource_for_graph(resource_id: str, session_id: str) -> dict[str, Any] | None:
@@ -1958,16 +2026,17 @@ def _safe_mermaid_label(text: str) -> str:
 
 @router.get("/resources/{resource_id}/knowledge-graph-legacy")
 def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
-    return {
-        "mermaidDef": (
+    return _product_response(
+        {"mermaidDef": (
             "mindmap\n"
             "  root((人工智能导论))\n"
             "    机器学习基础\n"
             "    神经网络\n"
             "    自然语言处理\n"
             f"    资源 {resource_id}"
-        )
-    }
+        )},
+        source="mock",
+    )
 
 
 # ── In-memory node progress store ────────────────────────────────────
@@ -2122,31 +2191,34 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         else:
             stages = []
         if not stages:
-            return {"path": _empty_learning_path(session_id)}
-        return {"path": _build_path(stages, {
-            "id": db_path.get("id", f"path_{session_id}"),
-            "title": f"{db_path.get('course_name', '')}个性化学习路径",
-            "description": db_path.get("description", ""),
-            "courseName": db_path.get("course_name", ""),
-            "courseId": db_path.get("course_id", ""),
-            "createdAt": _datetime_to_ms(db_path.get("created_at")),
-            "estimatedDays": db_path.get("estimated_days", 14),
-        })}
+            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
+        return _product_response(
+            {"path": _build_path(stages, {
+                "id": db_path.get("id", f"path_{session_id}"),
+                "title": f"{db_path.get('course_name', '')}个性化学习路径",
+                "description": db_path.get("description", ""),
+                "courseName": db_path.get("course_name", ""),
+                "courseId": db_path.get("course_id", ""),
+                "createdAt": _datetime_to_ms(db_path.get("created_at")),
+                "estimatedDays": db_path.get("estimated_days", 14),
+            })},
+            session_id=session_id, subject_id=subjectId, source="db",
+        )
 
     # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
     if state.last_result:
         path = _to_learning_path(state.last_result)
         if not path.get("stages"):
-            return {"path": _empty_learning_path(session_id)}
+            return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
         path["source"] = "agent_generated"
         path["stages"] = _apply_node_progress(path["stages"], session_id)
         all_nodes = [n for s in path["stages"] for n in s.get("nodes", [])]
         mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
         path["overallProgress"] = round(mastered / len(all_nodes) * 100) if all_nodes else 0
-        return {"path": path}
+        return _product_response({"path": path}, session_id=session_id, subject_id=subjectId, source="agent")
 
-    return {"path": _empty_learning_path(session_id)}
+    return _product_response({"path": _empty_learning_path(session_id)}, session_id=session_id, subject_id=subjectId, source="none")
 
 
 @router.post("/learning-path/generate")
@@ -2158,7 +2230,7 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
     message = conversation_store.profile_prompt(state, latest_message="请生成学习路径")
     result = _run_agents(message, session_id=session_id)
     path = _to_learning_path(result)
-    return {"path": path}
+    return _product_response({"path": path}, session_id=session_id, source="agent")
 
 
 @router.patch("/learning-path/nodes/{node_id}")
@@ -2174,7 +2246,7 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
         {"event": "node_progress", "resourceId": node_id, "metadata": payload},
         session_id=session_id,
     )
-    return {"ok": True}
+    return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2186,7 +2258,7 @@ def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any
 def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     learning_tracker.log({"event": "feedback", **payload}, session_id=session_id)
-    return {"ok": True}
+    return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
 @router.post("/feedback/event")
@@ -2209,7 +2281,7 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             pass
     learning_tracker.log(payload, session_id=session_id)
-    return {"ok": True}
+    return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
 
@@ -2262,16 +2334,15 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
     Falls back to iterating all tasks within ``relatedStageId`` when
     ``taskId`` is not provided.
     """
+    session_id = _payload_session_id(payload)
     related_stage_id = str(payload.get("relatedStageId", ""))
     task_id = str(payload.get("taskId", "")).strip()
     event = str(payload.get("event", ""))
     if not related_stage_id or event not in ("resource_view", "resource_complete"):
-        return {"ok": False}
+        return _product_response({"ok": False}, session_id=session_id, status="error", message="relatedStageId and valid event required", source="system")
 
     if task_id and not task_id.startswith(related_stage_id):
         task_id = ""  # mismatched stage — ignore
-
-    session_id = _payload_session_id(payload)
 
     def _update(node_id: str, status: str, mastery: int) -> None:
         _node_progress_store[_nkey(session_id, node_id)] = {
@@ -2330,7 +2401,7 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
                             }, session_id=session_id)
         except Exception:
             pass
-    return {"ok": True}
+    return _product_response({"ok": True}, session_id=session_id, source="system")
 
 
 @router.get("/learning-analytics")
@@ -2339,10 +2410,13 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     session_id = _resolve_session_id(sessionId, subjectId)
 
     analytics = ag_get_analytics(session_id)
-    return {
-        **analytics,
-        "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。",
-    }
+    return _product_response(
+        {
+            **analytics,
+            "summary": "已接入学习事件追踪，可用于后续动态调整画像、资源推荐和学习路径。",
+        },
+        session_id=session_id, subject_id=subjectId, source="db",
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -2369,7 +2443,7 @@ def learning_timeline(
     """
     session_id = _resolve_session_id(sessionId, subjectId)
     if not session_id:
-        return {"events": [], "total": 0}
+        return _product_response({"events": [], "total": 0}, session_id="", source="none")
 
     try:
         db = SessionLocal()
@@ -2480,4 +2554,4 @@ def learning_timeline(
             "timestamp": int(evt.created_at.timestamp() * 1000) if evt.created_at else 0,
         })
 
-    return {"events": events_out, "total": len(events_out)}
+    return _product_response({"events": events_out, "total": len(events_out)}, session_id=session_id, subject_id=subjectId, source="db")

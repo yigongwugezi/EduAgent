@@ -29,6 +29,11 @@ client = TestClient(app)
 SESSION = f"e2e_test_{uuid.uuid4().hex[:8]}"
 
 
+def _response_data(response) -> dict[str, object]:
+    payload = response.json()
+    return payload.get("data", payload)
+
+
 def _post_event(event: str, **kwargs: object) -> None:
     payload: dict[str, object] = {
         "sessionId": SESSION,
@@ -37,13 +42,13 @@ def _post_event(event: str, **kwargs: object) -> None:
     }
     r = client.post("/api/feedback/event", json=payload)
     assert r.status_code == 200
-    assert r.json()["ok"] is True
+    assert _response_data(r)["ok"] is True
 
 
 def _get_analytics() -> dict[str, object]:
     r = client.get("/api/learning-analytics", params={"sessionId": SESSION})
     assert r.status_code == 200
-    return r.json()
+    return _response_data(r)
 
 
 # ── Tests ──────────────────────────────────────────────────────────────
@@ -248,7 +253,7 @@ def test_session_isolation() -> None:
 
     # Other session's analytics should only have its own event
     r2 = client.get("/api/learning-analytics", params={"sessionId": other_session})
-    other = r2.json()
+    other = _response_data(r2)
     assert other["eventCount"] >= 1
     assert other["eventBreakdown"].get("resource_view", 0) >= 1
 
@@ -275,7 +280,7 @@ def test_resource_status_cross_session() -> None:
         json={"studyStatus": "completed"},
         params={"sessionId": SESSION})
     assert r1.status_code == 200
-    assert r1.json().get("ok") is True
+    assert _response_data(r1).get("ok") is True
 
     # Session B tries to mark it incomplete
     other = "e2e_other_cross"
@@ -283,20 +288,20 @@ def test_resource_status_cross_session() -> None:
         json={"studyStatus": "new"},
         params={"sessionId": other})
     assert r2.status_code == 200
-    assert r2.json().get("ok") is False
-    assert "does not belong" in r2.json().get("error", "")
+    assert _response_data(r2).get("ok") is False
+    assert "does not belong" in r2.json().get("message", "")
 
     bookmark = client.post(
         f"/api/resources/{res_id}/bookmark",
         params={"sessionId": other},
     )
     assert bookmark.status_code == 200
-    assert bookmark.json().get("ok") is False
+    assert _response_data(bookmark).get("ok") is False
 
     # Verify session A's status is still "completed"
     r3 = client.get(f"/api/resources/{res_id}", params={"sessionId": SESSION})
     assert r3.status_code == 200
-    res = r3.json().get("resource", {})
+    res = _response_data(r3).get("resource", {})
     assert res.get("studyStatus") == "completed", "owned session keeps its status"
     print("PASS Resource status cross-session modification protected")
 
@@ -308,14 +313,14 @@ def test_feedback_default_session() -> None:
     r = client.post("/api/feedback", json={
         "resourceId": fresh_id, "rating": 5,
     })
-    assert r.status_code == 400
+    assert r.status_code == 422
     result = r.json()
     assert "sessionId is required" in str(result.get("detail", ""))
     print("PASS Feedback without sessionId correctly rejected")
 
     # Verify the rejected event did not leak into the test session
-    analytics = client.get("/api/learning-analytics",
-        params={"sessionId": SESSION}).json()
+    analytics = _response_data(client.get("/api/learning-analytics",
+        params={"sessionId": SESSION}))
     resource_ids = {t.get("resourceId") for t in analytics.get("topResources", [])}
     assert fresh_id not in resource_ids, (
         "rejected event leaked into active session"
@@ -341,14 +346,14 @@ def test_session_isolation_with_different_ids() -> None:
     })
 
     # Subject A should only see its own event
-    a = client.get("/api/learning-analytics", params={"sessionId": subj_a}).json()
+    a = _response_data(client.get("/api/learning-analytics", params={"sessionId": subj_a}))
     assert a["eventCount"] >= 1
     a_events = [e["event"] for e in a.get("recentEvents", [])]
     assert "resource_view" in a_events
     assert "resource_complete" not in a_events, "subject B events should not appear in subject A"
 
     # Subject B should only see its own event
-    b = client.get("/api/learning-analytics", params={"sessionId": subj_b}).json()
+    b = _response_data(client.get("/api/learning-analytics", params={"sessionId": subj_b}))
     assert b["eventCount"] >= 1
     assert b["totalStudyMinutes"] >= 10
 
@@ -364,8 +369,8 @@ def test_subject_id_cannot_replace_session_id() -> None:
     })
     analytics = client.get("/api/learning-analytics", params={"subjectId": subject_id})
 
-    assert event.status_code == 400
-    assert analytics.status_code == 400
+    assert event.status_code == 422
+    assert analytics.status_code == 422
     print("PASS subjectId cannot substitute for sessionId")
 
 

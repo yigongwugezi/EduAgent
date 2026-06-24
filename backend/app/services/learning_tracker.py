@@ -157,7 +157,6 @@ class LearningTracker:
                 delete_session(db, sid)
             finally:
                 db.close()
-
         self._events = [event for event in self._events if event.get("sessionId") != sid]
 
     # ── Internal helpers ──────────────────────────────────────────────
