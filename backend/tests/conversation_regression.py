@@ -2,9 +2,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from fastapi import HTTPException
-
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
@@ -15,6 +12,7 @@ from app.services.conversation_state import conversation_store  # noqa: E402
 from app.services.learning_tracker import learning_tracker  # noqa: E402
 from app.services.llm_client import MockLLMClient  # noqa: E402
 from app.services.orchestrator import AgentOrchestrator  # noqa: E402
+from app.utils.errors import MissingSessionIdError  # noqa: E402
 
 
 class DeterministicTestOrchestrator(AgentOrchestrator):
@@ -293,9 +291,9 @@ def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
     ):
         try:
             product.send_chat(payload)
-        except HTTPException as exc:
+        except MissingSessionIdError as exc:
             assert exc.status_code == 422
-            assert "sessionId is required" in str(exc.detail)
+            assert exc.code == "MISSING_SESSION_ID"
         else:
             raise AssertionError("chat must reject requests without an explicit sessionId")
 

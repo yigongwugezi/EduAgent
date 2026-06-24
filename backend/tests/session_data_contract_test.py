@@ -35,6 +35,7 @@ from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import LearningTracker
 from app.services.llm_client import MockLLMClient
 from app.services.orchestrator import AgentOrchestrator
+from app.utils.errors import MissingSessionIdError
 
 init_db()
 conversation_store.enable_db()
@@ -494,9 +495,7 @@ def test_empty_session_id_rejected_get() -> None:
     r = client.get("/api/profile", params={"sessionId": ""})
     assert r.status_code == 422, \
         f"empty sessionId GET should return 422, got {r.status_code}"
-    detail = r.json().get("detail", {})
-    assert "sessionId is required" in str(detail), \
-        f"error should mention sessionId, got {detail}"
+    assert r.json().get("code") == "MISSING_SESSION_ID"
 
 
 def test_empty_session_id_rejected_post() -> None:
@@ -507,8 +506,7 @@ def test_empty_session_id_rejected_post() -> None:
     })
     assert r.status_code == 422, \
         f"empty sessionId POST should return 422, got {r.status_code}"
-    detail = r.json().get("detail", {})
-    assert "sessionId is required" in str(detail)
+    assert r.json().get("code") == "MISSING_SESSION_ID"
 
 
 def test_empty_session_id_rejected_chat_send() -> None:
@@ -707,8 +705,8 @@ def test_agent_p0_session_contract_guards() -> None:
         try:
             operation()
             raise AssertionError("LearningTracker must reject an empty session")
-        except ValueError as exc:
-            assert "session" in str(exc).lower()
+        except MissingSessionIdError as exc:
+            assert exc.code == "MISSING_SESSION_ID"
 
 
 def test_diagnosis_context_is_session_scoped() -> None:

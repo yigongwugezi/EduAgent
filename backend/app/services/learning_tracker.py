@@ -5,6 +5,7 @@ storage and analytics queries to the database when ``enable_db()`` has been
 called.
 """
 
+import logging
 import time
 from typing import Any
 
@@ -12,6 +13,9 @@ from sqlalchemy.orm import Session
 
 from app.db.engine import SessionLocal
 from app.db.repository import get_event_analytics, get_events, log_event, delete_session
+from app.utils.errors import MissingSessionIdError
+
+logger = logging.getLogger(__name__)
 
 
 class LearningTracker:
@@ -39,7 +43,7 @@ class LearningTracker:
     ) -> str:
         sid = str(session_id or (event or {}).get("sessionId") or "").strip()
         if not sid:
-            raise ValueError("session_id is required")
+            raise MissingSessionIdError()
         return sid
 
     # ── Public API ────────────────────────────────────────────────────

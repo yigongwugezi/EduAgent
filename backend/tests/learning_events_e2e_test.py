@@ -315,7 +315,7 @@ def test_feedback_default_session() -> None:
     })
     assert r.status_code == 422
     result = r.json()
-    assert "sessionId is required" in str(result.get("detail", ""))
+    assert result.get("code") == "MISSING_SESSION_ID"
     print("PASS Feedback without sessionId correctly rejected")
 
     # Verify the rejected event did not leak into the test session
