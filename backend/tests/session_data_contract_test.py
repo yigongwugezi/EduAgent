@@ -17,6 +17,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -27,13 +28,32 @@ from app.db.engine import SessionLocal
 from app.db.models import SessionModel
 from app.db.repository import get_latest_learning_path, get_latest_profile, get_resources
 from app.main import app
+from app.routers import product
+from app.schemas.agent import AgentRunRequest
 from app.services import agent_service
 from app.services.conversation_state import conversation_store
+from app.services.learning_tracker import LearningTracker
+from app.services.llm_client import MockLLMClient
+from app.services.orchestrator import AgentOrchestrator
+from app.utils.errors import MissingSessionIdError
 
 init_db()
 conversation_store.enable_db()
 
 client = TestClient(app)
+
+
+class DeterministicTestOrchestrator(AgentOrchestrator):
+    """Keep session-isolation tests independent from external LLM behavior."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.llm_client = MockLLMClient()
+
+
+def _run_agents(**kwargs):
+    with patch.object(agent_service, "AgentOrchestrator", DeterministicTestOrchestrator):
+        return agent_service.run_agents(**kwargs)
 
 
 def _cleanup(session_ids: list[str]) -> None:
@@ -64,7 +84,7 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
 
     try:
         for session_id in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=session_id,
                 course_id="data_structures",
                 user_message="我是软件工程大二学生，想48小时复习数据结构，为了考试通过，喜欢图解和练习题",
@@ -146,7 +166,7 @@ def test_same_subject_different_sessions() -> None:
 
     try:
         for session_id in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=session_id,
                 course_id=common_course,
                 user_message="我是软件工程大二学生，想48小时复习数据结构，为了考试通过，喜欢图解和练习题",
@@ -191,12 +211,12 @@ def test_different_subjects_different_sessions() -> None:
     _cleanup(sessions)
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a,
             course_id="ai_intro",
             user_message="我是计算机专业学生，想学人工智能导论，零基础",
         )
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b,
             course_id="data_structures",
             user_message="我是软件工程学生，要复习数据结构准备考试",
@@ -244,13 +264,13 @@ def test_cross_course_ai_first_then_ds() -> None:
 
     try:
         # Session A: generate AI Intro
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a,
             course_id="ai_intro",
             user_message="我想学人工智能导论，零基础",
         )
         # Session B: generate Data Structures
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b,
             course_id="data_structures",
             user_message="我要复习数据结构准备考试",
@@ -290,13 +310,13 @@ def test_cross_course_ds_first_then_ai() -> None:
 
     try:
         # Session A: generate Data Structures
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_a,
             course_id="data_structures",
             user_message="我要复习数据结构准备考试",
         )
         # Session B: generate AI Intro
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_b,
             course_id="ai_intro",
             user_message="我想学人工智能导论，零基础",
@@ -340,7 +360,7 @@ def test_profile_isolation_via_api() -> None:
 
     try:
         for sid in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=sid,
                 course_id="data_structures",
                 user_message="我是软件工程大二学生，想学数据结构",
@@ -372,7 +392,7 @@ def test_path_isolation_via_api() -> None:
 
     try:
         for sid in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=sid,
                 course_id="data_structures",
                 user_message="我是大二学生，想学数据结构",
@@ -405,7 +425,7 @@ def test_resources_isolation_via_api() -> None:
 
     try:
         for sid in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=sid,
                 course_id="data_structures",
                 user_message="我是大二学生，想学数据结构",
@@ -442,7 +462,7 @@ def test_analytics_isolation_via_api() -> None:
 
     try:
         for sid in sessions:
-            agent_service.run_agents(
+            _run_agents(
                 session_id=sid,
                 course_id="data_structures",
                 user_message="我是大二学生，想学数据结构",
@@ -475,9 +495,7 @@ def test_empty_session_id_rejected_get() -> None:
     r = client.get("/api/profile", params={"sessionId": ""})
     assert r.status_code == 422, \
         f"empty sessionId GET should return 422, got {r.status_code}"
-    detail = r.json().get("detail", {})
-    assert "sessionId is required" in str(detail), \
-        f"error should mention sessionId, got {detail}"
+    assert r.json().get("code") == "MISSING_SESSION_ID"
 
 
 def test_empty_session_id_rejected_post() -> None:
@@ -488,8 +506,7 @@ def test_empty_session_id_rejected_post() -> None:
     })
     assert r.status_code == 422, \
         f"empty sessionId POST should return 422, got {r.status_code}"
-    detail = r.json().get("detail", {})
-    assert "sessionId is required" in str(detail)
+    assert r.json().get("code") == "MISSING_SESSION_ID"
 
 
 def test_empty_session_id_rejected_chat_send() -> None:
@@ -529,7 +546,7 @@ def test_multi_session_multi_subject_no_leak() -> None:
 
     try:
         for sid, cid in sessions_subjects.items():
-            agent_service.run_agents(
+            _run_agents(
                 session_id=sid,
                 course_id=cid,
                 user_message=f"我想学习{cid}",
@@ -600,7 +617,7 @@ def test_product_response_envelope_structure() -> None:
     _cleanup([session_id])
 
     try:
-        agent_service.run_agents(
+        _run_agents(
             session_id=session_id,
             course_id="data_structures",
             user_message="我是大二学生，想学数据结构",
@@ -668,6 +685,64 @@ def test_product_response_envelope_structure() -> None:
         _cleanup([session_id])
 
 
+
+def test_agent_p0_session_contract_guards() -> None:
+    """Keep both request aliases while rejecting implicit session ownership."""
+    assert AgentRunRequest(sessionId="guard_alias").session_id == "guard_alias"
+    assert AgentRunRequest(session_id="guard_field").session_id == "guard_field"
+
+    try:
+        AgentRunRequest()
+        raise AssertionError("AgentRunRequest must require sessionId")
+    except Exception as exc:
+        assert "session" in str(exc).lower()
+
+    tracker = LearningTracker()
+    for operation in (
+        lambda: tracker.log({"event": "resource_view"}),
+        lambda: tracker.summary(),
+    ):
+        try:
+            operation()
+            raise AssertionError("LearningTracker must reject an empty session")
+        except MissingSessionIdError as exc:
+            assert exc.code == "MISSING_SESSION_ID"
+
+
+def test_diagnosis_context_is_session_scoped() -> None:
+    """Diagnosis may only consume and recommend resources owned by its session."""
+    session_a = f"diagnosis_scope_a_{uuid.uuid4().hex[:6]}"
+    session_b = f"diagnosis_scope_b_{uuid.uuid4().hex[:6]}"
+    sessions = [session_a, session_b]
+    _cleanup(sessions)
+
+    try:
+        _run_agents(
+            session_id=session_a,
+            course_id="data_structures",
+            user_message="I need to review stacks and trees.",
+        )
+        _run_agents(
+            session_id=session_b,
+            course_id="ai_intro",
+            user_message="I want to learn neural networks.",
+        )
+
+        context = product._diagnosis_context("我哪里比较薄弱", session_a)
+        resource_ids = [
+            str(item.get("resource_id") or item.get("id") or "")
+            for item in context.get("resources", [])
+        ]
+        assert resource_ids, "diagnosis context should include session resources"
+        assert all(resource_id.startswith(f"{session_a}_") for resource_id in resource_ids)
+
+        diagnosis = product._run_diagnosis("我哪里比较薄弱", session_a)
+        recommended_ids = diagnosis.get("recommended_resource_ids") or []
+        assert all(str(resource_id).startswith(f"{session_a}_") for resource_id in recommended_ids)
+    finally:
+        _cleanup(sessions)
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # Runner
 # ═══════════════════════════════════════════════════════════════════════
@@ -675,6 +750,8 @@ def test_product_response_envelope_structure() -> None:
 
 if __name__ == "__main__":
     tests = [
+        test_agent_p0_session_contract_guards,
+        test_diagnosis_context_is_session_scoped,
         test_generated_data_is_readable_by_session_and_isolated,
         test_same_subject_different_sessions,
         test_different_subjects_different_sessions,
@@ -696,10 +773,10 @@ if __name__ == "__main__":
     for test in tests:
         try:
             test()
-            print(f"✓ {test.__name__}")
+            print(f"PASS {test.__name__}")
         except Exception as e:
             failed += 1
-            print(f"✗ {test.__name__}: {e}")
+            print(f"FAIL {test.__name__}: {e}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     if failed:
         sys.exit(1)
