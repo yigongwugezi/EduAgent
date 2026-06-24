@@ -453,6 +453,7 @@ def _to_resource(
         "createdAt": int(time.time() * 1000),
         "bookmarked": resource_id in bookmarks,
         "studyStatus": item.get("studyStatus", "new"),
+        "completedAt": item.get("completedAt") or item.get("completed_at"),
         "source": _source_label(item.get("source", "")),
         "relatedStageId": related_stage_id,
         "taskId": task_id,
