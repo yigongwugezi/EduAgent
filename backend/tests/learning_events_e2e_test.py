@@ -58,6 +58,7 @@ def test_all_six_event_types_logged() -> None:
     """Verify all 6 required event types are accepted by POST /api/feedback/event."""
     events = [
         ("resource_view", {"resourceId": "res_01", "metadata": {"type": "lecture", "title": "Test Lecture"}}),
+        ("resource_view", {"resourceId": "res_04", "metadata": {"type": "reading", "title": "Supplemental Reading"}}),
         ("resource_complete", {"resourceId": "res_01", "metadata": {"type": "lecture", "title": "Test Lecture", "duration": 15}}),
         ("quiz_result", {"resourceId": "res_02", "metadata": {"correct": 3, "wrong": 1, "total": 4, "accuracy": 75, "topic": "数据结构", "knowledgePoint": "二叉树"}}),
         ("practice_result", {"resourceId": "res_03", "metadata": {"type": "case_study", "title": "Practice Lab", "duration": 30}}),
