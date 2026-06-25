@@ -49,6 +49,21 @@ const persistSessions = (sessions: ChatSession[]) => {
   writeStorageJson(sessionsKey(), sessions);
 };
 
+/** 将当前消息同步到会话的 localStorage 缓存中 */
+const syncMessagesToSession = (sessionId: string, messages: ChatMessage[]) => {
+  const sessions = loadSessions();
+  const idx = sessions.findIndex(s => s.id === sessionId);
+  if (idx >= 0) {
+    sessions[idx].messages = messages;
+    // 同步更新 title（取第一条用户消息）
+    const firstUser = messages.find(m => m.role === 'user');
+    if (firstUser && !sessions[idx].title) {
+      sessions[idx].title = firstUser.content.slice(0, 60);
+    }
+    persistSessions(sessions);
+  }
+};
+
 interface ChatStore {
   currentSessionId: string;
   sessions: ChatSession[];
@@ -89,8 +104,26 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setCurrentSession: (id) => {
     log.debug(`切换会话: ${id.slice(0, 20)}...`);
+
+    // 1. 先将当前会话的消息保存到 localStorage 缓存
+    const state = get();
+    if (state.messages.length > 0) {
+      syncMessagesToSession(state.currentSessionId, state.messages);
+    }
+
+    // 2. 如果点击的是同一个会话 → 不清空消息，直接返回
+    if (id === state.currentSessionId) {
+      persistSessionId(id);
+      return;
+    }
+
+    // 3. 切换不同会话 → 从 localStorage 加载缓存消息
+    const sessions = loadSessions();
+    const targetSession = sessions.find(s => s.id === id);
+    const cachedMessages = targetSession?.messages || [];
+
     persistSessionId(id);
-    set({ currentSessionId: id, messages: [] });
+    set({ currentSessionId: id, messages: cachedMessages });
   },
 
   addMessage: (msg) =>
@@ -111,11 +144,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
           persistSessions(sessions);
         }
       }
-      // 更新会话时间
+      // 更新会话时间 & 缓存消息
       const sesIdx = sessions.findIndex(ses => ses.id === s.currentSessionId);
       if (sesIdx >= 0) {
         sessions[sesIdx].updatedAt = msg.timestamp;
         sessions[sesIdx].title = sessions[sesIdx].title || msg.content.slice(0, 60);
+        sessions[sesIdx].messages = msgs; // 缓存消息到 localStorage
         persistSessions(sessions);
       }
       return { messages: msgs, sessions };
@@ -128,6 +162,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (last?.role === 'assistant') {
         msgs[msgs.length - 1] = updater(last);
       }
+      // 同步缓存
+      syncMessagesToSession(s.currentSessionId, msgs);
       return { messages: msgs };
     }),
 
@@ -138,6 +174,8 @@ export const useChatStore = create<ChatStore>((set, get) => ({
       if (last?.role === 'assistant') {
         msgs[msgs.length - 1] = { ...last, content: last.content + chunk };
       }
+      // 同步缓存
+      syncMessagesToSession(s.currentSessionId, msgs);
       return { messages: msgs };
     }),
 
@@ -150,8 +188,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   newSession: () => {
     const state = get();
     log.debug('创建新会话');
-    // 有消息时保存当前会话摘要
+    // 有消息时保存当前会话摘要和消息缓存
     if (state.messages.length > 0) {
+      // 先缓存消息
+      syncMessagesToSession(state.currentSessionId, state.messages);
       const sessions = loadSessions();
       const existing = sessions.find(s => s.id === state.currentSessionId);
       if (!existing) {
@@ -159,7 +199,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
         sessions.unshift({
           id: state.currentSessionId,
           title: firstUser?.content?.slice(0, 60) || '新对话',
-          messages: [],
+          messages: state.messages, // 缓存消息
           createdAt: state.messages[0]?.timestamp || Date.now(),
           updatedAt: Date.now(),
         });
@@ -172,7 +212,12 @@ export const useChatStore = create<ChatStore>((set, get) => ({
     set({ currentSessionId: id, messages: [] });
   },
   removeLastMessage: () =>
-    set((s) => ({ messages: s.messages.slice(0, -1) })),
+    set((s) => {
+      const msgs = s.messages.slice(0, -1);
+      // 同步缓存
+      syncMessagesToSession(s.currentSessionId, msgs);
+      return { messages: msgs };
+    }),
 
   removeSession: (id) =>
     set((s) => {
@@ -194,7 +239,10 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   reloadSession: () => {
     const id = loadSessionId();
     const sessions = loadSessions();
-    set({ currentSessionId: id, sessions, messages: [] });
+    // 尝试从缓存恢复消息
+    const cachedSession = sessions.find(s => s.id === id);
+    const cachedMessages = cachedSession?.messages || [];
+    set({ currentSessionId: id, sessions, messages: cachedMessages });
   },
 }));
 

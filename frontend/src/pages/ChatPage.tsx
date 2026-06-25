@@ -408,8 +408,16 @@ export default function ChatPage() {
     return () => el.removeEventListener('scroll', handler);
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 切换 session 时加载对应消息
+  // 切换 session 时加载对应消息（仅当无本地缓存时从后端拉取）
   useEffect(() => {
+    // 如果已有缓存消息（来自 localStorage），直接显示，不调用后端
+    const currentMessages = useChatStore.getState().messages;
+    if (currentMessages.length > 0) {
+      setMessagesLoaded(true);
+      setLoading(false);
+      return;
+    }
+
     setMessagesLoaded(false);
     let cancelled = false;
     async function load() {
@@ -429,12 +437,7 @@ export default function ChatPage() {
         }
       }
     }
-    if (useChatStore.getState().messages.length === 0) {
-      load();
-    } else {
-      setMessagesLoaded(true);
-      setLoading(false);
-    }
+    load();
     return () => { cancelled = true; };
   }, [currentSessionId]);
 
