@@ -17,6 +17,8 @@ class DiagnosisAgent(BaseAgent):
         analytics = context.get("analytics") if isinstance(context.get("analytics"), dict) else {}
 
         candidates = self._event_candidates(analytics)
+        existing_diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
+        candidates.extend(self._existing_diagnosis_candidates(existing_diagnosis))
         candidates.extend(self._profile_candidates(profile, profile_facts))
         candidates = self._deduplicate(candidates)
 
@@ -31,7 +33,7 @@ class DiagnosisAgent(BaseAgent):
         ]
         limitations = self._limitations(profile, stages, resources, analytics, weak_topics)
         next_actions = self._next_actions(weak_topics, analytics)
-        confidence = self._overall_confidence(weak_topics)
+        confidence = self._overall_confidence(weak_topics, analytics)
         reason = self._overall_reason(weak_topics)
 
         weak_knowledge_points = [
@@ -108,7 +110,7 @@ class DiagnosisAgent(BaseAgent):
                     f"学习行为记录显示该知识点答错 {item.get('wrongCount', 0)} 次，"
                     f"共记录 {item.get('totalCount', 0)} 次作答。"
                 ),
-                "source": "learning_events",
+                "source": "analytics",
                 "confidence": round(0.65 + 0.25 * risk, 2),
                 "priority": "high" if risk >= 0.5 else "medium",
                 "evidence": [
@@ -156,17 +158,22 @@ class DiagnosisAgent(BaseAgent):
                 candidates[key] = {
                     "topic": topic,
                     "reason": f"最近{label}结果显示该知识点存在错误或正确率低于 70%。",
-                    "source": "learning_events",
+                    "source": event_type,
                     "confidence": confidence,
                     "priority": "high" if event_type != "practice_result" or risk >= 0.5 else "medium",
                     "evidence": [evidence],
                 }
 
         priority_order = {"high": 0, "medium": 1, "low": 2}
-        return sorted(
+        sorted_candidates = sorted(
             candidates.values(),
             key=lambda item: (priority_order.get(str(item.get("priority")), 3), -float(item.get("confidence", 0))),
         )
+        for item in sorted_candidates:
+            source = str(item.get("source") or "analytics")
+            topic = str(item.get("topic") or "")
+            item.setdefault("evidence", []).append(f"[{source}] weak topic candidate={topic}")
+        return sorted_candidates
 
     def _recent_events(self, analytics: dict[str, Any]) -> list[dict[str, Any]]:
         return [item for item in (analytics.get("recentEvents") or []) if isinstance(item, dict)]
@@ -201,6 +208,31 @@ class DiagnosisAgent(BaseAgent):
             except (TypeError, ValueError):
                 pass
         return wrong, total, accuracy
+
+    def _existing_diagnosis_candidates(self, diagnosis: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates = []
+        raw_topics = diagnosis.get("weak_topics") or diagnosis.get("weak_knowledge_points") or []
+        if not isinstance(raw_topics, list):
+            return candidates
+        for item in raw_topics[:3]:
+            if not isinstance(item, dict):
+                continue
+            topic = str(item.get("topic") or item.get("name") or "").strip()
+            if not topic:
+                continue
+            candidates.append(
+                {
+                    "topic": topic,
+                    "reason": str(item.get("reason") or "Previous structured diagnosis marked this as a weak topic."),
+                    "source": "previous_diagnosis",
+                    "confidence": min(self._clamp(item.get("confidence"), default=0.62), 0.68),
+                    "priority": str(item.get("priority") or "medium"),
+                    "evidence": [f"[previous_diagnosis] weak topic candidate={topic}"],
+                    "recommended_stage_id": item.get("recommended_stage_id"),
+                    "recommended_resource_ids": item.get("recommended_resource_ids") or [],
+                }
+            )
+        return candidates
 
     def _profile_candidates(
         self,
@@ -293,9 +325,22 @@ class DiagnosisAgent(BaseAgent):
             topic = str(item.get("topic", "")).strip()
             key = topic.lower()
             if topic and key not in seen:
+                tag = self._evidence_source_tag(str(item.get("source") or "unknown"))
+                item.setdefault("evidence", []).append(f"[{tag}] weak topic candidate={topic}")
                 seen.add(key)
                 result.append(item)
         return result
+
+    def _evidence_source_tag(self, source: str) -> str:
+        if source in {"analytics", "quiz_result", "quiz_submit", "practice_result"}:
+            return source
+        if source == "profile":
+            return "profile"
+        if source in {"learning_path_inference", "course_knowledge_inference"}:
+            return "learning_path"
+        if source == "previous_diagnosis":
+            return "previous_diagnosis"
+        return source or "unknown"
 
     def _enrich_topic(
         self,
@@ -315,6 +360,10 @@ class DiagnosisAgent(BaseAgent):
         item["recommended_resource_ids"] = resource_ids
         item["next_actions"] = self._topic_actions(topic, stage_id, resource_ids, analytics)
         item.setdefault("evidence", [])
+        if stage_id:
+            item["evidence"].append(f"[learning_path] recommended_stage_id={stage_id}")
+        if resource_ids:
+            item["evidence"].append(f"[resources] recommended_resource_ids={', '.join(resource_ids)}")
         item["evidence"].extend(
             self._mapped_supporting_evidence(topic, stage_id, resource_ids, analytics)
         )
@@ -339,7 +388,7 @@ class DiagnosisAgent(BaseAgent):
             stage_id = str(resource.get("related_stage_id") or "unresolved")
             chapter = str(resource.get("related_chapter") or "unresolved")
             evidence.append(
-                f"Resource provenance: {resource_id}, source={source}, source_type={source_type}, "
+                f"[resources] Resource provenance: {resource_id}, source={source}, source_type={source_type}, "
                 f"stage={stage_id}, chapter={chapter}"
             )
         return evidence
@@ -413,6 +462,13 @@ class DiagnosisAgent(BaseAgent):
             actions.append("完成一组与该知识点直接相关的练习或实操")
         if stage_id:
             actions.append(f"回到学习路径阶段 {stage_id} 复核完成情况")
+        if resource_ids:
+            actions.append(f"Complete recommended resource(s): {', '.join(resource_ids[:2])}")
+        else:
+            actions.append(f"Complete one quiz_result or practice_result for {topic}.")
+        if stage_id:
+            actions.append(f"Review learning_path stage {stage_id}.")
+        actions.append("Submit feedback after using the recommended resource.")
         return actions
 
     def _resource_activity(self, analytics: dict[str, Any]) -> dict[str, Any]:
@@ -459,6 +515,7 @@ class DiagnosisAgent(BaseAgent):
                 continue
             if event.get("event") == "feedback" and self._is_negative_feedback(metadata):
                 evidence.append(self._feedback_evidence(resource_id, metadata))
+                evidence.append(f"[feedback] resource={resource_id or 'unresolved'}; negative=True")
             elif event.get("event") == "node_progress":
                 status = metadata.get("status")
                 evidence.append(f"阶段进度：{event_stage or resource_id} 状态 {status or 'unknown'}")
@@ -517,6 +574,28 @@ class DiagnosisAgent(BaseAgent):
             )
         if not weak_topics:
             limitations.append("当前证据不足，尚不能确认具体薄弱知识点。")
+        if not event_count:
+            limitations.append(
+                "No quiz_result/practice_result/feedback/node_progress events are available; "
+                "this is an initial diagnosis based on profile, learning_path and resources."
+            )
+        elif not diagnostic_count:
+            limitations.append(
+                "Learning events exist, but no quiz_result or practice_result outcome is available; "
+                "confidence remains limited."
+            )
+        elif diagnostic_count and not has_topic:
+            limitations.append(
+                "Learning events exist, but quiz/practice/feedback records lack topic or knowledgePoint labels."
+            )
+        if resource_behavior_count and not has_result:
+            limitations.append(
+                "Resource behavior exists, but accuracy/wrong/correct/total/mastery result fields are missing."
+            )
+        if not weak_topics:
+            limitations.append(
+                "Insufficient evidence: complete at least one quiz_result or practice_result before relying on diagnosis."
+            )
         return limitations
 
     def _next_actions(
@@ -549,19 +628,42 @@ class DiagnosisAgent(BaseAgent):
             if stage_id in recommended_stages and status in {"in_progress", "available"}:
                 actions.append(f"继续推进阶段 {stage_id}，完成后再用测验结果复核诊断")
                 break
+        if not weak_topics:
+            actions.append("Complete one quiz_result or practice_result so the next diagnosis has behavioral evidence.")
         return list(dict.fromkeys(actions))[:5]
 
-    def _overall_confidence(self, weak_topics: list[dict[str, Any]]) -> float:
+    def _overall_confidence(self, weak_topics: list[dict[str, Any]], analytics: dict[str, Any]) -> float:
         if not weak_topics:
             return 0.15
         values = [self._clamp(item.get("confidence"), default=0.3) for item in weak_topics]
-        return round(sum(values) / len(values), 2)
+        confidence = sum(values) / len(values)
+        if not self._has_behavioral_diagnosis_evidence(analytics):
+            confidence = min(confidence, 0.58)
+        return round(confidence, 2)
+
+    def _has_behavioral_diagnosis_evidence(self, analytics: dict[str, Any]) -> bool:
+        if analytics.get("weakTopics"):
+            return True
+        breakdown = analytics.get("eventBreakdown")
+        if isinstance(breakdown, dict) and any(
+            int(breakdown.get(event_type, 0) or 0) > 0
+            for event_type in ("quiz_result", "quiz_submit", "practice_result")
+        ):
+            return True
+        result_fields = {"wrong", "accuracy", "score", "correct", "total", "mastery"}
+        for event in self._recent_events(analytics):
+            if event.get("event") not in {"quiz_result", "quiz_submit", "practice_result"}:
+                continue
+            metadata = self._event_metadata(event)
+            if result_fields.intersection(metadata):
+                return True
+        return False
 
     def _overall_reason(self, weak_topics: list[dict[str, Any]]) -> str:
         if not weak_topics:
             return "当前缺少可验证的画像薄弱点和学习行为证据，无法形成确定诊断。"
         sources = {str(item.get("source")) for item in weak_topics}
-        if "learning_events" in sources:
+        if sources.intersection({"analytics", "learning_events", "quiz_result", "quiz_submit", "practice_result"}):
             return "诊断综合了当前学习行为、学习画像、路径阶段和可用资源。"
         return "诊断基于当前学习画像、学习路径和资源关联推断，仍需行为数据进一步验证。"
 
@@ -580,11 +682,37 @@ class DiagnosisAgent(BaseAgent):
         for item in weak_topics:
             evidence.extend(str(value) for value in item.get("evidence", []) if value)
         evidence.extend(self._analytics_evidence(analytics))
+        evidence.extend(self._event_source_evidence(analytics))
         return list(dict.fromkeys(evidence))
+
+    def _event_source_evidence(self, analytics: dict[str, Any]) -> list[str]:
+        evidence = []
+        breakdown = analytics.get("eventBreakdown")
+        if isinstance(breakdown, dict) and breakdown:
+            evidence.append(f"[analytics] eventBreakdown={breakdown}")
+        for event in self._recent_events(analytics):
+            event_type = str(event.get("event") or "")
+            if not event_type:
+                continue
+            resource_id = str(event.get("resourceId") or "unresolved")
+            metadata = self._event_metadata(event)
+            evidence.append(
+                f"[{event_type}] resource={resource_id}; metadata_keys={','.join(sorted(metadata.keys()))}"
+            )
+        for item in analytics.get("topResources") or []:
+            if isinstance(item, dict) and item.get("resourceId"):
+                evidence.append(f"[resource_view] topResource={item['resourceId']}; count={item.get('count', 0)}")
+                break
+        return evidence
 
     def _analytics_evidence(self, analytics: dict[str, Any]) -> list[str]:
         evidence = []
         quiz_accuracy = analytics.get("quizAccuracy")
+        if quiz_accuracy is not None:
+            try:
+                evidence.append(f"[analytics] quizAccuracy={float(quiz_accuracy):.0f}%")
+            except (TypeError, ValueError):
+                pass
         if quiz_accuracy is not None:
             try:
                 evidence.append(f"测验统计：累计正确率 {float(quiz_accuracy):.0f}%")
@@ -605,6 +733,10 @@ class DiagnosisAgent(BaseAgent):
             event_type = str(event.get("event") or "")
             resource_id = str(event.get("resourceId") or "未标注资源")
             metadata = self._event_metadata(event)
+            if event_type:
+                evidence.append(
+                    f"[{event_type}] resource={resource_id}; metadata_keys={','.join(sorted(metadata.keys()))}"
+                )
             if event_type == "resource_complete":
                 evidence.append(f"资源完成：{resource_id} 已完成")
             elif event_type == "feedback" and self._is_negative_feedback(metadata):
@@ -620,6 +752,7 @@ class DiagnosisAgent(BaseAgent):
 
         for item in (analytics.get("topResources") or [])[:1]:
             if isinstance(item, dict) and item.get("resourceId"):
+                evidence.append(f"[resource_view] topResource={item['resourceId']}; count={item.get('count', 0)}")
                 evidence.append(
                     f"资源活跃：{item['resourceId']} 累计 {item.get('count', 0)} 次学习事件"
                 )

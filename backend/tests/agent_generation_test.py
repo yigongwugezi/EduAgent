@@ -172,9 +172,17 @@ def test_diagnosis_uses_profile_path_and_resources() -> None:
         any("Resource provenance: session_res_linked_list" in item for item in diagnosis["evidence"]),
         "diagnosis evidence should retain recommended-resource provenance",
     )
+    assert_true(any("[profile]" in item for item in diagnosis["evidence"]), "profile should be tagged as evidence source")
+    assert_true(any("[learning_path]" in item for item in diagnosis["evidence"]), "learning path should be tagged as evidence source")
+    assert_true(any("[resources]" in item for item in diagnosis["evidence"]), "resources should be tagged as evidence source")
+    assert_true(diagnosis["confidence"] <= 0.58, "profile/path/resource-only diagnosis should not be overconfident")
     assert_true(
         any("行为数据" in item for item in diagnosis["limitations"]),
         "diagnosis without learning events must state the evidence limitation",
+    )
+    assert_true(
+        any("No quiz_result/practice_result" in item for item in diagnosis["limitations"]),
+        "diagnosis should explicitly disclose missing behavioral evidence",
     )
 
 
@@ -253,6 +261,11 @@ def test_diagnosis_uses_analytics_and_skips_completed_resources() -> None:
     assert_true(any("评分 2" in item for item in diagnosis["evidence"]), "negative feedback should be evidence")
     assert_true(any("状态 in_progress" in item for item in diagnosis["evidence"]), "node progress should be evidence")
     assert_true(any("已浏览但未完成" in item for item in diagnosis["next_actions"]), "viewed resources should be completed first")
+    assert_true(any("[analytics]" in item for item in diagnosis["evidence"]), "analytics should be tagged as evidence source")
+    assert_true(any("[quiz_result]" in item for item in diagnosis["evidence"]), "quiz_result should be tagged as evidence source")
+    assert_true(any("[feedback]" in item for item in diagnosis["evidence"]), "feedback should be tagged as evidence source")
+    assert_true(any("[node_progress]" in item for item in diagnosis["evidence"]), "node_progress should be tagged as evidence source")
+    assert_true(diagnosis["confidence"] > 0.58, "scored analytics evidence should raise diagnosis confidence")
 
 
 def test_orchestrator_injects_session_analytics_into_diagnosis() -> None:
@@ -325,6 +338,23 @@ def test_unscored_practice_does_not_create_a_weak_topic() -> None:
     )
 
 
+def test_diagnosis_insufficient_context_does_not_invent_topics() -> None:
+    diagnosis = DiagnosisAgent().run({})["diagnosis"]
+
+    assert_true(diagnosis["weak_topics"] == [], "empty context should not invent weak topics")
+    assert_true(diagnosis["recommended_stage_id"] is None, "empty context should not recommend a fake stage")
+    assert_true(diagnosis["recommended_resource_ids"] == [], "empty context should not recommend fake resources")
+    assert_true(diagnosis["confidence"] <= 0.2, "empty context should have very low confidence")
+    assert_true(
+        any("Insufficient evidence" in item for item in diagnosis["limitations"]),
+        "empty context should explain that evidence is insufficient",
+    )
+    assert_true(
+        any("quiz_result or practice_result" in item for item in diagnosis["next_actions"]),
+        "empty context should ask for a scored quiz or practice result",
+    )
+
+
 if __name__ == "__main__":
     test_agents_generate_from_course_knowledge_base()
     test_demo_mock_fallback_is_not_product_default()
@@ -333,4 +363,5 @@ if __name__ == "__main__":
     test_diagnosis_uses_analytics_and_skips_completed_resources()
     test_orchestrator_injects_session_analytics_into_diagnosis()
     test_unscored_practice_does_not_create_a_weak_topic()
+    test_diagnosis_insufficient_context_does_not_invent_topics()
     print("PASS agent_generation_test")
