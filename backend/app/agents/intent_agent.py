@@ -5,6 +5,11 @@ from collections import Counter
 from typing import Any, Literal
 
 from app.agents.base import BaseAgent
+from app.agents.intent_examples_zh import (
+    INTENT_EXAMPLES_ZH,
+    SEMANTIC_LABEL_SECONDARY,
+    SEMANTIC_LABEL_TO_INTENT,
+)
 from app.agents.intent_routes import INTENT_ROUTES, ROUTE_AGENT_INTENTS
 
 
@@ -83,34 +88,22 @@ class IntentAgent(BaseAgent):
 
     def classify(self, message: str) -> dict[str, Any]:
         rule_result = self._high_precision_rules(message)
-        if rule_result is not None and not self._should_consult_llm(message, rule_result, None):
-            return self._finalize_result(rule_result, message)
-
+        semantic_result = self._route_by_semantic_examples(message)
         route_result = self._route_by_examples(message)
-        if route_result["confidence"] >= 0.78 and not self._should_consult_llm(message, rule_result, route_result):
-            return self._finalize_result(route_result, message)
+        llm_seed = semantic_result if semantic_result["confidence"] >= route_result["confidence"] else route_result
 
-        llm_result = self._llm_classify(message, route_result)
-        if llm_result and (
-            self._should_consult_llm(message, rule_result, route_result)
-            or llm_result["confidence"] >= max(0.68, route_result["confidence"])
-        ):
-            return self._finalize_result(llm_result, message)
+        llm_result = None
+        if self._should_consult_llm(message, rule_result, llm_seed):
+            llm_result = self._llm_classify(message, llm_seed)
 
-        if rule_result is not None:
-            return self._finalize_result(rule_result, message)
-        if route_result["confidence"] >= 0.55:
-            return self._finalize_result(route_result, message)
-        return self._finalize_result(
-            self._result(
-                "unknown",
-                0.45,
-                False,
-                "Rule, example routing and model fallback could not classify the request reliably.",
-                source="rule_based_fallback",
-            ),
-            message,
+        result = self._arbitrate_results(
+            message=message,
+            rule_result=rule_result,
+            semantic_result=semantic_result,
+            route_result=route_result,
+            llm_result=llm_result,
         )
+        return self._finalize_result(result, message)
 
     def _high_precision_rules(self, message: str) -> dict[str, Any] | None:
         text = message.strip().lower()
@@ -460,6 +453,61 @@ class IntentAgent(BaseAgent):
 
         return None
 
+    def _route_by_semantic_examples(self, message: str) -> dict[str, Any]:
+        query_tokens = self._tokenize(message)
+        if not query_tokens:
+            result = self._result(
+                "unknown",
+                0.4,
+                False,
+                "输入缺少可用于语义路由的有效词元。",
+                source="semantic_examples",
+            )
+            result["semantic_label"] = "empty"
+            result["semantic_score"] = 0.0
+            return result
+
+        best_label = "unknown"
+        best_example = ""
+        best_score = 0.0
+
+        for label, examples in INTENT_EXAMPLES_ZH.items():
+            for example in examples:
+                score = self._hybrid_similarity(query_tokens, message, example)
+                if score > best_score:
+                    best_label = label
+                    best_example = example
+                    best_score = score
+
+        intent = SEMANTIC_LABEL_TO_INTENT.get(best_label, "unknown")
+        confidence = self._semantic_score_to_confidence(best_score, best_label)
+        secondary = list(SEMANTIC_LABEL_SECONDARY.get(best_label, []))
+        needs_clarification = best_label == "ambiguous"
+        clarification_question = None
+        if needs_clarification:
+            clarification_question = "你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？"
+
+        if best_score < 0.22:
+            intent = "unknown"
+            confidence = 0.38
+            secondary = []
+            best_label = "unknown"
+
+        result = self._result(
+            intent,
+            confidence,
+            intent in ROUTE_AGENT_INTENTS or intent == "diagnosis",
+            f"语义样本路由匹配到 {best_label}：『{best_example}』，相似度 {best_score:.2f}。",
+            source="semantic_examples",
+            secondary_intents=secondary,
+            needs_subject=best_label == "subject_create_or_learning_plan",
+            needs_clarification=needs_clarification,
+            clarification_question=clarification_question,
+        )
+        result["semantic_label"] = best_label
+        result["semantic_score"] = best_score
+        return result
+
     def _route_by_examples(self, message: str) -> dict[str, Any]:
         query_tokens = self._tokenize(message)
         if not query_tokens:
@@ -530,6 +578,19 @@ class IntentAgent(BaseAgent):
             return 0.65
         return max(0.35, score)
 
+    def _semantic_score_to_confidence(self, score: float, label: str) -> float:
+        if score >= 0.88:
+            return 0.94
+        if score >= 0.72:
+            return 0.86
+        if score >= 0.58:
+            return 0.76
+        if score >= 0.44:
+            return 0.64 if label != "ambiguous" else 0.58
+        if score >= 0.30:
+            return 0.52
+        return max(0.35, score)
+
     def _should_consult_llm(
         self,
         message: str,
@@ -558,6 +619,177 @@ class IntentAgent(BaseAgent):
             or self._looks_vague(text)
         )
 
+    def _arbitrate_results(
+        self,
+        *,
+        message: str,
+        rule_result: dict[str, Any] | None,
+        semantic_result: dict[str, Any],
+        route_result: dict[str, Any],
+        llm_result: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        candidates = [candidate for candidate in (rule_result, semantic_result, route_result, llm_result) if candidate]
+        if not candidates:
+            return self._result(
+                "unknown",
+                0.45,
+                False,
+                "Rule, semantic examples and model fallback could not classify the request reliably.",
+                source="rule_based_fallback",
+            )
+
+        if (
+            rule_result
+            and rule_result.get("intent") in {"unsafe", "date_query", "clarification"}
+            and float(rule_result.get("confidence", 0.0)) >= 0.9
+        ):
+            return dict(rule_result)
+
+        semantic_label = str(semantic_result.get("semantic_label", ""))
+        if semantic_label in {"general_chat", "ambiguous", "off_topic"} and semantic_result["confidence"] >= 0.72:
+            return self._merge_candidate_metadata(dict(semantic_result), candidates, message)
+
+        # A real LLM JSON result is trusted when it agrees with the semantic router,
+        # so existing tests can verify that the LLM path is still alive.
+        if llm_result and llm_result.get("source") == "llm_generated":
+            llm_primary = self._candidate_primary(llm_result)
+            semantic_primary = self._candidate_primary(semantic_result)
+            if llm_primary == semantic_primary or llm_result.get("confidence", 0) >= 0.82:
+                return self._merge_candidate_metadata(dict(llm_result), candidates, message)
+
+        chosen = max(candidates, key=lambda item: self._candidate_score(item, candidates, message))
+        semantic_primary = self._candidate_primary(semantic_result)
+        semantic_can_override = (
+            (semantic_primary == "full_workflow" and self._has_full_workflow_signal(message))
+            or (semantic_primary == "diagnosis" and self._has_diagnosis_signal(message))
+            or (semantic_primary == "resource_request" and self._has_resource_signal(message))
+            or (semantic_primary == "learning_plan" and bool(self._extract_subject_name(message)))
+        )
+        if (
+            semantic_result.get("confidence", 0) >= 0.76
+            and semantic_can_override
+            and self._candidate_primary(chosen) in {"unknown", "profile_update"}
+        ):
+            chosen = semantic_result
+
+        if (
+            llm_result
+            and self._candidate_primary(llm_result) == self._candidate_primary(semantic_result)
+            and self._candidate_primary(llm_result) != "unknown"
+            and float(llm_result.get("confidence", 0.0)) >= 0.68
+        ):
+            chosen = llm_result if llm_result.get("source") == "llm_generated" else semantic_result
+
+        return self._merge_candidate_metadata(dict(chosen), candidates, message)
+
+    def _candidate_score(
+        self,
+        result: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        message: str,
+    ) -> float:
+        primary = self._candidate_primary(result)
+        confidence = float(result.get("confidence", 0.0))
+        score = confidence
+        source = result.get("source")
+
+        agreements = sum(1 for item in candidates if item is not result and self._candidate_primary(item) == primary)
+        score += 0.04 * agreements
+
+        if source == "semantic_examples":
+            score += 0.04
+        if source in {"llm_generated", "mock_llm"} and confidence >= 0.68:
+            score += 0.03
+        if primary == "unknown" and result.get("semantic_label") not in {"ambiguous", "off_topic"}:
+            score -= 0.12
+        if primary == "profile_update" and self._has_multi_intent_signal(message):
+            score -= 0.08
+        if primary == "full_workflow" and self._has_full_workflow_signal(message):
+            score += 0.08
+        if primary == "diagnosis" and (self._looks_implicit_diagnosis(message) or self._has_diagnosis_signal(message)):
+            score += 0.08
+        if primary == "resource_request" and self._has_resource_signal(message):
+            score += 0.05
+        return score
+
+    def _merge_candidate_metadata(
+        self,
+        result: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        message: str,
+    ) -> dict[str, Any]:
+        primary = self._candidate_primary(result)
+        secondary: list[str] = []
+        for candidate in candidates:
+            candidate_primary = self._candidate_primary(candidate)
+            if candidate_primary != primary:
+                legacy = self._legacy_intent(candidate_primary)
+                if legacy in self.allowed_intents and legacy not in {"unknown", "casual_chat"}:
+                    secondary.append(legacy)
+            secondary.extend(self._clean_secondary(candidate.get("secondary_intents", [])))
+        result["secondary_intents"] = self._clean_secondary([*result.get("secondary_intents", []), *secondary])
+        result["confidence"] = self._calibrate_confidence(result, candidates, message)
+
+        if primary == "full_workflow":
+            result["secondary_intents"] = self._clean_secondary(
+                ["profile_update", "learning_plan", "resource_request", *result["secondary_intents"]]
+            )
+            result["should_run_agents"] = True
+            result["should_run_full_workflow"] = True
+        if primary == "diagnosis":
+            result["should_run_agents"] = True
+            if self._looks_implicit_diagnosis(message):
+                result["reason"] = "Implicit diagnosis signal: the learner describes confusion or asks what to repair next."
+        if primary == "general_chat":
+            result["should_run_agents"] = False
+            result["needs_clarification"] = False
+            result["clarification_question"] = None
+            result["secondary_intents"] = []
+        if result.get("semantic_label") == "off_topic":
+            result["should_run_agents"] = False
+            result["needs_clarification"] = False
+            result["clarification_question"] = None
+            result["secondary_intents"] = []
+        if result.get("semantic_label") == "ambiguous":
+            result["needs_clarification"] = True
+            result["should_run_agents"] = False
+            result["secondary_intents"] = []
+        return result
+
+    def _calibrate_confidence(
+        self,
+        result: dict[str, Any],
+        candidates: list[dict[str, Any]],
+        message: str,
+    ) -> float:
+        confidence = float(result.get("confidence", 0.0))
+        primary = self._candidate_primary(result)
+        agreements = sum(1 for item in candidates if item is not result and self._candidate_primary(item) == primary)
+        conflicts = sum(
+            1
+            for item in candidates
+            if self._candidate_primary(item) not in {primary, "unknown", "general_chat"}
+        )
+
+        confidence += min(0.08, agreements * 0.03)
+        if conflicts >= 2 and agreements == 0:
+            confidence -= 0.06
+        if result.get("needs_clarification"):
+            confidence = min(confidence, 0.6)
+        if primary == "unknown":
+            confidence = min(confidence, 0.55)
+        if primary == "full_workflow" and self._has_full_workflow_signal(message):
+            confidence = max(confidence, 0.8)
+        if primary == "diagnosis" and self._has_diagnosis_signal(message):
+            confidence = max(confidence, 0.78)
+        if primary == "resource_request" and self._has_resource_signal(message):
+            confidence = max(confidence, 0.72)
+        return max(0.0, min(0.98, confidence))
+
+    def _candidate_primary(self, result: dict[str, Any]) -> str:
+        primary = str(result.get("primary_intent") or self._primary_from_legacy(str(result.get("intent", "unknown"))))
+        return primary if primary in self.canonical_primary_intents else self._primary_from_legacy(primary)
+
     def _has_multi_intent_signal(self, message: str) -> bool:
         text = message.lower()
         signals = [
@@ -567,6 +799,34 @@ class IntentAgent(BaseAgent):
             (any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会")), "diagnosis"),
         ]
         return len({intent for matched, intent in signals if matched}) >= 2
+
+    def _has_full_workflow_signal(self, message: str) -> bool:
+        text = message.lower()
+        has_profile = any(word in text for word in ("画像", "基础", "新生", "我是", "水平"))
+        has_plan = any(word in text for word in ("路径", "计划", "方案", "规划", "路线"))
+        has_resource = any(word in text for word in ("资源", "资料", "练习", "题"))
+        return has_profile and has_plan and has_resource
+
+    def _has_diagnosis_signal(self, message: str) -> bool:
+        text = message.lower()
+        return any(
+            phrase in text
+            for phrase in (
+                "哪里比较薄弱",
+                "薄弱点",
+                "哪里不会",
+                "补哪里",
+                "学得很乱",
+                "短板",
+                "弱项",
+                "差在哪里",
+                "风险",
+            )
+        )
+
+    def _has_resource_signal(self, message: str) -> bool:
+        text = message.lower()
+        return any(word in text for word in ("资源", "资料", "练习", "题", "quiz", "practice", "材料"))
 
     def _looks_implicit_diagnosis(self, message: str) -> bool:
         text = message.lower()
@@ -750,11 +1010,21 @@ class IntentAgent(BaseAgent):
         secondary = self._clean_secondary(result.get("secondary_intents", []))
         if not secondary:
             secondary = self._infer_secondary_intents(message, intent)
+        secondary = [item for item in secondary if item != intent]
 
-        needs_clarification = bool(result.get("needs_clarification")) or self._looks_vague(message) or intent == "unknown"
+        is_general_chat = primary == "general_chat" or intent == "casual_chat"
+        is_off_topic = result.get("semantic_label") == "off_topic"
+        needs_clarification = (
+            bool(result.get("needs_clarification"))
+            or (self._looks_vague(message) and not is_general_chat)
+            or (intent == "unknown" and not is_off_topic)
+        )
         clarification_question = result.get("clarification_question")
         if needs_clarification and not clarification_question:
             clarification_question = "你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？"
+        if is_general_chat or is_off_topic:
+            needs_clarification = False
+            clarification_question = None
 
         needs_subject = bool(result.get("needs_subject")) or bool(
             extracted.get("subject_name") and intent in {"learning_plan", "subject_create"}
@@ -798,12 +1068,22 @@ class IntentAgent(BaseAgent):
     def _clean_secondary(self, value: Any) -> list[str]:
         if not isinstance(value, list):
             return []
+        allowed_secondary = {
+            "full_workflow",
+            "profile_update",
+            "learning_plan",
+            "resource_request",
+            "diagnosis",
+            "review",
+            "subject_create",
+            "subject_select",
+        }
         cleaned: list[str] = []
         for item in value:
             intent = str(item)
             if intent == "general_chat":
                 intent = "casual_chat"
-            if intent in self.allowed_intents and intent not in cleaned and intent != "unknown":
+            if intent in allowed_secondary and intent not in cleaned and intent != "unknown":
                 cleaned.append(intent)
         return cleaned
 
@@ -844,19 +1124,56 @@ class IntentAgent(BaseAgent):
                 extracted[key] = value
         return extracted
 
+    def _extract_subject_name(self, text: str) -> str | None:
+        patterns = [
+            r"(?:\d+\s*天|[一二两三四五六七八九十]+\s*天|\d+\s*周|[一二两三四五六七八九十]+\s*周)\s*(?:入门|学会|掌握)\s*([A-Za-z0-9+#]+|[\u4e00-\u9fff]{2,12})",
+            r"(?:我想|想|准备|开始|帮我|请帮我)?\s*(?:系统学习|学习|学|入门|复习)\s*([A-Za-z0-9+#]+|[\u4e00-\u9fff]{2,12})",
+            r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{2,12})\s*(?:基础比较弱|基础弱|零基础|入门)",
+        ]
+        stop_words = {
+            "一些",
+            "一下",
+            "学习",
+            "路径",
+            "计划",
+            "方案",
+            "资源",
+            "资料",
+            "练习",
+            "画像",
+            "阶段",
+            "现在",
+            "系统",
+        }
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            subject = self._clean_subject_name(match.group(1))
+            if subject and subject not in stop_words:
+                return subject
+        return None
+
+    def _clean_subject_name(self, value: str) -> str | None:
+        subject = value.strip(" ，。！？,.、")
+        subject = re.split(r"(?:请|帮我|给我|需要|包括|构建|生成|制定|推荐|安排|怎么|如何|和|并|再|，|。|、|！|？|,|\\.)", subject)[0]
+        subject = subject.strip(" ，。！？,.、")
+        blocked_fragments = ("什么", "哪里", "资源", "资料", "练习", "得很", "该", "现在", "阶段")
+        if subject.startswith("得") or any(fragment in subject for fragment in blocked_fragments):
+            return None
+        for suffix in ("基础比较弱", "基础弱", "基础", "入门"):
+            if subject.endswith(suffix) and len(subject) > len(suffix):
+                subject = subject[: -len(suffix)].strip()
+        if not subject or len(subject) > 20:
+            return None
+        return subject
+
     def _extract_entities(self, message: str) -> dict[str, Any]:
         text = message.strip()
         result: dict[str, Any] = {"requested_outputs": []}
 
-        subject_match = re.search(
-            r"(?:想学|想学习|学习|入门|复习)\s*([A-Za-z0-9+#\u4e00-\u9fff ]{2,20}?)(?:[，。！？,.、]|请|帮|$)",
-            text,
-        )
-        if subject_match:
-            subject = subject_match.group(1).strip("，。！？,. ")
-            for suffix in ("基础", "入门"):
-                if subject.endswith(suffix) and len(subject) > len(suffix):
-                    subject = subject[: -len(suffix)]
+        subject = self._extract_subject_name(text)
+        if subject:
             result["subject_name"] = subject
 
         time_match = re.search(r"(\d+\s*(?:天|周|小时|分钟|个月)|[一二两三四五六七八九十]+(?:天|周|小时|分钟|个月))", text)

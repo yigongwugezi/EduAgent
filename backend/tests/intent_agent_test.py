@@ -6,6 +6,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.agents.intent_agent import IntentAgent  # noqa: E402
+from app.agents.intent_examples_zh import INTENT_EXAMPLES_ZH  # noqa: E402
 from app.services.llm_client import BaseLLMClient, LLMClientError, MockLLMClient  # noqa: E402
 
 
@@ -151,6 +152,72 @@ def test_llm_failure_falls_back_to_rules() -> None:
     assert_true(result["reason"], "fallback reason should be retained")
 
 
+def test_p2_semantic_example_library_has_enough_coverage() -> None:
+    total = sum(len(samples) for samples in INTENT_EXAMPLES_ZH.values())
+    assert_true(total >= 80, f"semantic library should have at least 80 samples, got {total}")
+    for label, samples in INTENT_EXAMPLES_ZH.items():
+        assert_true(len(samples) >= 8, f"{label} should have at least 8 samples")
+
+
+def test_p2_semantic_example_regression_routes_all_samples() -> None:
+    for label, samples in INTENT_EXAMPLES_ZH.items():
+        for sample in samples:
+            result = classify(sample)
+            if label == "general_chat":
+                assert_true(result["primary_intent"] == "general_chat", f"general_chat failed: {sample} -> {result}")
+                assert_true(result["should_run_agents"] is False, f"general_chat should not run agents: {sample}")
+                assert_true(result["needs_clarification"] is False, f"general_chat should not clarify: {sample}")
+            elif label == "full_workflow":
+                assert_intent(result, "full_workflow")
+                assert_true(result["should_run_full_workflow"] is True, f"full_workflow flag failed: {sample}")
+                for intent in ("profile_update", "learning_plan", "resource_request"):
+                    assert_true(intent in result["secondary_intents"], f"missing {intent}: {sample} -> {result}")
+            elif label == "profile_update":
+                assert_intent(result, "profile_update")
+                assert_true(result["needs_clarification"] is False, f"profile_update should be clear: {sample}")
+            elif label == "learning_plan":
+                assert_intent(result, "learning_plan")
+                assert_true(result["should_run_agents"] is True, f"learning_plan should run agents: {sample}")
+            elif label == "resource_request":
+                assert_intent(result, "resource_request")
+                assert_true(result["should_run_agents"] is True, f"resource_request should run agents: {sample}")
+            elif label == "diagnosis":
+                assert_intent(result, "diagnosis")
+                assert_true(result["should_run_agents"] is True, f"diagnosis should run agents: {sample}")
+                assert_true(result["needs_clarification"] is False, f"diagnosis should not clarify: {sample}")
+            elif label == "diagnosis_resource_combo":
+                assert_intent(result, "diagnosis")
+                assert_true("resource_request" in result["secondary_intents"], f"missing resource secondary: {sample} -> {result}")
+                assert_true(result["should_run_agents"] is True, f"diagnosis combo should run agents: {sample}")
+            elif label == "subject_create_or_learning_plan":
+                assert_true(result["primary_intent"] in {"learning_plan", "subject_create"}, f"subject route failed: {sample} -> {result}")
+                assert_true(result["intent"] in {"learning_plan", "subject_create"}, f"subject legacy intent failed: {sample} -> {result}")
+                assert_true(result["needs_subject"] is True, f"subject route should mark needs_subject: {sample} -> {result}")
+                assert_true(result["extracted"]["subject_name"], f"subject_name should be extracted: {sample} -> {result}")
+            elif label == "ambiguous":
+                assert_true(result["needs_clarification"] is True, f"ambiguous should clarify: {sample} -> {result}")
+                assert_true(result["clarification_question"], f"ambiguous should include question: {sample} -> {result}")
+                assert_true(result["primary_intent"] != "full_workflow", f"ambiguous must not become full workflow: {sample} -> {result}")
+            elif label == "off_topic":
+                assert_true(result["primary_intent"] == "unknown", f"off_topic should stay outside agent workflow: {sample} -> {result}")
+                assert_true(result["should_run_agents"] is False, f"off_topic should not run agents: {sample} -> {result}")
+                assert_true(result["needs_clarification"] is False, f"off_topic should not ask learning clarification: {sample} -> {result}")
+
+
+def test_subject_extraction_examples_are_stable() -> None:
+    cases = {
+        "我想学操作系统": "操作系统",
+        "我想学 Python": "Python",
+        "2 天入门 Python": "Python",
+        "学数据结构": "数据结构",
+        "一周入门 Java": "Java",
+        "我想系统学习高等数学": "高等数学",
+    }
+    for message, expected_subject in cases.items():
+        result = classify(message)
+        assert_true(result["extracted"]["subject_name"] == expected_subject, f"{message} extracted {result}")
+
+
 if __name__ == "__main__":
     test_explicit_diagnosis_is_stable()
     test_diagnosis_plus_resources_is_multi_intent()
@@ -162,4 +229,7 @@ if __name__ == "__main__":
     test_general_chat_does_not_ask_for_clarification()
     test_real_llm_json_classification_is_supported()
     test_llm_failure_falls_back_to_rules()
+    test_p2_semantic_example_library_has_enough_coverage()
+    test_p2_semantic_example_regression_routes_all_samples()
+    test_subject_extraction_examples_are_stable()
     print("PASS intent_agent_test")
