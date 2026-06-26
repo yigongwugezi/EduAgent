@@ -45,6 +45,8 @@ export function useStreamChat() {
       setStreaming(true);
       setAgentProgress(null);
 
+      let hasRealAgentProgress = false;  // 追踪是否真的有智能体执行了
+
       try {
         const reader = await streamRequest('/chat/stream', {
           message: content.trim(),
@@ -68,6 +70,10 @@ export function useStreamChat() {
               try {
                 const payload = JSON.parse(line.slice(6));
                 if (payload.stage || payload.agentName) {
+                  // 标记是否真正进入智能体阶段（非初始"理解需求"和"保存结果"）
+                  if (payload.agentName && !['understanding', 'saving'].includes(payload.agentName)) {
+                    hasRealAgentProgress = true;
+                  }
                   setAgentProgress({
                     stage: payload.stage || payload.agentName,
                     progress: payload.progress || 0,
@@ -97,7 +103,11 @@ export function useStreamChat() {
                     // 确保 agentProgress 标记为完成（done 事件可能不带 agentName）
                     const cur = useChatStore.getState().agentProgress;
                     if (cur && !cur.done) {
-                      setAgentProgress({ ...cur, done: true, progress: 100 });
+                      if (hasRealAgentProgress) {
+                        setAgentProgress({ ...cur, done: true, progress: 100 });
+                      } else {
+                        setAgentProgress(null);
+                      }
                     }
                     // 成功状态不清除 — 跳转按钮常驻，新对话开始时会自动重置
                   }
