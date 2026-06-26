@@ -400,6 +400,88 @@ def test_p31_context_secondary_intents_stay_compact() -> None:
     assert_true("profile_update" not in fewer_result["secondary_intents"], f"fewer-items should not inject profile_update noise: {fewer_result}")
 
 
+def task_types(result: dict[str, Any]) -> list[str]:
+    return [task.get("type") for task in result.get("tasks", [])]
+
+
+def assert_task_sequence(result: dict[str, Any], expected: list[str], message: str) -> None:
+    actual = task_types(result)
+    cursor = 0
+    for task_type in actual:
+        if cursor < len(expected) and task_type == expected[cursor]:
+            cursor += 1
+    assert_true(cursor == len(expected), f"{message} expected task sequence {expected}, got {result}")
+    for task in result.get("tasks", []):
+        assert_true(task.get("task_id"), f"{message} task should include task_id: {task}")
+        assert_true(task.get("type") in IntentAgent.valid_task_types, f"{message} invalid task type: {task}")
+        assert_true(task.get("reason"), f"{message} task should include reason: {task}")
+        assert_true(isinstance(task.get("priority"), int), f"{message} task should include priority: {task}")
+        assert_true(isinstance(task.get("depends_on"), list), f"{message} task should include depends_on: {task}")
+
+
+def test_p4_complex_utterance_decomposer_core_cases() -> None:
+    full_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "has_resources": True,
+        "has_diagnosis": True,
+        "recent_stage_id": "stage_loop",
+        "recent_resource_ids": ["res_loop"],
+        "recent_weak_topics": ["循环"],
+    }
+    no_context: dict[str, Any] = {}
+    cases = [
+        ("我循环还是不懂，给我几个简单练习。", full_context, "diagnosis", ["diagnosis", "resource_request"], False),
+        ("我函数学得不好，明天计划帮我改一下，别安排太多。", full_context, "diagnosis", ["diagnosis", "learning_plan_revision"], False),
+        ("给我几个列表的练习题，然后把后面的学习计划换简单点。", full_context, "resource_request", ["resource_request", "learning_plan_revision"], False),
+        ("我是计算机新生，Python 基础弱，想两天入门，先帮我建画像，再生成路径，最后推荐一些简单练习。", full_context, "full_workflow", ["profile_update", "learning_plan", "resource_request"], False),
+        ("按刚才那个薄弱点，给我几个简单题，不要太多。", full_context, "resource_request", ["resource_request"], False),
+        ("刚才那个计划太难了，重新生成一个简单点的。", full_context, "learning_plan", ["learning_plan_revision"], False),
+        ("给我 Python 循环的练习，简单一点，数量别太多，最好是能马上做的。", full_context, "resource_request", ["resource_request"], False),
+        ("按那个来，但是别像上次那么难。", full_context, "learning_plan", ["learning_plan_revision"], False),
+        ("按那个来，但是别像上次那么难。", no_context, "unknown", ["clarification"], True),
+        ("你好，顺便给我一些 Python 入门资料。", full_context, "resource_request", ["resource_request"], False),
+        ("谢谢，下一步怎么学？", full_context, "learning_plan", ["learning_plan"], False),
+        ("我不想要视频，给我文档和练习。", full_context, "resource_request", ["resource_request"], False),
+        ("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。", full_context, "diagnosis", ["diagnosis", "resource_request", "learning_plan_revision"], False),
+        ("先帮我看看哪里不会，再给两个简单题。", full_context, "diagnosis", ["diagnosis", "resource_request"], False),
+        ("我链表不会，资源不要视频，给文档。", full_context, "diagnosis", ["diagnosis", "resource_request"], False),
+        ("把后面计划减少一点，同时给我循环练习。", full_context, "learning_plan", ["learning_plan_revision", "resource_request"], False),
+        ("先建画像，再安排路径。", full_context, "profile_update", ["profile_update", "learning_plan"], False),
+        ("Python 资料给我文档，不要视频，也不要太多。", full_context, "resource_request", ["resource_request"], False),
+        ("这个资源讲得不好，换一个简单点的练习。", full_context, "resource_request", ["resource_request", "learning_plan_revision", "resource_request"], False),
+        ("先给资源，再检查一下质量。", full_context, "resource_request", ["resource_request", "review"], False),
+        ("我想学数据结构，先建画像，再给学习计划和练习。", full_context, "full_workflow", ["profile_update", "learning_plan", "resource_request"], False),
+    ]
+
+    assert_true(len(cases) >= 20, "P4 should cover at least 20 complex utterance cases")
+    for message, context, expected_intent, expected_tasks, should_clarify in cases:
+        result = classify_with_context(message, context)
+        assert_true(result["intent"] == expected_intent, f"{message} expected {expected_intent}, got {result}")
+        assert_true(result["needs_clarification"] is should_clarify, f"{message} clarification mismatch: {result}")
+        assert_task_sequence(result, expected_tasks, message)
+        assert_true(isinstance(result.get("constraints"), dict), f"{message} should include constraints: {result}")
+        assert_true(isinstance(result.get("execution_plan"), list), f"{message} should include execution_plan: {result}")
+        assert_true(result.get("decomposition_source") in {"rule_based_decomposer", "context_aware_decomposer"}, f"{message} should mark decomposition source: {result}")
+        assert_true(result.get("decomposition_confidence", 0) > 0, f"{message} should include decomposition confidence: {result}")
+
+    resource_constraints = classify_with_context("给我 Python 循环的练习，简单一点，数量别太多，最好是能马上做的。", full_context)
+    assert_true(resource_constraints["constraints"].get("difficulty_preference") == "easier", resource_constraints)
+    assert_true(resource_constraints["constraints"].get("amount") == "fewer_items", resource_constraints)
+    assert_true(resource_constraints["constraints"].get("immediacy") == "quick_start", resource_constraints)
+    assert_true("practice" in resource_constraints["constraints"].get("resource_type", []), resource_constraints)
+
+    no_video = classify_with_context("我不想要视频，给我文档和练习。", full_context)
+    assert_true("video" in no_video["constraints"].get("exclude_resource_types", []), no_video)
+    assert_true("document" in no_video["constraints"].get("resource_type", []), no_video)
+    assert_true("practice" in no_video["constraints"].get("resource_type", []), no_video)
+
+    ordered = classify_with_context("先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。", full_context)
+    assert_true(task_types(ordered) == ["diagnosis", "resource_request", "learning_plan_revision"], ordered)
+    assert_true(ordered["tasks"][1]["depends_on"] == ["task_1"], ordered)
+    assert_true(ordered["tasks"][2]["depends_on"] == ["task_2"], ordered)
+
+
 if __name__ == "__main__":
     test_explicit_diagnosis_is_stable()
     test_diagnosis_plus_resources_is_multi_intent()
@@ -419,4 +501,5 @@ if __name__ == "__main__":
     test_p31_simplify_requests_use_context_without_clarification()
     test_p31_simplify_without_context_still_clarifies()
     test_p31_context_secondary_intents_stay_compact()
+    test_p4_complex_utterance_decomposer_core_cases()
     print("PASS intent_agent_test")

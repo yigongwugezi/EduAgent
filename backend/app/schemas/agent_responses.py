@@ -216,6 +216,11 @@ class IntentResultData(BaseModel):
     extracted: dict[str, Any] = Field(default_factory=dict)
     reason: str = ""
     source: str = ""
+    tasks: list[dict[str, Any]] = Field(default_factory=list)
+    constraints: dict[str, Any] = Field(default_factory=dict)
+    execution_plan: list[dict[str, Any]] = Field(default_factory=list)
+    decomposition_source: str = "none"
+    decomposition_confidence: float = 0.0
 
 
 class ChatSendResponse(BaseModel):

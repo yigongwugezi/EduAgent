@@ -56,6 +56,18 @@ class IntentAgent(BaseAgent):
         "general_chat",
         "unknown",
     }
+    valid_task_types = {
+        "profile_update",
+        "diagnosis",
+        "learning_plan",
+        "learning_plan_revision",
+        "resource_request",
+        "review",
+        "subject_create",
+        "subject_select",
+        "clarification",
+        "general_chat",
+    }
 
     exact_casual_patterns = {
         "你好",
@@ -110,7 +122,8 @@ class IntentAgent(BaseAgent):
             route_result=route_result,
             llm_result=llm_result,
         )
-        return self._finalize_result(result, message)
+        finalized = self._finalize_result(result, message)
+        return self._with_task_decomposition(finalized, message, context_data)
 
     def _high_precision_rules(self, message: str) -> dict[str, Any] | None:
         text = message.strip().lower()
@@ -1344,6 +1357,562 @@ class IntentAgent(BaseAgent):
             result["reason"] = f"Mock LLM accepted rule/example route: {result.get('reason', '')}"
             return result
         return self._result("unknown", 0.45, False, "Mock LLM could not classify the request.", source="mock_llm")
+
+    def _with_task_decomposition(
+        self,
+        result: dict[str, Any],
+        message: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        decomposition = self._decompose_complex_utterance(message, context, result)
+        if not decomposition:
+            result.update(self._empty_decomposition())
+            return result
+
+        tasks = decomposition.get("tasks") or []
+        constraints = decomposition.get("constraints") or {}
+        execution_plan = [
+            {
+                "task_id": task.get("task_id"),
+                "type": task.get("type"),
+                "depends_on": task.get("depends_on", []),
+            }
+            for task in tasks
+        ]
+        result.update(
+            {
+                "tasks": tasks,
+                "constraints": constraints,
+                "execution_plan": execution_plan,
+                "decomposition_source": decomposition.get("decomposition_source", "rule_based_decomposer"),
+                "decomposition_confidence": decomposition.get("decomposition_confidence", 0.0),
+            }
+        )
+        self._apply_decomposition_to_intent(result)
+        return result
+
+    def _empty_decomposition(self) -> dict[str, Any]:
+        return {
+            "tasks": [],
+            "constraints": {},
+            "execution_plan": [],
+            "decomposition_source": "none",
+            "decomposition_confidence": 0.0,
+        }
+
+    def _decompose_complex_utterance(
+        self,
+        message: str,
+        context: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        text = message.strip()
+        compact = "".join(text.lower().split())
+        if not compact or result.get("primary_intent") == "general_chat" and not self._contains_learning_signal(text):
+            return None
+        if result.get("primary_intent") == "profile_update" and self._is_profile_preference_statement(text):
+            return None
+        if result.get("primary_intent") == "profile_update" and self._is_profile_fact_only(text):
+            return None
+
+        constraints = self._extract_p4_constraints(text, context, result)
+        clauses = self._split_task_clauses(text)
+        tasks: list[dict[str, Any]] = []
+
+        for clause in clauses:
+            for task_type in self._p4_task_types_from_clause(clause, context):
+                if not task_type or task_type == "general_chat":
+                    continue
+                self._append_p4_task(tasks, task_type, clause, constraints)
+
+        if not tasks:
+            task_type = self._p4_task_type_from_clause(text, context)
+            if task_type and task_type != "general_chat":
+                self._append_p4_task(tasks, task_type, text, constraints)
+
+        if not tasks and self._is_ambiguous_context_reference(compact):
+            if self._has_adjustable_context(context):
+                self._append_p4_task(tasks, "learning_plan_revision", text, constraints)
+            else:
+                self._append_p4_task(tasks, "clarification", text, constraints)
+                constraints["clarification_reason"] = "missing_context_reference"
+
+        if not tasks:
+            return None
+
+        tasks = self._dedupe_p4_tasks(tasks)
+        if (
+            len(tasks) == 1
+            and not self._is_complex_expression(text)
+            and result.get("primary_intent") in {"profile_update", "general_chat"}
+        ):
+            return None
+        if len(tasks) == 1 and not self._is_complex_expression(text):
+            return None
+
+        self._wire_task_dependencies(tasks)
+        confidence = self._decomposition_confidence(tasks, constraints, context)
+        return {
+            "tasks": tasks,
+            "constraints": constraints,
+            "decomposition_source": "context_aware_decomposer" if constraints.get("context_used") else "rule_based_decomposer",
+            "decomposition_confidence": confidence,
+        }
+
+    def _split_task_clauses(self, text: str) -> list[str]:
+        normalized = re.sub(r"(先|再|然后|接着|最后|顺便|另外|同时|并且|还有|而且)", r"，\1", text)
+        parts = re.split(r"[，,。；;！？!?]+", normalized)
+        return [part.strip(" ，。；;！？!?") for part in parts if part.strip(" ，。；;！？!?")]
+
+    def _is_complex_expression(self, text: str) -> bool:
+        return (
+            len(self._split_task_clauses(text)) >= 2
+            or "、" in text
+            or self._has_multi_intent_signal(text)
+            or self._has_full_workflow_signal(text)
+            or any(
+            marker in text
+            for marker in ("先", "再", "然后", "最后", "顺便", "同时", "并且", "还有", "另外")
+            )
+        )
+
+    def _contains_learning_signal(self, text: str) -> bool:
+        return any(
+            word in text
+            for word in (
+                "画像",
+                "路径",
+                "计划",
+                "资源",
+                "资料",
+                "练习",
+                "题",
+                "诊断",
+                "薄弱",
+                "不会",
+                "不懂",
+                "补",
+                "学习",
+                "入门",
+                "下一步",
+                "怎么学",
+            )
+        )
+
+    def _is_profile_fact_only(self, text: str) -> bool:
+        has_profile_fact = any(
+            word in text
+            for word in (
+                "我是",
+                "我想学",
+                "我想学习",
+                "基础",
+                "薄弱",
+                "不会",
+                "不熟",
+                "喜欢",
+                "时间",
+                "为了",
+                "更喜欢",
+            )
+        )
+        has_action_request = any(
+            word in text
+            for word in (
+                "帮我",
+                "请",
+                "给我",
+                "推荐",
+                "生成",
+                "安排",
+                "规划",
+                "诊断",
+                "下一步",
+                "怎么学",
+                "哪里",
+                "先",
+                "再",
+                "然后",
+                "最后",
+            )
+        )
+        return has_profile_fact and not has_action_request
+
+    def _is_profile_preference_statement(self, text: str) -> bool:
+        has_preference = any(word in text for word in ("喜欢", "不喜欢", "更喜欢", "最好给我", "不要视频", "不想要视频", "别给视频"))
+        has_explicit_generation = any(
+            word in text
+            for word in (
+                "推荐资源",
+                "推荐资料",
+                "生成资源",
+                "找资源",
+                "给我资源",
+                "给我资料",
+                "给我文档",
+                "给我练习",
+                "安排",
+                "诊断",
+                "下一步",
+                "怎么学",
+                "先",
+                "再",
+                "然后",
+                "最后",
+            )
+        )
+        return has_preference and not has_explicit_generation
+
+    def _p4_task_type_from_clause(self, clause: str, context: dict[str, Any]) -> str | None:
+        task_types = self._p4_task_types_from_clause(clause, context)
+        return task_types[0] if task_types else None
+
+    def _p4_task_types_from_clause(self, clause: str, context: dict[str, Any]) -> list[str]:
+        text = clause.strip().lower()
+        compact = "".join(text.split())
+        if not compact:
+            return []
+        if compact in self.exact_casual_patterns or compact in {"你好", "谢谢", "好的", "明白了"}:
+            return ["general_chat"]
+        if self._is_ambiguous_context_reference(compact) and not self._has_adjustable_context(context):
+            return ["clarification"]
+        if "刚才" in compact and "薄弱点" in compact and self._has_diagnosis_context(context):
+            return []
+        if self._is_weak_topic_reference(compact) and self._has_diagnosis_context(context):
+            return ["learning_plan"]
+        if "计划" in text and self._is_too_difficult_feedback(compact):
+            return ["learning_plan_revision"]
+        task_types: list[str] = []
+        if self._looks_profile_task(text):
+            task_types.append("profile_update")
+        if self._looks_plan_revision_task(text, context):
+            task_types.append("learning_plan_revision")
+        elif self._looks_plan_task(text):
+            task_types.append("learning_plan")
+        if self._looks_diagnosis_task(text):
+            task_types.append("diagnosis")
+        if self._looks_resource_task(text):
+            task_types.append("resource_request")
+        if self._looks_review_task(text):
+            task_types.append("review")
+        return [item for item in dict.fromkeys(task_types) if item in self.valid_task_types]
+
+    def _looks_profile_task(self, text: str) -> bool:
+        return any(word in text for word in ("画像", "建画像", "学习画像", "评估我的基础", "更新我的水平"))
+
+    def _looks_diagnosis_task(self, text: str) -> bool:
+        return any(
+            word in text
+            for word in (
+                "诊断",
+                "哪里不会",
+                "哪里薄弱",
+                "薄弱点",
+                "薄弱",
+                "短板",
+                "不会",
+                "不懂",
+                "没懂",
+                "不牢",
+                "不扎实",
+                "不稳",
+                "哪些知识点",
+                "学得不好",
+                "学不好",
+                "补哪里",
+                "太难",
+            )
+        )
+
+    def _looks_resource_task(self, text: str) -> bool:
+        return any(word in text for word in ("资源", "资料", "练习", "练习题", "题", "文档", "视频", "材料", "例题"))
+
+    def _looks_plan_task(self, text: str) -> bool:
+        if self._looks_resource_task(text) and any(word in text for word in ("路径对应", "根据路径", "根据我的学习路径", "对应的资源")):
+            return False
+        return any(word in text for word in ("路径", "路线", "计划", "规划", "安排", "下一步", "怎么学", "后面怎么", "学习方案"))
+
+    def _looks_plan_revision_task(self, text: str, context: dict[str, Any]) -> bool:
+        compact = "".join(text.split())
+        if self._is_fewer_items_request(compact) and not any(word in text for word in ("计划", "路径", "安排", "阶段")):
+            return False
+        has_revision = any(
+            word in text
+            for word in (
+                "改一下",
+                "调整",
+                "换简单",
+                "简单一点",
+                "降低难度",
+                "不要太多",
+                "别安排太多",
+                "减少一点",
+                "重新生成",
+                "重来",
+                "换一个",
+                "换一版",
+                "别像上次那么难",
+            )
+        )
+        has_plan = any(word in text for word in ("计划", "路径", "安排", "后面", "明天", "刚才", "那个"))
+        return has_revision and (has_plan or self._has_adjustable_context(context))
+
+    def _looks_review_task(self, text: str) -> bool:
+        return any(word in text for word in ("检查一下", "审核", "质量", "靠谱吗", "有没有问题"))
+
+    def _is_ambiguous_context_reference(self, compact: str) -> bool:
+        return any(phrase in compact for phrase in ("按那个来", "按刚才那个", "刚才那个", "像上次"))
+
+    def _append_p4_task(
+        self,
+        tasks: list[dict[str, Any]],
+        task_type: str,
+        clause: str,
+        constraints: dict[str, Any],
+    ) -> None:
+        if task_type not in self.valid_task_types:
+            return
+        task_id = f"task_{len(tasks) + 1}"
+        task = {
+            "task_id": task_id,
+            "type": task_type,
+            "reason": self._p4_task_reason(task_type, clause),
+            "priority": len(tasks) + 1,
+            "depends_on": [],
+        }
+        topic = self._extract_task_topic(clause) or constraints.get("target")
+        if topic:
+            task["target"] = topic
+            if task_type in {"diagnosis", "resource_request", "learning_plan_revision"}:
+                task["knowledge_points"] = [topic]
+        if task_type == "resource_request":
+            if constraints.get("resource_type"):
+                task["resource_type"] = constraints["resource_type"]
+            if constraints.get("exclude_resource_types"):
+                task["exclude_resource_types"] = constraints["exclude_resource_types"]
+        if task_type == "learning_plan_revision" and constraints.get("plan_revision"):
+            task["revision_type"] = constraints["plan_revision"]
+        tasks.append(task)
+
+    def _p4_task_reason(self, task_type: str, clause: str) -> str:
+        reasons = {
+            "profile_update": "用户要求先建立或更新学习画像。",
+            "diagnosis": "用户表达不会、不懂或要求定位薄弱点。",
+            "learning_plan": "用户要求安排后续学习步骤或学习路径。",
+            "learning_plan_revision": "用户要求调整已有计划或降低难度。",
+            "resource_request": "用户要求推荐资料、练习或可执行资源。",
+            "review": "用户要求检查输出质量或可信度。",
+            "subject_create": "用户提出新的学习科目。",
+            "subject_select": "用户选择已有学习科目。",
+            "clarification": "用户引用了上下文对象，但当前会话缺少可解析上下文。",
+            "general_chat": "用户进行普通寒暄。",
+        }
+        return f"{reasons.get(task_type, '用户请求可拆分为独立任务。')} 原句片段：{clause.strip()}"
+
+    def _dedupe_p4_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        deduped: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for task in tasks:
+            key = (str(task.get("type")), str(task.get("target", "")))
+            if key in seen and task.get("type") not in {"resource_request"}:
+                continue
+            seen.add(key)
+            task = dict(task)
+            task["task_id"] = f"task_{len(deduped) + 1}"
+            task["priority"] = len(deduped) + 1
+            deduped.append(task)
+        return deduped
+
+    def _wire_task_dependencies(self, tasks: list[dict[str, Any]]) -> None:
+        previous_actionable: list[str] = []
+        for task in tasks:
+            task_type = task.get("type")
+            if task_type in {"resource_request", "learning_plan_revision", "review"} and previous_actionable:
+                task["depends_on"] = [previous_actionable[-1]]
+            elif task_type == "clarification":
+                task["depends_on"] = []
+            else:
+                task["depends_on"] = []
+            if task_type not in {"clarification", "general_chat"}:
+                previous_actionable.append(str(task.get("task_id")))
+
+    def _extract_p4_constraints(
+        self,
+        text: str,
+        context: dict[str, Any],
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        constraints: dict[str, Any] = {}
+        compact = "".join(text.lower().split())
+        if self._is_easier_request(compact) or "入门" in text or "不要太难" in text or "别像上次那么难" in text:
+            constraints["difficulty_preference"] = "easier"
+        if self._is_too_easy_feedback(compact):
+            constraints["difficulty_preference"] = "harder"
+        if self._is_too_difficult_feedback(compact) or "别像上次那么难" in text:
+            constraints["feedback"] = "too_difficult"
+            constraints.setdefault("difficulty_preference", "easier")
+        if self._is_still_confused(compact):
+            constraints["feedback"] = "still_confused"
+        if self._is_fewer_items_request(compact) or any(word in text for word in ("数量别太多", "别安排太多", "别太多", "不要太多")):
+            constraints["amount"] = "fewer_items"
+            constraints["constraint"] = "fewer_items"
+        if any(word in text for word in ("马上做", "立刻做", "现在就能做", "马上练")):
+            constraints["immediacy"] = "quick_start"
+        if "明天" in text:
+            constraints["time_scope"] = "tomorrow"
+        if any(word in text for word in ("重新生成", "重来", "重新来", "再生成")):
+            constraints["plan_revision"] = "regenerate"
+        elif self._is_easier_request(compact) or "别像上次那么难" in text:
+            constraints["plan_revision"] = "simplify"
+        elif self._is_change_one_request(compact):
+            constraints["plan_revision"] = "alternative"
+
+        resource_types: list[str] = []
+        if any(word in text for word in ("文档", "文字资料", "文章")):
+            resource_types.append("document")
+        if any(word in text for word in ("练习", "练习题", "题", "实操")):
+            resource_types.append("practice")
+        if "视频" in text and not any(word in text for word in ("不要视频", "不想要视频", "别给视频")):
+            resource_types.append("video")
+        if resource_types:
+            constraints["resource_type"] = list(dict.fromkeys(resource_types))
+        if any(word in text for word in ("不要视频", "不想要视频", "别给视频", "不用视频")):
+            constraints["exclude_resource_types"] = ["video"]
+
+        target = self._extract_task_topic(text)
+        weak_topics = context.get("recent_weak_topics") if isinstance(context, dict) else None
+        if not target and isinstance(weak_topics, list) and weak_topics and any(word in text for word in ("刚才", "那个薄弱点", "按那个")):
+            target = str(weak_topics[0])
+            constraints["context_used"] = True
+        if target:
+            constraints["target"] = target
+        if result.get("extracted", {}).get("subject_name"):
+            constraints.setdefault("subject_name", result["extracted"]["subject_name"])
+        if self._has_adjustable_context(context) and any(word in text for word in ("刚才", "那个", "上次", "继续", "下一步", "换", "重新")):
+            constraints["context_used"] = True
+        return constraints
+
+    def _extract_task_topic(self, text: str) -> str | None:
+        patterns = [
+            r"给我\s*([^，。；;！？!?]{1,24}?)(?:的)?(?:练习题|练习|题|资料|资源|文档)",
+            r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{1,12})(?:还是)?不懂",
+            r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{1,12})学得不好",
+            r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{1,12})(?:不会|不熟)",
+            r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{1,12})(?:的)?(?:练习题|练习|题)",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if not match:
+                continue
+            topic = match.group(1).strip(" ，。；;！？!?的")
+            if any(fragment in topic for fragment in ("换一个", "换个", "简单点", "简单一点")):
+                continue
+            topic = re.sub(r"^(我|最近|刚才|那个|那个薄弱点|一些|几个|简单|适合|现在阶段的)", "", topic)
+            topic = re.sub(r"(简单一点|简单|数量别太多|不要太多|最好是能马上做的)$", "", topic).strip()
+            subject = self._clean_subject_name(topic)
+            if subject:
+                return subject
+        return None
+
+    def _decomposition_confidence(
+        self,
+        tasks: list[dict[str, Any]],
+        constraints: dict[str, Any],
+        context: dict[str, Any],
+    ) -> float:
+        if tasks and tasks[0].get("type") == "clarification":
+            return 0.5
+        base = 0.78
+        if len(tasks) >= 2:
+            base += 0.07
+        if constraints:
+            base += 0.04
+        if constraints.get("context_used") or self._has_adjustable_context(context):
+            base += 0.03
+        return round(min(0.92, base), 2)
+
+    def _apply_decomposition_to_intent(self, result: dict[str, Any]) -> None:
+        tasks = result.get("tasks") or []
+        if not tasks:
+            return
+        if tasks[0].get("type") == "clarification":
+            result.update(
+                {
+                    "intent": "unknown",
+                    "primary_intent": "unknown",
+                    "secondary_intents": [],
+                    "should_run_agents": False,
+                    "should_run_full_workflow": False,
+                    "needs_clarification": True,
+                    "clarification_question": result.get("clarification_question")
+                    or "你想基于刚才哪个学习计划、资源或诊断结果来调整？",
+                    "confidence": min(float(result.get("confidence", 0.0)), 0.58),
+                }
+            )
+            return
+
+        task_types = [str(task.get("type")) for task in tasks if task.get("type") in self.valid_task_types]
+        workflow_core = {"profile_update", "learning_plan", "resource_request"}
+        has_full_workflow = workflow_core.issubset(set(task_types)) and not any(
+            task_type in task_types for task_type in ("diagnosis", "learning_plan_revision")
+        )
+        if has_full_workflow:
+            primary = "full_workflow"
+            intent = "full_workflow"
+        else:
+            primary = self._primary_from_task_type(task_types[0])
+            intent = self._legacy_intent(primary)
+
+        secondary = [] if len(tasks) > 1 else list(result.get("secondary_intents") or [])
+        for task_type in task_types:
+            mapped = self._primary_from_task_type(task_type)
+            if mapped != primary and mapped != "general_chat" and mapped not in secondary:
+                secondary.append(mapped)
+        if primary == "diagnosis" and "resource_request" in task_types and "resource_request" not in secondary:
+            secondary.append("resource_request")
+
+        extracted = dict(result.get("extracted") or {})
+        constraints = result.get("constraints") if isinstance(result.get("constraints"), dict) else {}
+        for key in (
+            "difficulty_preference",
+            "feedback",
+            "plan_revision",
+            "constraint",
+            "context_used",
+            "resource_type",
+            "exclude_resource_types",
+        ):
+            if constraints.get(key) not in (None, "", []):
+                extracted[key] = constraints[key]
+        if constraints.get("target") and not extracted.get("weak_topic"):
+            extracted["weak_topic"] = constraints["target"]
+
+        result.update(
+            {
+                "intent": intent,
+                "primary_intent": primary,
+                "secondary_intents": self._clean_secondary(secondary),
+                "should_run_agents": intent in ROUTE_AGENT_INTENTS or intent == "diagnosis",
+                "should_run_full_workflow": primary == "full_workflow",
+                "needs_clarification": False,
+                "clarification_question": None,
+                "confidence": max(
+                    float(result.get("confidence", 0.0)),
+                    float(result.get("decomposition_confidence", 0.0)),
+                ),
+                "extracted": extracted,
+                "reason": f"{result.get('reason', '')} Complex utterance decomposed into {len(tasks)} task(s).".strip(),
+            }
+        )
+
+    def _primary_from_task_type(self, task_type: str) -> str:
+        if task_type == "learning_plan_revision":
+            return "learning_plan"
+        if task_type == "clarification":
+            return "unknown"
+        if task_type in self.canonical_primary_intents:
+            return task_type
+        return "unknown"
 
     def _load_json(self, content: str) -> dict[str, Any]:
         text = content.strip()

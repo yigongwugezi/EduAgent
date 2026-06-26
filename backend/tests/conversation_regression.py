@@ -387,6 +387,39 @@ def test_chat_send_returns_intent_result_for_product_chain_followups() -> None:
     assert greeting_intent.get("needs_clarification") is False
 
 
+def test_chat_send_returns_p4_task_decomposition() -> None:
+    sid = "regression_chat_intent_p4_decomposition"
+    conversation_store.reset(sid)
+
+    product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "我是计算机新生，Python 基础比较弱，我想用 2 天入门 Python，请帮我构建学习画像、学习路径和学习资源。",
+        }
+    )
+
+    response = product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "先诊断一下我哪里不会，再给我资源，最后帮我调整明天计划。",
+        }
+    ).get("data", {})
+    intent_result = response.get("intent_result") or {}
+    tasks = intent_result.get("tasks") or []
+    task_types = [task.get("type") for task in tasks]
+
+    assert response.get("reply", {}).get("content"), "chat/send should keep reply content"
+    assert intent_result.get("primary_intent") == "diagnosis", f"unexpected P4 intent_result: {intent_result}"
+    assert task_types == ["diagnosis", "resource_request", "learning_plan_revision"], intent_result
+    assert tasks[0].get("priority") == 1 and tasks[0].get("depends_on") == [], intent_result
+    assert tasks[1].get("depends_on") == ["task_1"], intent_result
+    assert tasks[2].get("depends_on") == ["task_2"], intent_result
+    assert isinstance(intent_result.get("constraints"), dict), intent_result
+    assert isinstance(intent_result.get("execution_plan"), list), intent_result
+    assert intent_result.get("decomposition_source") in {"rule_based_decomposer", "context_aware_decomposer"}, intent_result
+    assert intent_result.get("decomposition_confidence", 0) > 0, intent_result
+
+
 def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
     for payload in (
         {"message": "hello"},
@@ -648,6 +681,8 @@ if __name__ == "__main__":
         test_intent_classify_diagnosis_question,
         test_diagnosis_route_returns_structured_result,
         test_diagnosis_route_returns_structured_result_with_punctuation,
+        test_chat_send_returns_intent_result_for_product_chain_followups,
+        test_chat_send_returns_p4_task_decomposition,
         test_chat_requires_session_id_and_does_not_use_subject_id,
         test_intent_classify_compound_full_workflow,
         test_intent_画像_with_self_intro_is_profile_update,

@@ -275,6 +275,11 @@ def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
         "extracted",
         "reason",
         "source",
+        "tasks",
+        "constraints",
+        "execution_plan",
+        "decomposition_source",
+        "decomposition_confidence",
     )
     return {field: intent.get(field) for field in fields}
 
