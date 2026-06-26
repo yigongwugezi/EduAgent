@@ -1,6 +1,6 @@
 """Non-sensitive RAG configuration.
 
-Privacy-related parameters (Milvus URI, feature flags) live in
+Privacy-related parameters (index path, feature flags) live in
 ``app.config.Settings`` and are read from ``.env``.
 
 Algorithm / tuning parameters that developers adjust during development

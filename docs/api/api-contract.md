@@ -278,7 +278,7 @@ Response when RAG database has not been built (graceful degradation):
 }
 ```
 
-Error response (embedding model or Milvus failure):
+Error response (embedding model or vector store failure):
 
 ```json
 {
@@ -311,8 +311,8 @@ Response:
     "collection": "eduagent_knowledge",
     "exists": true,
     "num_entities": 4267,
-    "embedding_dim": 768,
-    "milvus_uri": "./data/milvus/eduagent_knowledge.db"
+    "embedding_dim": 1024,
+    "index_dir": "./data/faiss"
   },
   "message": "success",
   "source": "rag",

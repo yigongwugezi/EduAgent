@@ -41,5 +41,4 @@ backend/data/*.db-wal
 
 # RAG / Vector DB (FAISS index + HuggingFace cache)
 backend/data/faiss/
-backend/data/milvus/
 backend/data/huggingface_cache/

@@ -9,7 +9,7 @@ Usage::
     python scripts/build_rag_db.py --data-path D:/...  # custom data path
 
 The script is intentionally separate from the running backend —
-run it once to produce the persisted Milvus Lite database, then
+run it once to produce the persisted FAISS index, then
 start the backend to serve queries.
 """
 

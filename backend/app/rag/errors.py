@@ -34,7 +34,7 @@ class RAGServiceError(AppError):
 
 
 class RAGCollectionNotFoundError(RAGServiceError):
-    """The Milvus collection has not been built yet or was deleted."""
+    """The RAG vector index has not been built yet or was deleted."""
 
     def __init__(self, collection: str = "eduagent_knowledge") -> None:
         super().__init__(
