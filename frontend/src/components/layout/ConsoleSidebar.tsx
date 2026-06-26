@@ -85,37 +85,41 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
           title="首页" aria-label="前往首页">
           <Home className="w-4.5 h-4.5" />
         </button>
-        <div className="w-8 border-t border-gray-800/30 my-1" />
-        <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
-          className="w-9 h-9 rounded-xl flex items-center justify-center text-green-400 hover:text-green-300 hover:bg-gray-800" title="新建对话">
-          <Plus className="w-4.5 h-4.5" />
-        </button>
-        <div className="w-8 border-t border-gray-800/30 my-1" />
-        <button onClick={() => navigate('/resources')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="资源库" aria-label="前往资源库">
-          <Library className="w-4.5 h-4.5" />
-        </button>
-        <button onClick={() => navigate('/path')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="学习路径" aria-label="前往学习路径">
-          <GitFork className="w-4.5 h-4.5" />
-        </button>
-        <button onClick={() => navigate('/chat')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="AI 对话" aria-label="前往 AI 对话">
-          <MessageSquare className="w-4.5 h-4.5" />
-        </button>
-        <button onClick={() => navigate('/profile')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="学习画像" aria-label="前往学习画像">
-          <User className="w-4.5 h-4.5" />
-        </button>
-        <button onClick={() => navigate('/analytics')}
-          className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
-          title="学习分析" aria-label="前往学习分析">
-          <TrendingUp className="w-4.5 h-4.5" />
-        </button>
+        {activeSubject && (
+          <>
+            <div className="w-8 border-t border-gray-800/30 my-1" />
+            <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
+              className="w-9 h-9 rounded-xl flex items-center justify-center text-green-400 hover:text-green-300 hover:bg-gray-800" title="新建对话">
+              <Plus className="w-4.5 h-4.5" />
+            </button>
+            <div className="w-8 border-t border-gray-800/30 my-1" />
+            <button onClick={() => navigate('/resources')}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/resources' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              title="资源库" aria-label="前往资源库">
+              <Library className="w-4.5 h-4.5" />
+            </button>
+            <button onClick={() => navigate('/path')}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/path' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              title="学习路径" aria-label="前往学习路径">
+              <GitFork className="w-4.5 h-4.5" />
+            </button>
+            <button onClick={() => navigate('/chat')}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/chat' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              title="AI 对话" aria-label="前往 AI 对话">
+              <MessageSquare className="w-4.5 h-4.5" />
+            </button>
+            <button onClick={() => navigate('/profile')}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/profile' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              title="学习画像" aria-label="前往学习画像">
+              <User className="w-4.5 h-4.5" />
+            </button>
+            <button onClick={() => navigate('/analytics')}
+              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all ${location.pathname === '/analytics' ? 'bg-brand-500/20 text-brand-400' : 'text-gray-500 hover:text-gray-300 hover:bg-gray-800'}`}
+              title="学习分析" aria-label="前往学习分析">
+              <TrendingUp className="w-4.5 h-4.5" />
+            </button>
+          </>
+        )}
         <div className="w-8 border-t border-gray-800/30 my-1" />
         <button onClick={() => setSettingsOpen(true)}
           className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all text-gray-500 hover:text-gray-300 hover:bg-gray-800`}
@@ -211,7 +215,8 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         </div>
       </div>
 
-      {/* ===== 导航 */}
+      {/* ===== 导航（有科目才显示） */}
+      {activeSubject && (
       <div className="px-3 py-3 space-y-0.5 border-b border-gray-800/30">
         <button onClick={() => { useChatStore.getState().newSession(); navigate('/chat'); }}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium text-gray-200 hover:text-white hover:bg-gray-800/50 transition-all border border-dashed border-gray-700/50 mb-2">
@@ -230,8 +235,10 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
         <NavBtn path="/analytics" label="分析" icon={TrendingUp} active={location.pathname === '/analytics'} navigate={navigate} />
         <NavBtn path="/timeline" label="时间线" icon={Clock} active={location.pathname === '/timeline'} navigate={navigate} />
       </div>
+      )}
 
-      {/* ===== 对话记录（按会话） ===== */}
+      {/* ===== 对话记录（有科目才显示） ===== */}
+      {activeSubject && (
       <div className="flex-1 overflow-y-auto px-3 py-3">
         <p className="text-[10px] text-gray-600 uppercase tracking-wider font-semibold px-1 mb-2 flex items-center gap-1.5">
           <MessageSquare className="w-3 h-3" />
@@ -280,6 +287,10 @@ export default function ConsoleSidebar({ collapsed, onToggle }: {
           </div>
         )}
       </div>
+      )}
+
+      {/* 无科目时用 flex-1 占位，保持底部栏在底部 */}
+      {!activeSubject && <div className="flex-1" />}
 
       {/* ===== 底部图标栏（紧凑） ===== */}
       <div className="flex items-center justify-between px-3 py-2 border-t border-gray-800">
