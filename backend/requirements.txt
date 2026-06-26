@@ -6,9 +6,17 @@ pydantic-settings>=2.4.0,<3.0.0
 sqlalchemy>=2.0,<3.0
 duckduckgo_search>=7.0.0,<8.0.0
 
-# RAG / Vector Search
-llama-index>=0.12.0,<1.0.0
-llama-index-embeddings-huggingface>=0.5.0,<1.0.0
+# ── RAG / Vector Search (core — always installed) ───────────────────
+# These are lightweight imports that do NOT require PyTorch.
+# The backend starts cleanly with just these; RAG queries return
+# a clear error until the optional [embedding] extras are installed.
+llama-index-core>=0.12.0,<1.0.0
 llama-index-vector-stores-faiss>=0.6.0,<1.0.0
 faiss-cpu>=1.8.0,<2.0.0
+
+# ── RAG / Vector Search (embedding — install when RAG is needed) ────
+# These pull in sentence-transformers → PyTorch (~2 GB).
+# Uncomment (or `pip install -r requirements-rag-embedding.txt`) when you
+# need to *build* the RAG index or *query* it with the embedding model.
+llama-index-embeddings-huggingface>=0.5.0,<1.0.0
 sentence-transformers>=3.0.0,<4.0.0

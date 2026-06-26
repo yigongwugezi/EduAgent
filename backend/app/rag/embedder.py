@@ -5,29 +5,54 @@ Provides a singleton factory for the HuggingFace
 :class:`~llama_index.embeddings.huggingface.HuggingFaceEmbedding`.
 
 Device selection is automatic: CUDA GPU when available, CPU otherwise.
+When PyTorch is not installed at all the module still imports cleanly;
+the error is deferred until :func:`create_embedding_model` is called.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-
-import torch
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from typing import TYPE_CHECKING
 
 from app.rag.config import RAGConfig
 
+if TYPE_CHECKING:
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+
 logger = logging.getLogger("app.rag.embedder")
 
-_embed_model: HuggingFaceEmbedding | None = None
+_embed_model: "HuggingFaceEmbedding | None" = None
+_torch_available: bool | None = None  # tri-state: None = unchecked
+
+
+def _ensure_torch() -> bool:
+    """Check whether PyTorch is importable.  Cached after first call."""
+    global _torch_available
+    if _torch_available is not None:
+        return _torch_available
+    try:
+        import torch  # noqa: F401
+        _torch_available = True
+    except ImportError:
+        logger.warning("PyTorch not installed — embedding will fall back to CPU if available")
+        _torch_available = False
+    return _torch_available
 
 
 def _resolve_device() -> str:
-    """Auto-detect the best available torch device.
+    """Auto-detect the best available device.
 
-    Returns ``"cuda"`` when a CUDA-capable GPU is present, ``"cpu"`` otherwise.
-    Logs the detected device and any GPU details.
+    Returns ``"cuda"`` when PyTorch is installed AND a CUDA-capable GPU
+    is present, ``"cpu"`` otherwise.  Never raises — always returns a
+    valid device string.
     """
+    if not _ensure_torch():
+        logger.info("PyTorch unavailable — assuming CPU device")
+        return "cpu"
+
+    import torch
+
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_count = torch.cuda.device_count()
@@ -42,7 +67,7 @@ def _resolve_device() -> str:
         return "cpu"
 
 
-def create_embedding_model(config: RAGConfig) -> HuggingFaceEmbedding:
+def create_embedding_model(config: RAGConfig) -> "HuggingFaceEmbedding":
     """Build (or return a cached) HuggingFace embedding model instance.
 
     The model is downloaded from HuggingFace Hub on first call and cached
@@ -50,10 +75,17 @@ def create_embedding_model(config: RAGConfig) -> HuggingFaceEmbedding:
 
     Device selection: CUDA GPU is used automatically when available;
     falls back to CPU otherwise.  Batch size is scaled up for GPU.
+
+    Raises:
+        ImportError: If ``llama-index-embeddings-huggingface`` or
+            ``sentence-transformers`` are not installed.
     """
     global _embed_model
     if _embed_model is not None:
         return _embed_model
+
+    # Deferred import — only needed when actually building/querying.
+    from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 
     # Ensure HF_HOME is set before the model loads so the cache directory
     # is predictable (important for CI / deployment).
@@ -87,6 +119,6 @@ def create_embedding_model(config: RAGConfig) -> HuggingFaceEmbedding:
     return _embed_model
 
 
-def get_embedding_model() -> HuggingFaceEmbedding | None:
+def get_embedding_model() -> "HuggingFaceEmbedding | None":
     """Return the already-loaded model, or ``None`` if not initialised."""
     return _embed_model

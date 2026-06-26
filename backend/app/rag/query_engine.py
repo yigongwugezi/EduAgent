@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-
-from llama_index.core.schema import NodeWithScore
+from typing import TYPE_CHECKING
 
 from app.rag.config import RAGConfig, rag_config
-from app.rag.embedder import create_embedding_model
 from app.rag.errors import RAGServiceError
 from app.rag.store import collection_exists, load_index
+
+if TYPE_CHECKING:
+    from llama_index.core.schema import NodeWithScore
 
 logger = logging.getLogger("app.rag.query_engine")
 
@@ -142,6 +143,8 @@ class RagQueryEngine:
             return False
 
         try:
+            from app.rag.embedder import create_embedding_model
+
             embed_model = create_embedding_model(self._config)
             self._index = load_index(self._config, embed_model)
 
@@ -155,6 +158,14 @@ class RagQueryEngine:
                 self._config.collection_name,
             )
             return True
+        except ImportError as exc:
+            logger.error(
+                "Cannot initialise RAG query engine — missing dependencies: %s. "
+                "Install with: pip install sentence-transformers llama-index-embeddings-huggingface",
+                exc,
+            )
+            self._ready = False
+            return False
         except Exception as exc:
             logger.error("Failed to initialise RAG query engine: %s", exc)
             self._ready = False
