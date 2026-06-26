@@ -8,7 +8,7 @@ import type { ChatMessage, GenerationProgress } from '../../types/chat';
 import { timeAgo } from '../../utils/format';
 import {
   Send, Sparkles, Square, Copy, Check, AlertCircle,
-  Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen,
+  Bot, User, RefreshCw, ChevronDown, XCircle, PanelRightClose, PanelRightOpen, Plus,
 } from 'lucide-react';
 import Markdown from '../../utils/markdown';
 import ChatClarification from './ChatClarification';
@@ -303,7 +303,6 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
   const { send, abort } = useStreamChat();
   const [input, setInput] = useState('');
   const [showScrollBtn, setShowScrollBtn] = useState(false);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -404,66 +403,84 @@ export default function ChatPanel({ open, onClose, panelWidth = 420, onWidthChan
         />
 
         {/* 面板头部 */}
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 bg-white flex-shrink-0">
+        <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 bg-white flex-shrink-0">
           <div className="flex items-center gap-2 min-w-0">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm flex-shrink-0">
-              <Bot className="w-3.5 h-3.5 text-white" />
+            <div className="w-6 h-6 rounded-lg bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center shadow-sm flex-shrink-0">
+              <Bot className="w-3 h-3 text-white" />
             </div>
-
-            {/* 当前会话标题 / 历史记录切换 */}
-            <div className="relative">
-              <button
-                onClick={() => setHistoryOpen(!historyOpen)}
-                className="flex items-center gap-1 text-sm font-semibold text-gray-800 hover:text-brand-600 transition-colors"
-              >
-                <span className="truncate max-w-[120px]">
-                  {sessions.find(s => s.id === currentSessionId)?.title || 'AI 对话'}
-                </span>
-                <svg className={`w-3 h-3 text-gray-400 transition-transform ${historyOpen ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-              </button>
-
-              {/* 历史会话下拉 */}
-              {historyOpen && (
-                <div className="absolute top-full left-0 mt-1 w-56 bg-white border border-gray-200 rounded-xl shadow-xl z-50 max-h-60 overflow-y-auto py-1">
-                  {sessions.length === 0 ? (
-                    <p className="px-3 py-2 text-xs text-gray-400">暂无历史对话</p>
-                  ) : (
-                    sessions.map((ses) => {
-                      const active = ses.id === currentSessionId;
-                      return (
-                        <button
-                          key={ses.id}
-                          onClick={() => { setCurrentSession(ses.id); setHistoryOpen(false); }}
-                          className={`w-full text-left px-3 py-2 text-xs transition-colors ${active ? 'bg-brand-50 text-brand-700 font-semibold' : 'text-gray-600 hover:bg-gray-50'}`}
-                        >
-                          <span className="truncate block">{ses.title || '新对话'}</span>
-                          <span className="text-[9px] text-gray-400">{new Date(ses.updatedAt || ses.createdAt).toLocaleDateString('zh-CN')}</span>
-                        </button>
-                      );
-                    })
-                  )}
-                  <div className="border-t border-gray-100 mt-1 pt-1">
-                    <button
-                      onClick={() => { newSession(); setHistoryOpen(false); }}
-                      className="w-full text-left px-3 py-2 text-xs text-brand-600 hover:bg-brand-50 font-medium"
-                    >
-                      + 新建对话
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
+            <span className="text-sm font-semibold text-gray-800 truncate max-w-[140px]">
+              {sessions.find(s => s.id === currentSessionId)?.title || 'AI 对话'}
+            </span>
             {isStreaming && (
               <span className="w-1.5 h-1.5 rounded-full bg-brand-500 animate-pulse flex-shrink-0" title="生成中" />
             )}
           </div>
-          <button onClick={onClose}
-            className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all flex-shrink-0"
-            title="关闭对话面板" aria-label="关闭对话面板">
-            <PanelRightClose className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button onClick={() => newSession()}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-brand-600 hover:bg-brand-50 transition-all"
+              title="新建对话" aria-label="新建对话">
+              <Plus className="w-4 h-4" />
+            </button>
+            <button onClick={onClose}
+              className="w-7 h-7 rounded-lg flex items-center justify-center text-gray-400 hover:text-gray-600 hover:bg-gray-100 transition-all flex-shrink-0"
+              title="关闭对话面板" aria-label="关闭对话面板">
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          </div>
         </div>
+
+        {/* 多会话标签栏（类似浏览器标签页） */}
+        {sessions.length > 0 && (
+          <div className="flex items-stretch gap-0 px-2 pt-1.5 border-b border-gray-200 bg-gray-50/50 overflow-x-hidden flex-shrink-0">
+            {sessions.map((ses) => {
+              const active = ses.id === currentSessionId;
+              return (
+                <div
+                  key={ses.id}
+                  className={`group flex items-center min-w-0 flex-1 max-w-[200px] ${
+                    active
+                      ? 'bg-white border border-gray-200 border-b-white rounded-t-lg shadow-sm -mb-px z-10'
+                      : 'border-b border-transparent'
+                  }`}
+                >
+                  <button
+                    onClick={() => setCurrentSession(ses.id)}
+                    className={`flex-1 min-w-0 text-left px-2.5 py-1.5 text-[11px] transition-all ${
+                      active
+                        ? 'text-gray-800 font-semibold'
+                        : 'text-gray-500 hover:text-gray-700'
+                    }`}
+                    title={ses.title || '新对话'}
+                  >
+                    <span className="block overflow-hidden whitespace-nowrap relative">
+                      {ses.title || '新对话'}
+                      <span className="absolute inset-y-0 right-0 w-6 bg-gradient-to-l from-white to-transparent pointer-events-none" />
+                    </span>
+                  </button>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); useChatStore.getState().removeSession(ses.id); }}
+                    className={`flex-shrink-0 w-4 h-4 mr-1 rounded flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity ${
+                      active
+                        ? 'hover:bg-gray-200 text-gray-400 hover:text-gray-600'
+                        : 'hover:bg-gray-200 text-gray-400 hover:text-gray-600'
+                    }`}
+                    title="删除对话"
+                    aria-label={`删除对话「${ses.title || '新对话'}」`}
+                  >
+                    <XCircle className="w-3 h-3" />
+                  </button>
+                </div>
+              );
+            })}
+            <button
+              onClick={() => newSession()}
+              className="flex items-center justify-center w-7 h-7 mt-0.5 rounded text-gray-400 hover:text-brand-600 hover:bg-gray-100 transition-all flex-shrink-0"
+              title="新建对话"
+            >
+              <Plus className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* 错误横幅 */}
         {hasError && (
