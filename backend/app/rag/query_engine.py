@@ -1,14 +1,13 @@
 """Runtime query pipeline.
 
 Provides :class:`RagQueryEngine` — the programmatic API that agents and
-routers use to perform semantic search against the pre-built Milvus
-vector database.
+routers use to perform semantic search against the pre-built FAISS vector
+index and document store.
 
-.. note::
-    The query engine is lazy-initialised: the embedding model and vector
-    store connection are only created on the first call to :meth:`search`.
-    This keeps startup fast and avoids errors when the RAG DB hasn't been
-    built yet (graceful degradation).
+The query engine is lazy-initialised: the embedding model and persisted
+index are only loaded on the first call to :meth:`search`.  This keeps
+startup fast and allows graceful degradation when the index hasn't been
+built yet.
 """
 
 from __future__ import annotations
@@ -16,13 +15,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import NodeWithScore
 
 from app.rag.config import RAGConfig, rag_config
 from app.rag.embedder import create_embedding_model
-from app.rag.errors import RAGCollectionNotFoundError, RAGServiceError
-from app.rag.store import collection_exists, connect_vector_store
+from app.rag.errors import RAGServiceError
+from app.rag.store import collection_exists, load_index
 
 logger = logging.getLogger("app.rag.query_engine")
 
@@ -32,7 +30,7 @@ class SearchResult:
     """A single semantic-search hit."""
 
     id: str
-    """Milvus node id."""
+    """Node id."""
 
     text: str
     """Chunk text content."""
@@ -72,8 +70,8 @@ class RagQueryEngine:
 
     def __init__(self, config: RAGConfig | None = None) -> None:
         self._config = config or rag_config
-        self._index: VectorStoreIndex | None = None
-        self._ready: bool | None = None  # tri-state: None = unchecked
+        self._index = None
+        self._ready: bool | None = None
 
     # ── Public API ──────────────────────────────────────────────────
 
@@ -123,7 +121,7 @@ class RagQueryEngine:
         )
 
     def is_ready(self) -> bool:
-        """Check whether the RAG collection exists and is queryable."""
+        """Check whether the RAG index exists and is queryable."""
         return self._ensure_ready()
 
     # ── Internal ────────────────────────────────────────────────────
@@ -137,23 +135,23 @@ class RagQueryEngine:
 
         if not collection_exists(self._config):
             logger.warning(
-                "RAG collection '%s' not found — returning empty results. "
-                "Run scripts/build_rag_db.py first.",
-                self._config.collection_name,
+                "RAG index not found — returning empty results. "
+                "Run scripts/build_rag_db.py first."
             )
             self._ready = False
             return False
 
         try:
             embed_model = create_embedding_model(self._config)
-            vector_store = connect_vector_store(self._config)
-            self._index = VectorStoreIndex.from_vector_store(
-                vector_store,
-                embed_model=embed_model,
-            )
+            self._index = load_index(self._config, embed_model)
+
+            if self._index is None:
+                self._ready = False
+                return False
+
             self._ready = True
             logger.info(
-                "RAG query engine ready (collection=%s)",
+                "RAG query engine ready (index=%s)",
                 self._config.collection_name,
             )
             return True

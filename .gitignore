@@ -39,6 +39,7 @@ backend/data/*.db-shm
 backend/data/*.db-wal
 !backend/data/.gitkeep
 
-# RAG / Vector DB (Milvus Lite + HuggingFace cache)
+# RAG / Vector DB (FAISS index + HuggingFace cache)
+backend/data/faiss/
 backend/data/milvus/
 backend/data/huggingface_cache/

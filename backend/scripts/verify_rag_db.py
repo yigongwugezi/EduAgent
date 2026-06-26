@@ -58,7 +58,7 @@ def main() -> None:
     print(f"  exists       : {stats['exists']}")
     print(f"  num_entities : {stats.get('num_entities', 'N/A')}")
     print(f"  embedding_dim: {stats['embedding_dim']}")
-    print(f"  milvus_uri   : {stats['milvus_uri']}")
+    print(f"  index_dir    : {stats.get('index_dir', stats.get('milvus_uri', 'N/A'))}")
 
     if not stats["exists"]:
         print("\n  ❌ FAIL: Collection does not exist. Run build_rag_db.py first.")

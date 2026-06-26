@@ -1,160 +1,182 @@
-"""Milvus Lite vector-store abstraction.
+"""FAISS + SimpleDocumentStore persistence abstraction.
 
-Wraps LlamaIndex's :class:`~llama_index.vector_stores.milvus.MilvusVectorStore`
-to provide a clean, project-specific API for both the *build* and *query* paths.
-
-Utility functions (``collection_exists``, ``collection_stats``, …) use the
-``MilvusClient`` API which is the recommended PyMilvus interface.
+Uses LlamaIndex's :class:`~llama_index.core.storage.StorageContext` to
+persist both the FAISS vector index and a JSON document store so that
+text + metadata are retrievable at query time.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
-from llama_index.vector_stores.milvus import MilvusVectorStore
-from pymilvus import MilvusClient
+import faiss
+from llama_index.core import StorageContext, load_index_from_storage
+from llama_index.core.indices.base import BaseIndex
+from llama_index.vector_stores.faiss import FaissVectorStore
 
 from app.rag.config import RAGConfig
 
 logger = logging.getLogger("app.rag.store")
 
 
-def _build_uri(config: RAGConfig) -> str:
-    """Resolve the Milvus URI, defaulting from Settings when not absolute."""
+def _persist_dir(config: RAGConfig) -> str:
+    """Directory for persisted FAISS index + docstore."""
     from app.config import settings
 
-    return settings.rag_milvus_uri or _default_uri(config)
+    path = settings.rag_index_path or f"./data/faiss/{config.collection_name}.faiss"
+    # Use the directory containing the .faiss file as the persist dir
+    d = os.path.dirname(path) or "."
+    os.makedirs(d, exist_ok=True)
+    return d
 
 
-def _default_uri(config: RAGConfig) -> str:
-    """Fallback URI (should rarely be used — Settings is authoritative)."""
-    return f"./data/milvus/{config.collection_name}.db"
+def _index_path(config: RAGConfig) -> str:
+    """Full path to the FAISS index file inside the persist dir."""
+    from app.config import settings
 
-
-def _client(config: RAGConfig) -> MilvusClient:
-    """Return a throwaway ``MilvusClient`` for one-shot utility calls."""
-    return MilvusClient(uri=_build_uri(config))
+    path = settings.rag_index_path or f"./data/faiss/{config.collection_name}.faiss"
+    return os.path.abspath(path)
 
 
 # ── Build-time ────────────────────────────────────────────────────────
 
 
-def create_vector_store(
+def create_storage_context(
     config: RAGConfig,
     overwrite: bool = False,
-) -> MilvusVectorStore:
-    """Create (or overwrite) a Milvus Lite collection for index building.
+) -> StorageContext:
+    """Create a fresh ``StorageContext`` with FAISS + docstore for building.
 
     Parameters:
-        config: RAG configuration (collection name, dimension, index params).
-        overwrite: If ``True``, drop the existing collection first.
+        config: RAG configuration.
+        overwrite: If ``True``, delete any existing persisted data first.
 
     Returns:
-        A configured ``MilvusVectorStore`` ready for ``VectorStoreIndex.from_documents``.
+        A ``StorageContext`` ready for ``VectorStoreIndex.from_documents()``.
     """
-    uri = _build_uri(config)
+    persist_dir = _persist_dir(config)
 
     if overwrite:
-        _drop_if_exists(config)
+        _clear_persist_dir(persist_dir)
+
+    from llama_index.core.storage.docstore import SimpleDocumentStore
+    from llama_index.core.storage.index_store import SimpleIndexStore
+
+    faiss_index = faiss.IndexFlatIP(config.embedding_dim)
+    vector_store = FaissVectorStore(faiss_index=faiss_index)
+
+    # Provide explicit empty stores so StorageContext doesn't try to
+    # load non-existent files from the cleared persist_dir.
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store,
+        docstore=SimpleDocumentStore(),
+        index_store=SimpleIndexStore(),
+        persist_dir=persist_dir,
+    )
 
     logger.info(
-        "Connecting to Milvus Lite: uri=%s, collection=%s, dim=%d, metric=%s",
-        uri,
-        config.collection_name,
+        "Created StorageContext: persist_dir=%s, dim=%d, metric=COSINE (IP)",
+        persist_dir,
         config.embedding_dim,
-        config.index_metric,
     )
-
-    store = MilvusVectorStore(
-        uri=uri,
-        collection_name=config.collection_name,
-        dim=config.embedding_dim,
-        similarity_metric=config.index_metric,
-        index_config={
-            "index_type": "IVF_FLAT",
-            "metric_type": config.index_metric,
-            "params": {"nlist": config.index_nlist},
-        },
-        overwrite=False,
-    )
-    return store
+    return storage_context
 
 
 # ── Query-time ────────────────────────────────────────────────────────
 
 
-def connect_vector_store(config: RAGConfig) -> MilvusVectorStore:
-    """Connect to an *existing* Milvus Lite collection for querying.
+def load_index(config: RAGConfig, embed_model: Any) -> BaseIndex | None:
+    """Load a previously-built index from disk.
 
-    Does **not** create or modify the collection — use :func:`create_vector_store`
-    for build-time operations.
+    Returns ``None`` if no persisted data exists.
     """
-    uri = _build_uri(config)
+    persist_dir = _persist_dir(config)
 
-    logger.info(
-        "Connecting to existing Milvus collection: %s",
-        config.collection_name,
+    if not os.path.exists(persist_dir):
+        logger.warning("Persist dir not found: %s", persist_dir)
+        return None
+
+    # Check for LlamaIndex-persisted files (docstore.json is the most reliable indicator)
+    docstore_file = os.path.join(persist_dir, "docstore.json")
+    if not os.path.exists(docstore_file):
+        logger.warning("No persisted index found in: %s", persist_dir)
+        return None
+
+    logger.info("Loading index from: %s", persist_dir)
+
+    vector_store = FaissVectorStore.from_persist_dir(persist_dir)
+    storage_context = StorageContext.from_defaults(
+        vector_store=vector_store,
+        persist_dir=persist_dir,
     )
 
-    store = MilvusVectorStore(
-        uri=uri,
-        collection_name=config.collection_name,
-        dim=config.embedding_dim,
-        similarity_metric=config.index_metric,
-        overwrite=False,
+    index = load_index_from_storage(
+        storage_context,
+        embed_model=embed_model,
     )
-    return store
+    return index
+
+
+# ── Persistence (called after build) ──────────────────────────────────
+
+
+def persist_index(storage_context: StorageContext, persist_dir: str) -> None:
+    """Persist the FAISS index and docstore to disk.
+
+    Call after ``VectorStoreIndex.from_documents()`` completes.
+    """
+    storage_context.persist(persist_dir=persist_dir)
+    logger.info("Index persisted to: %s", persist_dir)
 
 
 # ── Utility ───────────────────────────────────────────────────────────
 
 
 def collection_exists(config: RAGConfig) -> bool:
-    """Check whether the RAG collection has been built."""
-    try:
-        client = _client(config)
-        return client.has_collection(config.collection_name)
-    except Exception:
-        return False
+    """Check whether the RAG index has been built (persisted data exists)."""
+    persist_dir = _persist_dir(config)
+    docstore_file = os.path.join(persist_dir, "docstore.json")
+    return os.path.exists(docstore_file)
 
 
 def collection_stats(config: RAGConfig) -> dict[str, Any]:
-    """Return basic metadata about the collection.
+    """Return basic metadata about the persisted index.
 
-    Returns a dict with keys ``exists``, ``num_entities`` (if available),
-    ``collection``, ``milvus_uri``, and ``embedding_dim``.
+    Returns a dict with keys ``exists``, ``num_entities``,
+    ``index_dir``, and ``embedding_dim``.
     """
-    uri = _build_uri(config)
+    persist_dir = _persist_dir(config)
+    docstore_file = os.path.join(persist_dir, "docstore.json")
     result: dict[str, Any] = {
         "collection": config.collection_name,
         "exists": False,
-        "milvus_uri": uri,
+        "index_dir": persist_dir,
         "embedding_dim": config.embedding_dim,
     }
 
     try:
-        client = _client(config)
-        if client.has_collection(config.collection_name):
+        if os.path.exists(docstore_file):
             result["exists"] = True
-            stats = client.get_collection_stats(config.collection_name)
-            result["num_entities"] = stats.get("row_count", 0)
+            # Load FAISS from persisted JSON to count entities
+            vector_store = FaissVectorStore.from_persist_dir(persist_dir)
+            result["num_entities"] = vector_store._faiss_index.ntotal
     except Exception as exc:
-        logger.warning("Failed to read collection stats: %s", exc)
+        logger.warning("Failed to read index stats: %s", exc)
 
     return result
 
 
-def _drop_if_exists(config: RAGConfig) -> None:
-    """Drop a collection if it already exists (used before rebuild)."""
-    try:
-        client = _client(config)
-        if client.has_collection(config.collection_name):
-            logger.info("Dropping existing collection: %s", config.collection_name)
-            client.drop_collection(config.collection_name)
-    except Exception as exc:
-        logger.warning(
-            "Could not drop collection '%s': %s",
-            config.collection_name,
-            exc,
-        )
+def _clear_persist_dir(persist_dir: str) -> None:
+    """Remove all persisted data in the persist dir."""
+    if not os.path.exists(persist_dir):
+        return
+    for fname in os.listdir(persist_dir):
+        fpath = os.path.join(persist_dir, fname)
+        try:
+            if os.path.isfile(fpath):
+                os.remove(fpath)
+        except Exception as exc:
+            logger.warning("Failed to remove %s: %s", fpath, exc)
+    logger.info("Cleared persist dir: %s", persist_dir)

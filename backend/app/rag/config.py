@@ -40,21 +40,18 @@ class RAGConfig:
     embedding_model: str = "GanymedeNil/text2vec-large-chinese"
     """HuggingFace sentence-transformers model name."""
 
-    embedding_dim: int = 768
-    """Output vector dimension (fixed by the model)."""
+    embedding_dim: int = 1024
+    """Output vector dimension — text2vec-large-chinese uses LERT-large backbone with hidden_size=1024."""
 
     embedding_batch_size: int = 32
     """Batch size for embedding generation (CPU-friendly)."""
 
     # ── Vector store ──────────────────────────────────────────────────
     collection_name: str = "eduagent_knowledge"
-    """Milvus collection name."""
+    """Logical name for the vector index (used in status / logging)."""
 
     index_metric: str = "COSINE"
-    """Distance metric for vector similarity."""
-
-    index_nlist: int = 128
-    """IVF_FLAT cluster count — higher = more accurate but slower build."""
+    """Distance metric — COSINE via FAISS Inner Product with normalised vectors."""
 
     # ── Query defaults ────────────────────────────────────────────────
     search_top_k: int = 5

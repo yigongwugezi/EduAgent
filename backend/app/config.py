@@ -39,8 +39,8 @@ class Settings(BaseSettings):
     """When False the RAG router is not registered and the query engine
     returns empty results — useful for development without a built RAG DB."""
 
-    rag_milvus_uri: str = "./data/milvus/eduagent_knowledge.db"
-    """Milvus Lite file path (embedded mode — no server needed)."""
+    rag_index_path: str = "./data/faiss/eduagent_knowledge.faiss"
+    """FAISS index file path for persistent vector storage."""
 
     hf_home: str = "./data/huggingface_cache"
     """HuggingFace model cache directory (overrides ``HF_HOME`` env var at runtime)."""

@@ -326,7 +326,7 @@ Configuration (``.env``):
 | Variable | Default | Description |
 |----------|---------|-------------|
 | RAG_ENABLED | true | When false, RAG router is not registered |
-| RAG_MILVUS_URI | ./data/milvus/eduagent_knowledge.db | Milvus Lite database file path |
+| RAG_INDEX_PATH | ./data/faiss/eduagent_knowledge.faiss | FAISS index file path |
 | HF_HOME | ./data/huggingface_cache | HuggingFace model cache directory |
 
 ## 3. Product APIs For React Frontend
