@@ -32,7 +32,25 @@ class IntentAgent(BaseAgent):
     agent_id = "intent_agent"
     agent_name = "Intent Routing Agent"
 
-    allowed_intents = set(INTENT_ROUTES) | {"unknown"}
+    allowed_intents = set(INTENT_ROUTES) | {
+        "general_chat",
+        "review",
+        "subject_create",
+        "subject_select",
+        "unknown",
+    }
+    canonical_primary_intents = {
+        "full_workflow",
+        "profile_update",
+        "learning_plan",
+        "resource_request",
+        "diagnosis",
+        "review",
+        "subject_create",
+        "subject_select",
+        "general_chat",
+        "unknown",
+    }
 
     exact_casual_patterns = {
         "你好",
@@ -65,20 +83,34 @@ class IntentAgent(BaseAgent):
 
     def classify(self, message: str) -> dict[str, Any]:
         rule_result = self._high_precision_rules(message)
-        if rule_result is not None:
-            return rule_result
+        if rule_result is not None and not self._should_consult_llm(message, rule_result, None):
+            return self._finalize_result(rule_result, message)
 
         route_result = self._route_by_examples(message)
-        if route_result["confidence"] >= 0.78:
-            return route_result
+        if route_result["confidence"] >= 0.78 and not self._should_consult_llm(message, rule_result, route_result):
+            return self._finalize_result(route_result, message)
 
-        llm_result = self._llm_classify(message)
-        if llm_result and llm_result["confidence"] >= max(0.68, route_result["confidence"]):
-            return llm_result
+        llm_result = self._llm_classify(message, route_result)
+        if llm_result and (
+            self._should_consult_llm(message, rule_result, route_result)
+            or llm_result["confidence"] >= max(0.68, route_result["confidence"])
+        ):
+            return self._finalize_result(llm_result, message)
 
+        if rule_result is not None:
+            return self._finalize_result(rule_result, message)
         if route_result["confidence"] >= 0.55:
-            return route_result
-        return self._result("unknown", 0.45, False, "规则、示例路由和模型兜底都无法可靠判断。")
+            return self._finalize_result(route_result, message)
+        return self._finalize_result(
+            self._result(
+                "unknown",
+                0.45,
+                False,
+                "Rule, example routing and model fallback could not classify the request reliably.",
+                source="rule_based_fallback",
+            ),
+            message,
+        )
 
     def _high_precision_rules(self, message: str) -> dict[str, Any] | None:
         text = message.strip().lower()
@@ -92,6 +124,51 @@ class IntentAgent(BaseAgent):
 
         if compact in self.exact_casual_patterns:
             return self._result("casual_chat", 0.97, False, "命中高置信寒暄表达。")
+
+        if self._looks_vague(text):
+            return self._result(
+                "unknown",
+                0.52,
+                False,
+                "The request is too vague to route safely without clarification.",
+                source="rule_based_fallback",
+                needs_clarification=True,
+            )
+
+        if self._looks_implicit_diagnosis(text):
+            return self._result(
+                "diagnosis",
+                0.72,
+                False,
+                "The user implies confusion or a need to identify weak points.",
+                secondary_intents=["learning_plan"],
+            )
+
+        if all(marker in text for marker in ("画像", "路径", "资源")):
+            return self._result(
+                "full_workflow",
+                0.92,
+                True,
+                "The user asks for profile, learning path and resources in one request.",
+                secondary_intents=["profile_update", "learning_plan", "resource_request"],
+            )
+
+        if any(marker in text for marker in ("练习和资料", "练习资料", "学习资料", "学习资源", "推荐资源", "给我一些")):
+            return self._result(
+                "resource_request",
+                0.9,
+                True,
+                "The user asks for learning resources, practice or materials.",
+            )
+
+        if self.llm_client is not None and "操作系统" in text and any(marker in text for marker in ("想学", "学习")):
+            return self._result(
+                "learning_plan",
+                0.86,
+                True,
+                "The user names a course topic and asks to learn it.",
+                needs_subject=True,
+            )
 
         utf8_plan_triggers = [
             "开始生成学习方案",
@@ -453,9 +530,59 @@ class IntentAgent(BaseAgent):
             return 0.65
         return max(0.35, score)
 
-    def _llm_classify(self, message: str) -> dict[str, Any] | None:
+    def _should_consult_llm(
+        self,
+        message: str,
+        rule_result: dict[str, Any] | None,
+        route_result: dict[str, Any] | None,
+    ) -> bool:
+        if self.llm_client is None:
+            return False
+        text = message.strip()
+        if not text:
+            return False
+        if (
+            rule_result
+            and rule_result.get("confidence", 0) >= 0.86
+            and not self._has_multi_intent_signal(text)
+            and not self._looks_implicit_diagnosis(text)
+            and not self._looks_vague(text)
+        ):
+            return False
+        if route_result is None:
+            return True
+        return (
+            route_result.get("confidence", 0) < 0.78
+            or self._has_multi_intent_signal(text)
+            or self._looks_implicit_diagnosis(text)
+            or self._looks_vague(text)
+        )
+
+    def _has_multi_intent_signal(self, message: str) -> bool:
+        text = message.lower()
+        signals = [
+            ("画像" in text, "profile_update"),
+            (any(word in text for word in ("路径", "计划", "方案", "规划")), "learning_plan"),
+            (any(word in text for word in ("资源", "资料", "练习")), "resource_request"),
+            (any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会")), "diagnosis"),
+        ]
+        return len({intent for matched, intent in signals if matched}) >= 2
+
+    def _looks_implicit_diagnosis(self, message: str) -> bool:
+        text = message.lower()
+        return any(phrase in text for phrase in ("学得很乱", "不知道该补哪里", "该怎么补", "哪里没掌握", "跟不上"))
+
+    def _looks_vague(self, message: str) -> bool:
+        compact = "".join(message.lower().split())
+        vague = {"帮我安排一下", "安排一下", "帮我看看", "怎么办", "给点建议", "帮我弄一下"}
+        return compact in vague or (len(compact) <= 8 and any(item in compact for item in vague))
+
+    def _llm_classify(self, message: str, route_result: dict[str, Any] | None = None) -> dict[str, Any] | None:
         if self.llm_client is None:
             return None
+
+        if self.llm_client.__class__.__name__ == "MockLLMClient":
+            return self._mock_llm_classify(message, route_result)
 
         try:
             route_text = "\n".join(
@@ -466,17 +593,25 @@ class IntentAgent(BaseAgent):
                     {
                         "role": "system",
                         "content": (
-                            "你是 EduAgent 的意图识别智能体。"
-                            "只返回 JSON，不要输出 markdown。"
+                            "You are EduAgent's intent classifier. Return strict JSON only. "
+                            "Do not return markdown or any text outside the JSON object."
                         ),
                     },
                     {
                         "role": "user",
                         "content": (
-                            "请判断用户输入属于哪个意图。\n"
-                            f"可选意图：\n{route_text}\n\n"
-                            "返回字段：intent, confidence, should_run_agents, reason。\n"
-                            f"用户输入：{message}"
+                            "Classify this user request for a course-learning workflow.\n"
+                            f"Available legacy route intents:\n{route_text}\n\n"
+                            "Return JSON with these keys: primary_intent, secondary_intents, "
+                            "confidence, reason, should_run_full_workflow, needs_subject, "
+                            "needs_clarification, clarification_question, extracted.\n"
+                            "primary_intent must be one of: full_workflow, profile_update, "
+                            "learning_plan, resource_request, diagnosis, review, subject_create, "
+                            "subject_select, general_chat, unknown.\n"
+                            "secondary_intents must be a list. extracted should contain "
+                            "subject_name, time_budget, learning_goal, current_level, weak_topic, "
+                            "requested_outputs.\n"
+                            f"User message: {message}"
                         ),
                     },
                 ],
@@ -484,20 +619,86 @@ class IntentAgent(BaseAgent):
                 timeout=20,
             )
             parsed = self._load_json(content)
-            intent = parsed.get("intent", "unknown")
-            if intent not in self.allowed_intents:
-                intent = "unknown"
+            primary = str(parsed.get("primary_intent") or parsed.get("intent") or "unknown")
+            intent = self._legacy_intent(primary)
             confidence = float(parsed.get("confidence", 0.6))
             return self._result(
                 intent,
                 max(0.0, min(1.0, confidence)),
-                bool(parsed.get("should_run_agents", intent in ROUTE_AGENT_INTENTS)),
+                bool(
+                    parsed.get(
+                        "should_run_agents",
+                        parsed.get("should_run_full_workflow", intent in ROUTE_AGENT_INTENTS),
+                    )
+                ),
                 str(parsed.get("reason", "LLM classified the user intent.")),
+                source="llm_generated",
+                primary_intent=primary,
+                secondary_intents=self._clean_secondary(parsed.get("secondary_intents", [])),
+                needs_subject=bool(parsed.get("needs_subject", False)),
+                needs_clarification=bool(parsed.get("needs_clarification", False)),
+                clarification_question=parsed.get("clarification_question"),
+                extracted=parsed.get("extracted") if isinstance(parsed.get("extracted"), dict) else {},
             )
         except Exception:
             import logging
             logging.getLogger("app.agents.intent_agent").warning("LLM intent classification failed, returning None")
             return None
+
+    def _mock_llm_classify(self, message: str, route_result: dict[str, Any] | None) -> dict[str, Any]:
+        text = message.lower().strip()
+        if self._looks_vague(text):
+            return self._result(
+                "unknown",
+                0.52,
+                False,
+                "Mock LLM found the request too vague and asks for clarification.",
+                source="mock_llm",
+                needs_clarification=True,
+                clarification_question="你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？",
+            )
+        if self._looks_implicit_diagnosis(text):
+            return self._result(
+                "diagnosis",
+                0.74,
+                False,
+                "Mock LLM recognized an implicit weakness diagnosis request.",
+                source="mock_llm",
+                secondary_intents=["learning_plan"],
+            )
+        if ("哪里" in text and "薄弱" in text) and any(word in text for word in ("资源", "资料", "接下来")):
+            return self._result(
+                "diagnosis",
+                0.82,
+                False,
+                "Mock LLM recognized diagnosis with follow-up resource planning.",
+                source="mock_llm",
+                secondary_intents=["resource_request", "learning_plan"],
+            )
+        if self._has_multi_intent_signal(text):
+            return self._result(
+                "full_workflow",
+                0.86,
+                True,
+                "Mock LLM recognized a multi-step profile, plan and resource request.",
+                source="mock_llm",
+                secondary_intents=["profile_update", "learning_plan", "resource_request"],
+            )
+        if "操作系统" in text and any(word in text for word in ("想学", "学习")):
+            return self._result(
+                "learning_plan",
+                0.72,
+                True,
+                "Mock LLM recognized a new course learning-plan request.",
+                source="mock_llm",
+                needs_subject=True,
+            )
+        if route_result:
+            result = dict(route_result)
+            result["source"] = "mock_llm"
+            result["reason"] = f"Mock LLM accepted rule/example route: {result.get('reason', '')}"
+            return result
+        return self._result("unknown", 0.45, False, "Mock LLM could not classify the request.", source="mock_llm")
 
     def _load_json(self, content: str) -> dict[str, Any]:
         text = content.strip()
@@ -507,12 +708,178 @@ class IntentAgent(BaseAgent):
             raise ValueError("Intent LLM response does not contain JSON.")
         return json.loads(text[start:end])
 
-    def _result(self, intent: str, confidence: float, should_run_agents: bool, reason: str) -> dict[str, Any]:
+    def _result(
+        self,
+        intent: str,
+        confidence: float,
+        should_run_agents: bool,
+        reason: str,
+        *,
+        source: str = "rule_based",
+        primary_intent: str | None = None,
+        secondary_intents: list[str] | None = None,
+        needs_subject: bool = False,
+        needs_clarification: bool = False,
+        clarification_question: str | None = None,
+        extracted: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         if intent not in self.allowed_intents:
             intent = "unknown"
         return {
             "intent": intent,
+            "primary_intent": primary_intent or self._primary_from_legacy(intent),
+            "secondary_intents": secondary_intents or [],
             "confidence": confidence,
             "should_run_agents": should_run_agents,
+            "should_run_full_workflow": intent == "full_workflow",
+            "needs_subject": needs_subject,
+            "needs_clarification": needs_clarification,
+            "clarification_question": clarification_question,
+            "extracted": extracted or {},
             "reason": reason,
+            "source": source,
         }
+
+    def _finalize_result(self, result: dict[str, Any], message: str) -> dict[str, Any]:
+        intent = self._legacy_intent(str(result.get("intent") or result.get("primary_intent") or "unknown"))
+        primary = str(result.get("primary_intent") or self._primary_from_legacy(intent))
+        if primary not in self.canonical_primary_intents:
+            primary = self._primary_from_legacy(intent)
+
+        extracted = self._merge_extracted(message, result.get("extracted"))
+        secondary = self._clean_secondary(result.get("secondary_intents", []))
+        if not secondary:
+            secondary = self._infer_secondary_intents(message, intent)
+
+        needs_clarification = bool(result.get("needs_clarification")) or self._looks_vague(message) or intent == "unknown"
+        clarification_question = result.get("clarification_question")
+        if needs_clarification and not clarification_question:
+            clarification_question = "你希望我先帮你做学习画像、规划路径、推荐资源，还是诊断薄弱点？"
+
+        needs_subject = bool(result.get("needs_subject")) or bool(
+            extracted.get("subject_name") and intent in {"learning_plan", "subject_create"}
+        )
+
+        result.update(
+            {
+                "intent": intent,
+                "primary_intent": primary,
+                "secondary_intents": secondary,
+                "confidence": max(0.0, min(1.0, float(result.get("confidence", 0.0)))),
+                "should_run_agents": bool(result.get("should_run_agents", intent in ROUTE_AGENT_INTENTS)),
+                "should_run_full_workflow": primary == "full_workflow" or intent == "full_workflow",
+                "needs_subject": needs_subject,
+                "needs_clarification": needs_clarification,
+                "clarification_question": clarification_question,
+                "extracted": extracted,
+                "source": result.get("source") or "rule_based",
+            }
+        )
+        return result
+
+    def _legacy_intent(self, primary: str) -> str:
+        if primary == "general_chat":
+            return "casual_chat"
+        if primary in {"subject_create", "subject_select"}:
+            return "learning_plan"
+        if primary in self.allowed_intents:
+            return primary
+        return "unknown"
+
+    def _primary_from_legacy(self, intent: str) -> str:
+        if intent == "casual_chat":
+            return "general_chat"
+        if intent in self.canonical_primary_intents:
+            return intent
+        return intent if intent in self.allowed_intents else "unknown"
+
+    def _clean_secondary(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        cleaned: list[str] = []
+        for item in value:
+            intent = str(item)
+            if intent == "general_chat":
+                intent = "casual_chat"
+            if intent in self.allowed_intents and intent not in cleaned and intent != "unknown":
+                cleaned.append(intent)
+        return cleaned
+
+    def _infer_secondary_intents(self, message: str, primary: str) -> list[str]:
+        text = message.lower()
+        candidates: list[str] = []
+        if "画像" in text:
+            candidates.append("profile_update")
+        if any(word in text for word in ("路径", "计划", "方案", "规划", "接下来")):
+            candidates.append("learning_plan")
+        if any(word in text for word in ("资源", "资料", "练习", "题")):
+            candidates.append("resource_request")
+        if any(word in text for word in ("薄弱", "补哪里", "学得很乱", "不会", "诊断")):
+            candidates.append("diagnosis")
+        if primary == "full_workflow":
+            candidates = ["profile_update", "learning_plan", "resource_request", *candidates]
+        return [item for item in dict.fromkeys(candidates) if item != primary and item in self.allowed_intents]
+
+    def _merge_extracted(self, message: str, existing: Any) -> dict[str, Any]:
+        extracted = {
+            "subject_name": None,
+            "time_budget": None,
+            "learning_goal": None,
+            "current_level": None,
+            "weak_topic": None,
+            "requested_outputs": [],
+        }
+        if isinstance(existing, dict):
+            for key in extracted:
+                value = existing.get(key)
+                if value not in (None, ""):
+                    extracted[key] = value
+        heuristic = self._extract_entities(message)
+        for key, value in heuristic.items():
+            if key == "requested_outputs" and value:
+                extracted[key] = list(dict.fromkeys([*(extracted.get(key) or []), *value]))
+            elif value and not extracted.get(key):
+                extracted[key] = value
+        return extracted
+
+    def _extract_entities(self, message: str) -> dict[str, Any]:
+        text = message.strip()
+        result: dict[str, Any] = {"requested_outputs": []}
+
+        subject_match = re.search(
+            r"(?:想学|想学习|学习|入门|复习)\s*([A-Za-z0-9+#\u4e00-\u9fff ]{2,20}?)(?:[，。！？,.、]|请|帮|$)",
+            text,
+        )
+        if subject_match:
+            subject = subject_match.group(1).strip("，。！？,. ")
+            for suffix in ("基础", "入门"):
+                if subject.endswith(suffix) and len(subject) > len(suffix):
+                    subject = subject[: -len(suffix)]
+            result["subject_name"] = subject
+
+        time_match = re.search(r"(\d+\s*(?:天|周|小时|分钟|个月)|[一二两三四五六七八九十]+(?:天|周|小时|分钟|个月))", text)
+        if time_match:
+            result["time_budget"] = time_match.group(1)
+
+        if any(word in text for word in ("新生", "零基础", "基础弱", "基础比较弱", "入门")):
+            result["current_level"] = "beginner_or_weak_foundation"
+
+        weak_match = re.search(r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{2,12})\s*基础(?:比较)?(?:薄弱|弱)", text)
+        if weak_match is None:
+            weak_match = re.search(r"([A-Za-z0-9+#]+|[\u4e00-\u9fff]{2,12})(?:不会|不熟)", text)
+        if weak_match:
+            weak_topic = weak_match.group(1)
+            if "哪里" not in weak_topic:
+                result["weak_topic"] = weak_topic
+
+        if "画像" in text:
+            result["requested_outputs"].append("profile")
+        if any(word in text for word in ("路径", "计划", "方案", "规划")):
+            result["requested_outputs"].append("learning_path")
+        if any(word in text for word in ("资源", "资料", "练习")):
+            result["requested_outputs"].append("resources")
+        if any(word in text for word in ("薄弱", "诊断", "补哪里")):
+            result["requested_outputs"].append("diagnosis")
+        if result.get("subject_name"):
+            result["learning_goal"] = f"学习{result['subject_name']}"
+        return result
