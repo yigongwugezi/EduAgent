@@ -515,22 +515,6 @@ class IntentAgent(BaseAgent):
                 )
             return self._context_clarification("你想让我基于哪个学习路径或诊断结果安排下一步？")
 
-        if self._is_easier_request(compact):
-            last_intent = self._intent_from_last(context)
-            if last_intent in {"learning_plan", "resource_request"}:
-                return self._context_result(
-                    last_intent,
-                    0.82,
-                    "沿用上一轮任务并降低难度。",
-                    context,
-                    extracted={
-                        "context_used": True,
-                        "difficulty_preference": "easier",
-                        "feedback": "too_difficult",
-                    },
-                )
-            return self._context_clarification("你想把哪个计划或资源换得更简单一些？")
-
         if self._is_too_difficult_feedback(compact):
             if self._has_path_context(context) or self._has_resource_context(context):
                 return self._context_result(
@@ -553,6 +537,24 @@ class IntentAgent(BaseAgent):
                 secondary_intents=["learning_plan"],
                 extracted={"context_used": False, "feedback": "too_difficult"},
             )
+
+        if self._is_easier_request(compact):
+            target_intent = self._simplify_target_intent(context)
+            if target_intent:
+                secondary = ["resource_request"] if target_intent == "learning_plan" and self._has_resource_context(context) else None
+                return self._context_result(
+                    target_intent,
+                    0.84,
+                    "用户基于当前上下文请求降低难度。",
+                    context,
+                    secondary_intents=secondary,
+                    extracted={
+                        "context_used": True,
+                        "difficulty_preference": "easier",
+                        "plan_revision": "simplify",
+                    },
+                )
+            return self._context_clarification("你想把哪个学习计划或资源换得更简单一些？")
 
         if self._is_still_confused(compact):
             secondary = ["resource_request"]
@@ -705,6 +707,31 @@ class IntentAgent(BaseAgent):
     def _has_diagnosis_context(self, context: dict[str, Any]) -> bool:
         return bool(context.get("has_diagnosis") or context.get("recent_weak_topics"))
 
+    def _has_adjustable_context(self, context: dict[str, Any]) -> bool:
+        return bool(
+            self._has_path_context(context)
+            or self._has_resource_context(context)
+            or self._has_diagnosis_context(context)
+            or self._intent_from_last(context) != "unknown"
+        )
+
+    def _simplify_target_intent(self, context: dict[str, Any]) -> str | None:
+        if not self._has_adjustable_context(context):
+            return None
+
+        last_intent = self._intent_from_last(context)
+        if last_intent == "resource_request":
+            return "resource_request"
+        if last_intent in {"learning_plan", "diagnosis"}:
+            return "learning_plan"
+        if self._has_resource_context(context) and not self._has_path_context(context) and not self._has_diagnosis_context(context):
+            return "resource_request"
+        if self._has_path_context(context) or self._has_diagnosis_context(context):
+            return "learning_plan"
+        if self._has_resource_context(context):
+            return "resource_request"
+        return None
+
     def _resource_ids_from_result(self, result: dict[str, Any]) -> list[str]:
         ids: list[str] = []
         for item in result.get("resources") or []:
@@ -743,7 +770,22 @@ class IntentAgent(BaseAgent):
         return compact in {"下一步", "下一步呢", "接下来", "然后呢", "后面呢", "接下来呢"}
 
     def _is_easier_request(self, compact: str) -> bool:
-        return any(phrase in compact for phrase in ("换简单点", "简单点", "容易点", "降低难度", "别太难", "换个简单"))
+        return any(
+            phrase in compact
+            for phrase in (
+                "换简单点",
+                "简单一点",
+                "简单点",
+                "换个简单点的",
+                "降低难度",
+                "给我简单一点的",
+                "不要这么难",
+                "换成入门一点的",
+                "容易点",
+                "别太难",
+                "换个简单",
+            )
+        )
 
     def _is_too_difficult_feedback(self, compact: str) -> bool:
         return any(phrase in compact for phrase in ("太难", "太复杂", "难懂", "看不懂", "跟不上"))
@@ -1057,13 +1099,16 @@ class IntentAgent(BaseAgent):
     ) -> dict[str, Any]:
         primary = self._candidate_primary(result)
         secondary: list[str] = []
-        for candidate in candidates:
-            candidate_primary = self._candidate_primary(candidate)
-            if candidate_primary != primary:
-                legacy = self._legacy_intent(candidate_primary)
-                if legacy in self.allowed_intents and legacy not in {"unknown", "casual_chat"}:
-                    secondary.append(legacy)
-            secondary.extend(self._clean_secondary(candidate.get("secondary_intents", [])))
+        if result.get("source") == "context_aware":
+            secondary = self._clean_secondary(result.get("secondary_intents", []))
+        else:
+            for candidate in candidates:
+                candidate_primary = self._candidate_primary(candidate)
+                if candidate_primary != primary:
+                    legacy = self._legacy_intent(candidate_primary)
+                    if legacy in self.allowed_intents and legacy not in {"unknown", "casual_chat"}:
+                        secondary.append(legacy)
+                secondary.extend(self._clean_secondary(candidate.get("secondary_intents", [])))
         result["secondary_intents"] = self._clean_secondary([*result.get("secondary_intents", []), *secondary])
         result["confidence"] = self._calibrate_confidence(result, candidates, message)
 
@@ -1348,7 +1393,7 @@ class IntentAgent(BaseAgent):
 
         extracted = self._merge_extracted(message, result.get("extracted"))
         secondary = self._clean_secondary(result.get("secondary_intents", []))
-        if not secondary:
+        if not secondary and result.get("source") != "context_aware":
             secondary = self._infer_secondary_intents(message, intent)
         secondary = [item for item in secondary if item != intent]
 

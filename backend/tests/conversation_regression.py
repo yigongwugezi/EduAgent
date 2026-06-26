@@ -349,6 +349,44 @@ def test_diagnosis_route_returns_structured_result_with_punctuation() -> None:
     assert diagnosis["confidence"] <= 0.58, "profile/path/resource-only diagnosis should keep confidence capped"
 
 
+def test_chat_send_returns_intent_result_for_product_chain_followups() -> None:
+    sid = "regression_chat_intent_result"
+    conversation_store.reset(sid)
+
+    workflow = product.send_chat(
+        {
+            "sessionId": sid,
+            "message": "我是计算机新生，Python 基础比较弱，我想用 2 天入门 Python，请帮我构建学习画像、学习路径和学习资源。",
+        }
+    ).get("data", {})
+    workflow_intent = workflow.get("intent_result") or {}
+    assert workflow.get("reply", {}).get("content"), "chat/send should keep reply content"
+    assert workflow_intent.get("primary_intent") == "full_workflow", f"unexpected full workflow intent_result: {workflow_intent}"
+    assert workflow_intent.get("should_run_full_workflow") is True
+    assert "profile_update" in workflow_intent.get("secondary_intents", [])
+    assert "learning_plan" in workflow_intent.get("secondary_intents", [])
+    assert "resource_request" in workflow_intent.get("secondary_intents", [])
+
+    followup = product.send_chat({"sessionId": sid, "message": "继续"}).get("data", {})
+    followup_intent = followup.get("intent_result") or {}
+    assert followup_intent.get("primary_intent") == "learning_plan", f"unexpected continue intent_result: {followup_intent}"
+    assert followup_intent.get("extracted", {}).get("context_used") is True
+
+    simplify = product.send_chat({"sessionId": sid, "message": "换简单点"}).get("data", {})
+    simplify_intent = simplify.get("intent_result") or {}
+    assert simplify_intent.get("primary_intent") in {"learning_plan", "resource_request"}, f"unexpected simplify intent_result: {simplify_intent}"
+    assert simplify_intent.get("needs_clarification") is False, f"simplify should stay actionable with context: {simplify_intent}"
+    assert simplify_intent.get("extracted", {}).get("difficulty_preference") == "easier"
+    assert simplify_intent.get("extracted", {}).get("plan_revision") == "simplify"
+    assert simplify_intent.get("extracted", {}).get("context_used") is True
+
+    greeting = product.send_chat({"sessionId": sid, "message": "你好"}).get("data", {})
+    greeting_intent = greeting.get("intent_result") or {}
+    assert greeting_intent.get("primary_intent") == "general_chat", f"unexpected greeting intent_result: {greeting_intent}"
+    assert greeting_intent.get("should_run_agents") is False
+    assert greeting_intent.get("needs_clarification") is False
+
+
 def test_chat_requires_session_id_and_does_not_use_subject_id() -> None:
     for payload in (
         {"message": "hello"},

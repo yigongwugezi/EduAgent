@@ -259,6 +259,26 @@ def _classify_intent(message: str, session_id: str | None = None) -> dict[str, A
     )
 
 
+def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(intent, dict):
+        return {}
+    fields = (
+        "intent",
+        "primary_intent",
+        "secondary_intents",
+        "confidence",
+        "should_run_agents",
+        "should_run_full_workflow",
+        "needs_subject",
+        "needs_clarification",
+        "clarification_question",
+        "extracted",
+        "reason",
+        "source",
+    )
+    return {field: intent.get(field) for field in fields}
+
+
 def _run_agents(
     message: str,
     session_id: str,
@@ -1263,6 +1283,7 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
             "content": reply,
             "timestamp": int(time.time() * 1000),
         },
+        "intent_result": _public_intent_result(intent),
     }
     result = conversation_store.get(session_id).last_result or {}
     diagnosis = result.get("diagnosis", {}) if isinstance(result, dict) else {}

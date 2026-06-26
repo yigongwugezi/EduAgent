@@ -316,6 +316,90 @@ def test_p3_run_accepts_context_without_breaking_agent_contract() -> None:
     assert_true(intent["source"] == "context_aware", f"run() should pass context into classify: {intent}")
 
 
+def test_p31_simplify_requests_use_context_without_clarification() -> None:
+    plan_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "recent_stage_id": "stage_1",
+    }
+    resource_context = {
+        "last_intent": "resource_request",
+        "has_resources": True,
+        "recent_resource_ids": ["res_intro"],
+    }
+    diagnosis_context = {
+        "last_intent": "diagnosis",
+        "has_diagnosis": True,
+        "recent_weak_topics": ["递归"],
+        "recent_resource_ids": ["res_intro"],
+    }
+    cases = [
+        ("换简单点", plan_context, "learning_plan"),
+        ("简单一点", plan_context, "learning_plan"),
+        ("降低难度", plan_context, "learning_plan"),
+        ("换个简单点的", resource_context, "resource_request"),
+        ("给我简单一点的", resource_context, "resource_request"),
+        ("不要这么难", diagnosis_context, "learning_plan"),
+        ("换成入门一点的", diagnosis_context, "learning_plan"),
+    ]
+
+    for message, context, expected_intent in cases:
+        result = classify_with_context(message, context)
+        assert_true(result["intent"] == expected_intent, f"{message} should stay actionable: {result}")
+        assert_true(result["needs_clarification"] is False, f"{message} should not clarify with context: {result}")
+        assert_true(result["source"] == "context_aware", f"{message} should use context-aware routing: {result}")
+        assert_true(result["extracted"].get("difficulty_preference") == "easier", f"{message} should lower difficulty: {result}")
+        assert_true(result["extracted"].get("plan_revision") == "simplify", f"{message} should mark simplify revision: {result}")
+        assert_true(result["extracted"].get("context_used") is True, f"{message} should record context usage: {result}")
+
+
+def test_p31_simplify_without_context_still_clarifies() -> None:
+    for message in (
+        "换简单点",
+        "简单一点",
+        "降低难度",
+    ):
+        result = classify_with_context(message, {})
+        assert_true(result["intent"] == "unknown", f"{message} should stay unknown without context: {result}")
+        assert_true(result["needs_clarification"] is True, f"{message} should ask for clarification without context: {result}")
+        assert_true(bool(result["clarification_question"]), f"{message} should provide a clarification question: {result}")
+
+
+def test_p31_context_secondary_intents_stay_compact() -> None:
+    plan_context = {
+        "last_intent": "learning_plan",
+        "has_learning_path": True,
+        "recent_stage_id": "stage_1",
+    }
+    resource_context = {
+        "last_intent": "resource_request",
+        "has_resources": True,
+        "recent_resource_ids": ["res_intro"],
+    }
+    diagnosis_context = {
+        "last_intent": "diagnosis",
+        "has_diagnosis": True,
+        "recent_weak_topics": ["递归"],
+    }
+
+    resource_result = classify_with_context("给我那个资源", resource_context)
+    assert_true("profile_update" not in resource_result["secondary_intents"], f"resource follow-up should not add profile_update: {resource_result}")
+    assert_true("diagnosis" not in resource_result["secondary_intents"], f"resource follow-up should not add diagnosis noise: {resource_result}")
+    assert_true("learning_plan" not in resource_result["secondary_intents"], f"resource follow-up should not add learning_plan noise: {resource_result}")
+
+    weak_topic_result = classify_with_context("按刚才那个薄弱点安排", diagnosis_context)
+    assert_true(weak_topic_result["secondary_intents"] == ["resource_request"], f"weak-topic planning should keep only resource_request secondary: {weak_topic_result}")
+
+    regenerate_result = classify_with_context("重新生成", plan_context)
+    assert_true("full_workflow" not in regenerate_result["secondary_intents"], f"regenerate should not inject full_workflow noise: {regenerate_result}")
+
+    alternative_result = classify_with_context("换一个", resource_context)
+    assert_true("profile_update" not in alternative_result["secondary_intents"], f"change-one should not inject profile_update noise: {alternative_result}")
+
+    fewer_result = classify_with_context("不要太多", plan_context)
+    assert_true("profile_update" not in fewer_result["secondary_intents"], f"fewer-items should not inject profile_update noise: {fewer_result}")
+
+
 if __name__ == "__main__":
     test_explicit_diagnosis_is_stable()
     test_diagnosis_plus_resources_is_multi_intent()
@@ -332,4 +416,7 @@ if __name__ == "__main__":
     test_subject_extraction_examples_are_stable()
     test_p3_context_aware_routing_cases()
     test_p3_run_accepts_context_without_breaking_agent_contract()
+    test_p31_simplify_requests_use_context_without_clarification()
+    test_p31_simplify_without_context_still_clarifies()
+    test_p31_context_secondary_intents_stay_compact()
     print("PASS intent_agent_test")
