@@ -61,6 +61,11 @@ class RAGConfig:
     data_path: str = "../2_WikiDataLib/testdata"
     """Root directory containing AA/, AB/, … subdirectories with wiki_* NDJSON files."""
 
+    # ── Intermediate cache ─────────────────────────────────────────────
+    cache_dir: str = "../2_WikiDataLib/cache"
+    """Root directory for per-file intermediate ``.meta.json`` + ``.vecs.bin``.
+    Mirrors the ``data_path`` subdirectory structure."""
+
 
 # Module-level singleton — import this everywhere.
 rag_config = RAGConfig()
