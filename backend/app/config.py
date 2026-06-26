@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # Learning event deduplication
     event_dedup_view_window_seconds: int = 300  # 5-minute window for resource_view dedup
 
+    # Web search provider settings
+    search_provider: str = "mock"       # "mock" | "duckduckgo" | "tavily"
+    tavily_api_key: str = ""
+    search_max_results: int = 5
+    search_timeout: int = 10            # seconds for HTTP request
+    search_cache_ttl: int = 300         # in-memory cache TTL in seconds
+
     project_root: Path = Field(default_factory=lambda: Path(__file__).resolve().parents[2])
 
     model_config = SettingsConfigDict(

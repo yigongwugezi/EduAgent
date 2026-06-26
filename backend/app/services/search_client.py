@@ -1,0 +1,356 @@
+"""Web search client abstraction with multiple providers.
+
+Mirrors the pattern of ``llm_client.py``: a factory function returns a
+provider-specific implementation of ``BaseSearchClient``.  Agents import
+``get_search_client`` and call ``.search(query)`` to fetch web results.
+
+Provides:
+- BaseSearchClient: abstract interface
+- MockSearchClient: returns deterministic mock results (dev only)
+- DuckDuckGoSearchClient: free, no API key required
+- TavilySearchClient: paid, RAG-optimised, requires TAVILY_API_KEY
+- SearchCache: simple in-memory TTL cache
+- get_search_client(): factory function
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from urllib import error, request
+
+from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# ── Exceptions ─────────────────────────────────────────────────────────────
+
+
+class SearchError(Exception):
+    """Raised when a search API call fails after all retries are exhausted."""
+
+    def __init__(self, message: str, cause: Exception | None = None) -> None:
+        super().__init__(message)
+        self.cause = cause
+
+
+# ── Internal data classes (lightweight, no Pydantic overhead) ──────────────
+
+
+@dataclass
+class SearchResultItem:
+    """A single search result from any provider."""
+
+    title: str = ""
+    url: str = ""
+    snippet: str = ""
+    content: str = ""
+    source: str = ""
+
+
+@dataclass
+class SearchResponse:
+    """Aggregated response from a search provider."""
+
+    query: str
+    results: list[SearchResultItem] = field(default_factory=list)
+    total_estimated: int = 0
+    source: str = ""
+
+
+# ── Abstract base ──────────────────────────────────────────────────────────
+
+
+class BaseSearchClient(ABC):
+    """Abstract contract for web search providers used by agents."""
+
+    @abstractmethod
+    def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
+        """Execute a web search and return structured results.
+
+        Args:
+            query: The search query string.
+            max_results: Maximum number of results to return.
+            **kwargs: Provider-specific overrides (e.g. search_depth for Tavily).
+
+        Returns:
+            A SearchResponse with ranked results.
+
+        Raises:
+            SearchError: On any failure.
+        """
+        ...
+
+    def is_available(self) -> bool:
+        """Quick health check — returns True if the provider is reachable."""
+        return True
+
+
+# ── Mock client ────────────────────────────────────────────────────────────
+
+
+class MockSearchClient(BaseSearchClient):
+    """Deterministic mock client for development and testing.
+
+    Returns up to 3 fake results so tests are predictable.
+    """
+
+    def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
+        count = min(max_results, 3)
+        return SearchResponse(
+            query=query,
+            results=[
+                SearchResultItem(
+                    title=f"Mock Result {i + 1} for: {query[:50]}",
+                    url=f"https://example.com/result/{i + 1}?q={query[:30].replace(' ', '+')}",
+                    snippet=f"This is a mock search result #{i + 1} related to '{query[:80]}'.",
+                    content=(
+                        f"Full mock content for result #{i + 1}. "
+                        f"This simulates web page content retrieved for the query: {query}."
+                    ),
+                    source="mock",
+                )
+                for i in range(count)
+            ],
+            total_estimated=count,
+            source="mock",
+        )
+
+    def is_available(self) -> bool:
+        return True
+
+
+# ── DuckDuckGo client ──────────────────────────────────────────────────────
+
+
+class DuckDuckGoSearchClient(BaseSearchClient):
+    """Free search provider using the ``duckduckgo_search`` library.
+
+    No API key required.  Rate limiting is handled internally by the library.
+    """
+
+    def __init__(self, timeout: int = 10) -> None:
+        self.timeout = timeout
+
+    def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
+        try:
+            from duckduckgo_search import DDGS  # type: ignore[import-untyped]
+
+            raw: list[dict[str, str]] = []
+            with DDGS() as ddgs:
+                raw = list(ddgs.text(query, max_results=max_results))
+        except ImportError:
+            raise SearchError(
+                "DuckDuckGo search requires 'duckduckgo_search' package. "
+                "Install it with: pip install duckduckgo_search"
+            )
+        except Exception as exc:
+            raise SearchError(
+                f"DuckDuckGo search failed: {exc}", cause=exc
+            ) from exc
+
+        results = [
+            SearchResultItem(
+                title=item.get("title", ""),
+                url=item.get("href", ""),
+                snippet=item.get("body", ""),
+                content=item.get("body", ""),
+                source="duckduckgo",
+            )
+            for item in raw
+        ]
+
+        return SearchResponse(
+            query=query,
+            results=results,
+            total_estimated=len(results),
+            source="duckduckgo",
+        )
+
+    def is_available(self) -> bool:
+        try:
+            from duckduckgo_search import DDGS  # type: ignore[import-untyped]
+
+            with DDGS() as ddgs:
+                next(ddgs.text("test", max_results=1), None)
+            return True
+        except Exception:
+            logger.debug("DuckDuckGo availability check failed", exc_info=True)
+            return False
+
+
+# ── Tavily client ─────────────────────────────────────────────────────────
+
+
+class TavilySearchClient(BaseSearchClient):
+    """Tavily search client optimised for AI-agent RAG workflows.
+
+    Uses ``urllib.request`` directly (no external HTTP dependency),
+    matching the pattern of ``DeepSeekLLMClient``.
+
+    Requires ``TAVILY_API_KEY`` to be set in ``.env``.
+    """
+
+    def __init__(self, api_key: str, timeout: int = 10) -> None:
+        self.api_key = api_key
+        self.base_url = "https://api.tavily.com"
+        self.timeout = timeout
+
+    def search(self, query: str, max_results: int = 5, **kwargs) -> SearchResponse:
+        if not self.api_key:
+            raise SearchError("TAVILY_API_KEY is not configured.")
+
+        payload: dict[str, object] = {
+            "api_key": self.api_key,
+            "query": query,
+            "max_results": max_results,
+            "search_depth": kwargs.get("search_depth", "basic"),
+        }
+
+        # Include answer if requested (gives an LLM-friendly summary)
+        if kwargs.get("include_answer"):
+            payload["include_answer"] = True
+
+        try:
+            req = request.Request(
+                url=f"{self.base_url}/search",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with request.urlopen(req, timeout=self.timeout) as response:  # type: ignore[arg-type]
+                body = json.loads(response.read().decode("utf-8"))
+
+        except error.HTTPError as exc:
+            status = exc.code if hasattr(exc, "code") else None
+            raise SearchError(
+                f"Tavily API returned HTTP {status}: {self._read_error_body(exc)}",
+                cause=exc,
+            ) from exc
+        except (error.URLError, TimeoutError, OSError) as exc:
+            raise SearchError(
+                f"Tavily API is unreachable: {exc}", cause=exc
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise SearchError(
+                f"Failed to parse Tavily response: {exc}", cause=exc
+            ) from exc
+
+        results = [
+            SearchResultItem(
+                title=item.get("title", ""),
+                url=item.get("url", ""),
+                snippet=item.get("content", "")[:300],
+                content=item.get("content", ""),
+                source="tavily",
+            )
+            for item in body.get("results", [])
+        ]
+
+        # Optionally prepend the AI-generated answer as a synthetic result
+        answer = body.get("answer", "")
+        if answer:
+            results.insert(
+                0,
+                SearchResultItem(
+                    title="AI Summary (Tavily)",
+                    url="",
+                    snippet=answer[:300],
+                    content=answer,
+                    source="tavily",
+                ),
+            )
+
+        return SearchResponse(
+            query=query,
+            results=results,
+            total_estimated=body.get("total_results", len(results)),
+            source="tavily",
+        )
+
+    def is_available(self) -> bool:
+        if not self.api_key:
+            return False
+        try:
+            self.search("ping", max_results=1)
+            return True
+        except Exception:
+            logger.debug("Tavily availability check failed")
+            return False
+
+    @staticmethod
+    def _read_error_body(exc: error.HTTPError) -> str:
+        try:
+            return exc.read().decode("utf-8", errors="replace")[:500]
+        except Exception:
+            return str(exc)
+
+
+# ── In-memory cache ───────────────────────────────────────────────────────
+
+
+class SearchCache:
+    """Simple TTL cache for search results — no database dependency.
+
+    Module-level singleton: ``search_cache``.
+    """
+
+    def __init__(self, ttl_seconds: int = 300) -> None:
+        self._cache: dict[str, tuple[float, SearchResponse]] = {}
+        self._ttl = ttl_seconds
+
+    def _make_key(self, query: str, max_results: int) -> str:
+        return f"{query.strip().lower()}:{max_results}"
+
+    def get(self, query: str, max_results: int = 5) -> SearchResponse | None:
+        """Return cached results if still fresh, otherwise None."""
+        key = self._make_key(query, max_results)
+        if key in self._cache:
+            timestamp, response = self._cache[key]
+            if time.time() - timestamp < self._ttl:
+                return response
+            del self._cache[key]
+        return None
+
+    def set(self, query: str, max_results: int, response: SearchResponse) -> None:
+        """Store search results in the cache."""
+        key = self._make_key(query, max_results)
+        self._cache[key] = (time.time(), response)
+
+    def clear(self) -> None:
+        """Remove all cached entries."""
+        self._cache.clear()
+
+
+search_cache = SearchCache()
+
+
+# ── Factory ────────────────────────────────────────────────────────────────
+
+
+def get_search_client(provider: str = "mock") -> BaseSearchClient:
+    """Return a search client instance for the given provider.
+
+    Args:
+        provider: ``"mock"``, ``"duckduckgo"``, or ``"tavily"``.
+
+    Returns:
+        A BaseSearchClient subclass instance.
+
+    Raises:
+        ValueError: If the provider name is unrecognised.
+    """
+    if provider == "mock":
+        return MockSearchClient()
+    if provider == "duckduckgo":
+        return DuckDuckGoSearchClient(timeout=settings.search_timeout)
+    if provider == "tavily":
+        return TavilySearchClient(
+            api_key=settings.tavily_api_key,
+            timeout=settings.search_timeout,
+        )
+    raise ValueError(f"Unsupported search provider: {provider}")

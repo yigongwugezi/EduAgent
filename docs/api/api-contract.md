@@ -120,6 +120,97 @@ Response envelope:
 
 This API is the backend source of truth. Product APIs may transform its result for frontend pages.
 
+### POST /api/search
+
+> **Added v0.6.0** — 内部诊断端点，供开发调试搜索服务。Agent 直接调用 ``get_search_client()`` 而非通过此 HTTP 端点。
+
+Purpose: execute a web search using the configured search provider. Cached results are returned transparently (TTL controlled by ``SEARCH_CACHE_TTL``).
+
+Request:
+
+```json
+{
+  "query": "Python machine learning tutorial",
+  "max_results": 5
+}
+```
+
+| Field | Type | Required | Default | Constraint | Description |
+|-------|------|----------|---------|------------|-------------|
+| query | string | yes | — | 1-500 chars | Search query string |
+| max_results | int | no | 5 | 1-20 | Maximum results to return |
+
+Response envelope (fresh):
+
+```json
+{
+  "code": 0,
+  "message": "success",
+  "data": {
+    "query": "Python machine learning tutorial",
+    "results": [
+      {
+        "title": "Machine Learning in Python – Real Python",
+        "url": "https://realpython.com/tutorials/machine-learning/",
+        "snippet": "In this step-by-step tutorial you will...",
+        "content": "In this step-by-step tutorial you will...",
+        "source": "duckduckgo"
+      }
+    ],
+    "total_estimated": 1,
+    "source": "duckduckgo",
+    "cached": false
+  },
+  "request_id": "req_search_1719388800000"
+}
+```
+
+Response envelope (cached):
+
+```json
+{
+  "code": 0,
+  "message": "success (cached)",
+  "data": {
+    "query": "Python machine learning tutorial",
+    "results": [ /* same structure */ ],
+    "total_estimated": 1,
+    "source": "duckduckgo_cached",
+    "cached": true
+  },
+  "request_id": "req_search_1719388800000"
+}
+```
+
+Error response (provider unavailable):
+
+```json
+{
+  "status": "error",
+  "data": null,
+  "message": "搜索服务暂不可用",
+  "detail": "搜索服务暂不可用",
+  "code": "SEARCH_SERVICE_ERROR",
+  "is_user_error": false,
+  "sessionId": "",
+  "subjectId": ""
+}
+```
+
+| Error code | HTTP status | Meaning |
+|------------|-------------|---------|
+| SEARCH_SERVICE_ERROR | 503 | Search provider is unavailable or returned an error |
+
+Configuration (``.env``):
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| SEARCH_PROVIDER | mock | Provider: ``mock``, ``duckduckgo``, or ``tavily`` |
+| TAVILY_API_KEY | (empty) | API key for Tavily |
+| SEARCH_MAX_RESULTS | 5 | Default max results per search |
+| SEARCH_TIMEOUT | 10 | HTTP request timeout (seconds) |
+| SEARCH_CACHE_TTL | 300 | In-memory cache TTL (seconds) |
+
 ## 3. Product APIs For React Frontend
 
 ### POST /chat/stream

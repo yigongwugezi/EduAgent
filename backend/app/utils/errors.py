@@ -192,3 +192,21 @@ class DatabaseError(AppError):
             is_user_error=False,
             cause=cause,
         )
+
+
+class SearchServiceError(AppError):
+    """External search provider is unavailable or returned an error."""
+
+    def __init__(
+        self,
+        message: str = "搜索服务暂不可用",
+        *,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(
+            message=message,
+            code="SEARCH_SERVICE_ERROR",
+            status_code=503,
+            is_user_error=False,
+            cause=cause,
+        )
