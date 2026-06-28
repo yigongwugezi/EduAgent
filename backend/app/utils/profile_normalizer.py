@@ -14,7 +14,6 @@ PROFILE_DIMENSION_ORDER = [
     "learning_progress",
     "interest_direction",
     "learning_rhythm",
-    "self_efficacy",
 ]
 
 PROFILE_DIMENSION_LABELS: dict[str, str] = {
@@ -27,7 +26,6 @@ PROFILE_DIMENSION_LABELS: dict[str, str] = {
     "learning_progress": "学习进度",
     "interest_direction": "兴趣方向",
     "learning_rhythm": "学习节奏",
-    "self_efficacy": "学习效能",
 }
 
 OLD_TO_NEW_KEYS: dict[str, str] = {
@@ -69,7 +67,7 @@ def clamp_confidence(value: Any, default: float = 0.5) -> float:
 def normalize_profile_dimensions(
     dimensions: list[dict[str, Any]] | dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    """Normalize dimensions to the stable 10-dimension schema."""
+    """Normalize dimensions to the stable 9-dimension schema."""
     if dimensions is None:
         dimensions = []
 

@@ -1,115 +1,42 @@
-import { createContext, useContext, useState, useEffect } from 'react';
+import { createContext, useContext, useState } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 import { ToastProvider } from '../common/Toast';
-import DebugPanel from '../common/DebugPanel';
 import ConsoleSidebar from './ConsoleSidebar';
-import ChatPanel from '../chat/ChatPanel';
-import { Menu, MessageSquare } from 'lucide-react';
+import Header from './Header';
 
-interface ChatPanelContextValue {
-  open: boolean;
-  setOpen: (v: boolean) => void;
-  toggle: () => void;
-}
-const ChatPanelCtx = createContext<ChatPanelContextValue>({
-  open: false,
-  setOpen: () => {},
-  toggle: () => {},
-});
+const ChatPanelCtx = createContext<{ open: boolean; setOpen: (v: boolean) => void; toggle: () => void }>({ open: false, setOpen: () => {}, toggle: () => {} });
 export const useChatPanel = () => useContext(ChatPanelCtx);
 
+const PAGE_TITLES: Record<string, { title: string; subtitle: string }> = {
+  '/': { title: '学习中心', subtitle: '你的个性化学习仪表盘' },
+  '/chat': { title: '智能对话', subtitle: '与AI助手对话交流' },
+  '/resources': { title: '资源库', subtitle: '个性化推荐的学习资源' },
+  '/path': { title: '学习路径', subtitle: '智能规划的学习进阶路线' },
+  '/profile': { title: '学习画像', subtitle: 'AI对话构建的个性化学习特征' },
+  '/analytics': { title: '学习分析', subtitle: '学习行为数据分析' },
+  '/timeline': { title: '学习时间线', subtitle: '学习行为记录' },
+  '/generate': { title: '资源生成', subtitle: '多智能体协同生成学习资源' },
+  '/settings': { title: '系统设置', subtitle: '个性化你的学习体验' },
+};
+
 export default function AppLayout() {
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
-  const [chatPanelOpen, setChatPanelOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(400);
-  const location = useLocation();
-  const isChatPage = location.pathname === '/chat';
-  const isHomePage = location.pathname === '/';
-
-  useEffect(() => {
-    setMobileDrawerOpen(false);
-    if (location.pathname === '/chat' || location.pathname === '/') {
-      setChatPanelOpen(false);
-    } else {
-      setChatPanelOpen(true);
-    }
-  }, [location.pathname]);
-
-  useEffect(() => {
-    if (mobileDrawerOpen) document.body.style.overflow = 'hidden';
-    else document.body.style.overflow = '';
-    return () => { document.body.style.overflow = ''; };
-  }, [mobileDrawerOpen]);
-
-  const chatPanelValue: ChatPanelContextValue = {
-    open: chatPanelOpen,
-    setOpen: setChatPanelOpen,
-    toggle: () => setChatPanelOpen(v => !v),
-  };
+  const loc = useLocation();
+  const info = PAGE_TITLES[loc.pathname] || { title: 'EduAgent', subtitle: '' };
+  const [chatOpen, setChatOpen] = useState(false);
 
   return (
-    <ChatPanelCtx.Provider value={chatPanelValue}>
+    <ChatPanelCtx.Provider value={{ open: chatOpen, setOpen: setChatOpen, toggle: () => setChatOpen(v => !v) }}>
     <ToastProvider>
-      <div className="min-h-screen flex">
-        {/* Sidebar desktop */}
-        <div className="hidden md:block">
-          <ConsoleSidebar collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(v => !v)} />
+      <div className="min-h-screen bg-surface-50 flex">
+        <aside className="w-64 fixed left-0 top-0 bottom-0 z-40">
+          <ConsoleSidebar />
+        </aside>
+        <div className="flex-1 ml-64 flex flex-col min-h-screen">
+          <Header title={info.title} subtitle={info.subtitle} />
+          <main className="p-6 flex-1 flex flex-col"><Outlet /></main>
         </div>
-
-        {/* Sidebar mobile overlay */}
-        {mobileDrawerOpen && <div className="fixed inset-0 z-40 bg-black/30 md:hidden" onClick={() => setMobileDrawerOpen(false)} />}
-        <div className={`fixed inset-y-0 left-0 z-50 w-64 transition-transform md:hidden ${mobileDrawerOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-          <ConsoleSidebar collapsed={false} onToggle={() => setMobileDrawerOpen(false)} />
-        </div>
-
-        {/* Main */}
-        <div className={`flex-1 flex flex-col min-h-screen transition-all ${sidebarCollapsed ? 'md:ml-14' : 'md:ml-60'}`}
-          style={!isChatPage && !isHomePage && chatPanelOpen ? { marginRight: panelWidth } : undefined}>
-          <MobileTopBar onMenuToggle={() => setMobileDrawerOpen(true)} onChatToggle={() => setChatPanelOpen(v => !v)} />
-          <main className="flex-1 overflow-y-auto">
-            <div className="max-w-5xl mx-auto px-6 py-8">
-              <Outlet />
-            </div>
-          </main>
-        </div>
-
-        {/* Floating chat toggle */}
-        {!isChatPage && !isHomePage && !chatPanelOpen && (
-          <button onClick={() => setChatPanelOpen(true)}
-            className="fixed top-4 right-4 z-30 w-9 h-9 rounded-xl bg-white shadow border border-gray-100 flex items-center justify-center text-gray-400 hover:text-accent-600 hover:border-accent-200 transition-all hidden md:flex">
-            <MessageSquare className="w-4 h-4" />
-          </button>
-        )}
-
-        {/* Chat panel */}
-        {!isChatPage && !isHomePage && (
-          <ChatPanel open={chatPanelOpen} onClose={() => setChatPanelOpen(false)} panelWidth={panelWidth} onWidthChange={setPanelWidth} />
-        )}
-
-        <DebugPanel />
       </div>
     </ToastProvider>
     </ChatPanelCtx.Provider>
   );
 }
-
-function MobileTopBar({ onMenuToggle, onChatToggle }: { onMenuToggle: () => void; onChatToggle: () => void }) {
-  const { pathname } = useLocation();
-  const labels: Record<string, string> = {
-    '/': '首页', '/chat': 'AI 对话', '/resources': '资源库',
-    '/path': '学习路径', '/profile': '学习画像', '/analytics': '学习分析', '/timeline': '时间线',
-  };
-  return (
-    <div className="md:hidden sticky top-0 z-30 bg-white/95 backdrop-blur-sm px-4 py-2.5 flex items-center gap-2">
-      <button onClick={onMenuToggle} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-50">
-        <Menu className="w-4 h-4" />
-      </button>
-      <span className="text-sm font-semibold text-gray-800 truncate flex-1">{labels[pathname] || 'EduAgent'}</span>
-      <button onClick={onChatToggle} className="w-8 h-8 rounded-lg flex items-center justify-center text-gray-500 hover:bg-gray-50">
-        <MessageSquare className="w-4 h-4" />
-      </button>
-    </div>
-  );
-}
-

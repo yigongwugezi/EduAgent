@@ -159,6 +159,7 @@
         "content_format": "markdown",
         "content": "## 1. 为什么先学机器学习基础\n\n神经网络属于机器学习的重要方法。如果直接学习神经网络，容易被参数、梯度和网络结构绕晕。因此建议先理解机器学习的基本流程：数据输入、特征表示、模型预测、损失计算和参数更新。\n\n## 2. 监督学习的基本流程\n\n监督学习使用带标签的数据训练模型。例如，在鸢尾花分类任务中，输入是花瓣长度、花瓣宽度等特征，输出是花的类别。\n\n典型流程：\n\n1. 准备数据。\n2. 划分训练集和测试集。\n3. 选择模型。\n4. 训练模型。\n5. 在测试集上评估效果。\n\n## 3. 神经网络如何学习\n\n神经网络通过多层神经元组合表达复杂函数。训练时，模型先进行前向传播得到预测结果，再计算预测和真实标签之间的损失，最后通过反向传播更新参数。\n\n可以把神经网络理解为一个可学习的函数：\n\n```text\noutput = model(input)\n```\n\n训练的目标就是让这个函数在新数据上也能给出合理结果。\n",
         "related_stage_id": "stage_1",
+        "task_id": "stage_1_node_1",
         "source": "mock",
         "quality_status": "passed"
       },
@@ -170,6 +171,7 @@
         "content_format": "mermaid",
         "content": "mindmap\n  root((人工智能导论))\n    人工智能概述\n      智能行为\n      典型应用\n      发展历史\n    机器学习基础\n      监督学习\n        分类\n        回归\n      无监督学习\n        聚类\n        降维\n      训练流程\n        数据\n        模型\n        损失函数\n        评估\n    神经网络基础\n      神经元\n      激活函数\n      前向传播\n      反向传播\n    NLP 入门\n      文本分类\n      词向量\n      语言模型",
         "related_stage_id": "stage_2",
+        "task_id": "stage_2_node_2",
         "source": "mock",
         "quality_status": "passed"
       },
@@ -212,6 +214,7 @@
           }
         ],
         "related_stage_id": "stage_1",
+        "task_id": "stage_1_node_2",
         "source": "mock",
         "quality_status": "passed"
       },
@@ -223,6 +226,7 @@
         "content_format": "markdown",
         "content": "## 推荐阅读路线\n\n1. 先阅读机器学习入门材料，重点关注监督学习、损失函数和模型评估。\n2. 再阅读神经网络入门材料，重点关注神经元、激活函数、前向传播和反向传播。\n3. 最后阅读 NLP 入门材料，理解文本分类、词向量和语言模型。\n\n## 阅读建议\n\n- 如果遇到公式困难，先看图解和代码案例，再回到公式。\n- 如果代码能运行但不理解结果，重点查看输入数据形状和输出含义。\n- 每学完一个概念，尝试用一句话解释它解决了什么问题。",
         "related_stage_id": "stage_3",
+        "task_id": "stage_3_node_1",
         "source": "mock",
         "quality_status": "passed"
       },
@@ -234,6 +238,7 @@
         "content_format": "markdown",
         "content": "## 实验目标\n\n使用 Python 完成一个简单的鸢尾花分类任务，理解数据划分、模型训练和模型评估。\n\n## 示例代码\n\n```python\nfrom sklearn.datasets import load_iris\nfrom sklearn.model_selection import train_test_split\nfrom sklearn.tree import DecisionTreeClassifier\n\niris = load_iris()\nX_train, X_test, y_train, y_test = train_test_split(\n    iris.data, iris.target, test_size=0.2, random_state=42\n)\n\nmodel = DecisionTreeClassifier()\nmodel.fit(X_train, y_train)\n\naccuracy = model.score(X_test, y_test)\nprint('accuracy:', accuracy)\n```\n\n## 思考问题\n\n1. `X_train` 和 `y_train` 分别代表什么？\n2. 为什么不能只在训练集上评估模型？\n3. 如果更换模型，训练流程会发生哪些变化？",
         "related_stage_id": "stage_1",
+        "task_id": "stage_1_node_3",
         "source": "mock",
         "quality_status": "passed"
       },
@@ -245,6 +250,7 @@
         "content_format": "markdown",
         "content": "## 视频标题\n\n3 分钟理解神经网络如何学习\n\n## 分镜脚本\n\n1. 画面：输入一朵花的特征数据。旁白：模型首先接收输入特征。\n2. 画面：数据穿过多层节点。旁白：神经网络通过多层神经元计算预测结果。\n3. 画面：预测类别和真实类别对比。旁白：损失函数衡量模型错得有多远。\n4. 画面：箭头反向传播。旁白：反向传播会告诉每个参数应该如何调整。\n5. 画面：多次训练后预测变准。旁白：经过反复训练，模型逐渐学会数据中的规律。",
         "related_stage_id": "stage_2",
+        "task_id": "stage_2_node_3",
         "source": "mock",
         "quality_status": "passed"
       }

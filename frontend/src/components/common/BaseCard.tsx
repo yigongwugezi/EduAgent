@@ -10,7 +10,7 @@ interface BaseCardProps {
 
 const PADDING = { sm: 'p-4', md: 'p-5', lg: 'p-6' };
 
-/** 统一卡片容器 — 白底、圆角、阴影 */
+/** 统一卡片容器 — 白底、圆角、微妙阴影，支持悬停抬起 */
 export default function BaseCard({
   children,
   className = '',
@@ -21,9 +21,13 @@ export default function BaseCard({
   return (
     <div
       onClick={onClick}
-      className={`bg-white border border-gray-100 rounded-2xl shadow-sm ${
-        hover ? 'hover:shadow-md transition-shadow' : ''
-      } ${PADDING[padding]} ${onClick ? 'cursor-pointer' : ''} ${className}`}
+      className={[
+        'bg-white border border-surface-100/80 rounded-2xl shadow-sm',
+        hover ? 'hover:shadow-md hover:-translate-y-0.5 transition-all duration-200' : '',
+        PADDING[padding],
+        onClick ? 'cursor-pointer' : '',
+        className,
+      ].join(' ')}
     >
       {children}
     </div>

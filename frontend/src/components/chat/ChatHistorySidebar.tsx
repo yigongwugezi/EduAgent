@@ -23,10 +23,10 @@ export default function ChatHistorySidebar({ open, onClose, onJump }: {
   return (
     <>
       {/* 遮罩 */}
-      <div className="fixed inset-0 z-40 bg-black/20 md:hidden" onClick={onClose} />
+      <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-sm md:hidden animate-fade-in" onClick={onClose} />
 
       {/* 侧边栏 */}
-      <div className="fixed right-0 top-0 bottom-0 z-50 w-80 bg-white border-l border-gray-100 shadow-xl flex flex-col animate-slide-in-right">
+      <div className="fixed right-0 top-0 bottom-0 z-50 w-80 bg-white border-l border-gray-100/80 shadow-2xl flex flex-col animate-slide-in-right">
         {/* 头部 */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <h2 className="text-sm font-semibold text-gray-800 flex items-center gap-2">

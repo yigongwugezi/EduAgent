@@ -205,7 +205,7 @@ class ConversationStore:
             if profile or path or db_resources:
                 result: dict[str, Any] = {}
                 if profile:
-                    # Normalize dimensions (handles old 8-dim and new 10-dim snapshots)
+                    # Normalize dimensions (handles old 8-dim and 9-dim snapshots)
                     normalized_dims = normalize_profile_dimensions(profile.dimensions)
                     result["profile"] = {
                         dim.get("key", f"dim_{idx}"): {
@@ -633,7 +633,6 @@ class ConversationStore:
             "coding_ability": "knowledge_base",
             "interest_direction": "target_course",
             "learning_rhythm": "time_budget",
-            "self_efficacy": "preference",
         }
         for source_key, fact_key in mapping.items():
             item = profile.get(source_key)

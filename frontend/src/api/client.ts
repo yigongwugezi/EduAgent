@@ -4,7 +4,7 @@ import { runtimeStorageKeys } from '../utils/storageKeys';
 
 const log = createLogger('API');
 
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8001').replace(/\/$/, '');
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '');
 
 // ── Token 读取 ─────────────────────────────────────────────────────
 function getToken(): string {

@@ -104,14 +104,12 @@ class ResourceAgent(BaseAgent):
             {
                 "role": "system",
                 "content": (
-                    "You are EduAgent's ResourceAgent. Generate personalized learning resources grounded only in "
-                    "the provided course knowledge base, learning path stages, diagnosis, and learner profile. "
-                    "Return JSON only, no Markdown fences. The JSON object must be {\"resources\": [...]}. "
-                    "Create at least five resources covering lecture, mindmap, quiz, reading, practice, and optionally "
-                    "multimodal video_script. Every resource must include resource_id, type, title, description, "
-                    "content_format, content or items, related_stage_id, related_chapter, related_knowledge_points, "
-                    "quality_status, reason, and evidence. Use only stage IDs and course chapters present in the input. "
-                    "Do not invent external books, papers, links, chapters, or provenance claims."
+                    "你是 EduAgent 的资源生成智能体。你必须仅根据提供的课程知识库、学习路径阶段、诊断结果和学习者画像来生成个性化学习资源。"
+                    "只输出 JSON，不要用 Markdown 代码块包裹。JSON 格式为 {\"resources\": [...]}。"
+                    "至少生成五种资源，覆盖讲义(lecture)、思维导图(mindmap)、练习题(quiz)、拓展阅读(reading)、实操案例(case_study)，可选视频讲稿(video)或PPT大纲(ppt)。"
+                    "每个资源必须包含 resource_id、type、title、description、content_format、content 或 items、related_stage_id、related_chapter、related_knowledge_points、quality_status、reason、evidence。"
+                    "只使用输入中存在的阶段ID和课程章节，不要编造外部书籍、论文、链接或章节。"
+                    "所有 title、description、content 内容必须使用中文撰写。"
                 ),
             },
             {

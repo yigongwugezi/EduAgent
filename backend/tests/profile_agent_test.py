@@ -22,7 +22,6 @@ EXPECTED_KEYS = [
     "learning_progress",
     "interest_direction",
     "learning_rhythm",
-    "self_efficacy",
 ]
 
 
@@ -46,25 +45,25 @@ class FakeLLMClient:
 
 
 def _assert_dimension_shape(profile: dict[str, dict]) -> None:
-    assert_true(list(profile.keys()) == EXPECTED_KEYS, "profile should expose exactly 10 stable keys")
+    assert_true(list(profile.keys()) == EXPECTED_KEYS, "profile should expose exactly 9 stable keys")
     for key in EXPECTED_KEYS:
         item = profile[key]
         assert_true(all(field in item for field in ("value", "score", "confidence", "explanation", "evidence", "source")), f"{key} should include all required fields")
         assert_true(item["source"] != "unknown", f"{key} should not use unknown source")
 
 
-def test_profile_agent_rule_fallback_outputs_10_dimensions() -> None:
+def test_profile_agent_rule_fallback_outputs_9_dimensions() -> None:
     agent = ProfileAgent(llm_client=None)
     result = agent.run(
         {
-            "user_message": "我是软件工程大三学生，Python 基础一般，想用 10 天入门人工智能导论，重点学习机器学习和神经网络，希望多给图解和代码案例。",
+            "user_message": "我是软件工程大三学生，Python 基础一般，想用 9 天入门人工智能导论，重点学习机器学习和神经网络，希望多给图解和代码案例。",
             "profile_facts": {
                 "background": "软件工程大三学生",
                 "knowledge_base": "Python 基础一般",
-                "learning_goal": "10 天入门人工智能导论",
+                "learning_goal": "9 天入门人工智能导论",
                 "preference": "图解、代码案例",
                 "target_course": "人工智能导论",
-                "time_budget": "10 天",
+                "time_budget": "9 天",
             },
         }
     )
@@ -88,6 +87,6 @@ def test_profile_agent_llm_success_is_tagged_as_generated() -> None:
 
 
 if __name__ == "__main__":
-    test_profile_agent_rule_fallback_outputs_10_dimensions()
+    test_profile_agent_rule_fallback_outputs_9_dimensions()
     test_profile_agent_llm_success_is_tagged_as_generated()
     print("PASS profile_agent_test")

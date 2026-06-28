@@ -39,6 +39,7 @@ from app.db.repository import (
     list_sessions as repo_list_sessions,
     save_profile_snapshot,
     toggle_bookmark,
+    delete_session as repo_delete_session,
 )
 from app.services.agent_service import (
     get_analytics as ag_get_analytics,
@@ -337,16 +338,21 @@ def _normalize_frontend_dimensions(dimensions: list[dict[str, Any]]) -> list[dic
         text_value = str(dim.get("value", ""))
         score = int(dim.get("score", _dimension_score(key, dim)))
         explanation = str(dim.get("explanation", dim.get("description", text_value)))
+        label = _DIMENSION_LABELS.get(key, dim.get("label", key))
+        icon_map = {"专业背景":"BookOpen","知识基础":"Brain","学习目标":"Heart","认知风格":"Brain","易错模式":"AlertCircle","编程能力":"Code","学习进度":"Clock","兴趣方向":"Heart","学习节奏":"Clock"}
         result.append({
+            "id": key,
             "key": key,
-            "label": _DIMENSION_LABELS.get(key, dim.get("label", key)),
-            "value": text_value,
+            "name": label,
+            "label": label,
+            "value": score,
             "score": score,
-            "confidence": dim.get("confidence", 0.75),
-            "description": explanation,
+            "description": text_value or explanation,
             "explanation": explanation,
+            "confidence": dim.get("confidence", 0.75),
             "evidence": str(dim.get("evidence", "")),
             "source": str(dim.get("source", "rule_based_fallback")),
+            "icon": icon_map.get(label, "Brain"),
             "updatedAt": int(time.time() * 1000),
         })
     return result
@@ -363,8 +369,8 @@ def _dimension_score(key: str, item: dict[str, Any]) -> int:
         return max(30, min(55, base - 25))  # error patterns are inherently lower-scoring
     if key in {"learning_goal", "interest_direction"}:
         return min(88, base + 8)
-    if key in {"learning_rhythm", "self_efficacy"}:
-        return max(50, base)  # neutral default for new dimensions
+    if key == "learning_rhythm":
+        return max(50, base)  # neutral default
     return max(50, min(85, base))
 
 
@@ -379,7 +385,6 @@ _DIMENSION_LABELS: dict[str, str] = {
     "learning_progress": "学习进度",
     "interest_direction": "兴趣方向",
     "learning_rhythm": "学习节奏",
-    "self_efficacy": "学习效能",
 }
 
 
@@ -1354,6 +1359,24 @@ def reset_session(session_id: str) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id, source="system")
 
 
+@router.delete("/chat/sessions/{session_id}")
+def delete_chat_session(session_id: str) -> dict[str, Any]:
+    """Delete a chat session and its associated data."""
+    try:
+        db = SessionLocal()
+        ok = repo_delete_session(db, session_id)
+        if not ok:
+            return _product_response(
+                None, message="会话不存在", source="db",
+                session_id=session_id, status="error",
+            )
+        return _product_response(
+            {"ok": True}, session_id=session_id, source="db",
+        )
+    finally:
+        db.close()
+
+
 @router.get("/chat/quick-commands")
 def quick_commands() -> dict[str, Any]:
     return _product_response(
@@ -1426,15 +1449,29 @@ def get_profile(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
         finally:
             db.close()
 
+        dims = _normalize_frontend_dimensions(db_profile.get("dimensions", []))
+        bg = next((d for d in dims if d["key"] == "major_background"), None)
+        goal_dim = next((d for d in dims if d["key"] == "learning_goal"), None)
+        learning_goals = [goal_dim["description"]] if goal_dim and goal_dim.get("description") else []
+        total_minutes = db_profile.get("history", {}).get("totalStudyMinutes", 0) if isinstance(db_profile.get("history"), dict) else 0
+        completed = db_profile.get("history", {}).get("completedTopics", []) if isinstance(db_profile.get("history"), dict) else []
+
         return _product_response(
             {"profile": {
                 "id": session_id,
                 "learnerId": learner_id,
+                "name": nickname,
                 "nickname": nickname,
-                "dimensions": _normalize_frontend_dimensions(db_profile.get("dimensions", [])),
+                "major": bg["description"] if bg else "未知专业",
+                "grade": "大三" if bg and "大三" in str(bg.get("description","")) else "—",
+                "lastActive": "刚刚",
+                "totalStudyHours": round(total_minutes / 60),
+                "completedCourses": len(completed) if isinstance(completed, list) else 0,
+                "learningGoals": learning_goals,
+                "dimensions": dims,
                 "weaknesses": db_profile.get("weaknesses", []),
                 "preferences": {**_default_prefs, **db_prefs},
-                "history": {"totalStudyMinutes": 0, "completedTopics": [], "quizAccuracy": None, "streak": 0, "lastStudyDate": 0},
+                "history": {"totalStudyMinutes": total_minutes, "completedTopics": completed if isinstance(completed, list) else [], "quizAccuracy": None, "streak": 0, "lastStudyDate": 0},
                 "createdAt": int(time.time() * 1000) - 86400000,
                 "updatedAt": int(time.time() * 1000),
                 "source": "db",

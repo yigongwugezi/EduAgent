@@ -33,20 +33,14 @@ export default function Modal({ open, onClose, title, children, wide, xwide }: M
   return (
     <div
       ref={overlayRef}
-      className="fixed inset-0 z-[100] flex items-center justify-center p-6 bg-black/40 backdrop-blur-sm"
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4 sm:p-6 bg-black/45 backdrop-blur-sm animate-fade-in"
       onClick={(e) => { if (e.target === overlayRef.current) onClose(); }}
     >
-      <div
-        className={`bg-white rounded-lg shadow-xl w-full max-h-[90vh] overflow-y-auto animate-fade-in-up ${
-          xwide ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-lg'
-        }`}
-      >
+      <div className={`bg-white rounded-2xl shadow-elevated w-full max-h-[90vh] overflow-y-auto animate-fade-in ${xwide ? 'max-w-6xl' : wide ? 'max-w-3xl' : 'max-w-lg'}`}>
         {title && (
-          <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-            <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
-            <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-              <X className="w-5 h-5 text-gray-400" />
-            </button>
+          <div className="flex items-center justify-between px-6 py-4 border-b border-surface-200">
+            <h3 className="font-display text-lg font-semibold text-surface-800">{title}</h3>
+            <button onClick={onClose} className="p-2 rounded-xl hover:bg-surface-100 transition-colors"><X className="w-5 h-5 text-surface-400" /></button>
           </div>
         )}
         <div className="p-6">{children}</div>

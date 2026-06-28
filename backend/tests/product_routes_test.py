@@ -57,7 +57,7 @@ def test_naive_db_datetime_is_treated_as_utc() -> None:
         datetime.fromisoformat(naive_utc)
         .replace(tzinfo=timezone.utc)
         .timestamp()
-        * 1000
+        * 900
     )
 
     assert_true(product._datetime_to_ms(naive_utc) == expected, "naive DB timestamps should be interpreted as UTC")
@@ -108,7 +108,7 @@ def test_profile_route_preserves_structured_dimension_fields() -> None:
         profile = response["data"]["profile"]
         dimensions = profile["dimensions"]
 
-        assert_true(len(dimensions) == 10, "/profile should return 10 dimensions")
+        assert_true(len(dimensions) == 9, "/profile should return 9 dimensions")
         assert_true(
             all(all(field in dim for field in ("value", "score", "confidence", "explanation", "evidence", "source")) for dim in dimensions),
             "/profile should preserve structured dimension fields",

@@ -32,7 +32,7 @@ class ProfileAgent(BaseAgent):
             raise AgentValidationError("profile must be a dict")
         keys = [key for key in profile if key in self.profile_dimensions]
         if keys != self.profile_dimensions:
-            raise AgentValidationError("profile must expose the stable 10-dimension schema")
+            raise AgentValidationError("profile must expose the stable 9-dimension schema")
         for key in self.profile_dimensions:
             item = profile.get(key)
             if not isinstance(item, dict):
@@ -52,13 +52,13 @@ class ProfileAgent(BaseAgent):
                     {
                         "role": "system",
                         "content": (
-                            "You are an education profile extraction agent. "
-                            "Return only one JSON object with exactly these 10 top-level keys: "
-                            f"{', '.join(self.profile_dimensions)}. "
-                            "Each dimension must contain key, label, value, score, confidence, explanation, evidence, source. "
-                            "score must be 0-100. confidence must be 0-1. "
-                            "source should be one of: user_input, inferred, llm_generated, diagnosis, feedback. "
-                            "Prefer concrete evidence from the student description. Do not output markdown."
+                            "你是 EduAgent 的学习画像提取智能体。"
+                            "只输出一个 JSON 对象，必须包含以下 9 个顶级键："
+                            f"{', '.join(self.profile_dimensions)}。"
+                            "每个维度含 key、label、value、score、confidence、explanation、evidence、source。"
+                            "score 为 0-100 的整数，confidence 为 0-1 的小数。"
+                            "source 可选值：user_input、inferred、llm_generated、diagnosis、feedback。"
+                            "必须优先采用学生描述中的具体证据。所有内容用中文撰写。不要输出 Markdown。"
                         ),
                     },
                     {"role": "user", "content": self._profile_prompt(context)},
@@ -175,7 +175,6 @@ class ProfileAgent(BaseAgent):
             "learning_progress": self._progress_dimension(text, course_text, knowledge_base),
             "interest_direction": self._interest_dimension(interest_direction),
             "learning_rhythm": self._rhythm_dimension(time_budget),
-            "self_efficacy": self._efficacy_dimension(text, knowledge_base, weak_points),
         }
         return profile
 
@@ -320,9 +319,7 @@ class ProfileAgent(BaseAgent):
             value = "自我效能感待进一步确认"
             confidence = 0.42
         return self._dimension(
-            key="self_efficacy",
             value=value,
-            score=self._score_for_dimension("self_efficacy", value),
             confidence=confidence,
             source="inferred",
             explanation="根据用户对基础、难点和目标难度的表述推断学习信心。",
@@ -464,7 +461,6 @@ class ProfileAgent(BaseAgent):
             return 60
         if key == "error_patterns":
             return 38 if any(word in text for word in ["薄弱", "不会", "错误"]) else 52
-        if key == "self_efficacy":
             if any(word in text for word in ["有信心", "主动"]):
                 return 76
             if any(word in text for word in ["保守", "较弱", "担心"]):

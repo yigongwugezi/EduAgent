@@ -112,14 +112,13 @@ def test_generated_data_is_readable_by_session_and_isolated() -> None:
             "major_background", "knowledge_base", "learning_goal",
             "cognitive_style", "error_patterns", "coding_ability",
             "learning_progress", "interest_direction", "learning_rhythm",
-            "self_efficacy",
         }
         dims_a = profile_a.dimensions or []
         dims_b = profile_b.dimensions or []
         assert {dim.get("key") for dim in dims_a} == expected_profile_keys, \
-            "session A profile snapshot should store 10 dimensions"
+            "session A profile snapshot should store 9 dimensions"
         assert {dim.get("key") for dim in dims_b} == expected_profile_keys, \
-            "session B profile snapshot should store 10 dimensions"
+            "session B profile snapshot should store 9 dimensions"
         assert all(
             all(field in dim for field in ("score", "confidence", "explanation", "evidence", "source"))
             for dim in dims_a
@@ -486,7 +485,7 @@ def test_analytics_isolation_via_api() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Scenario 9 & 10: Empty sessionId must be rejected
+# Scenario 9 & 9: Empty sessionId must be rejected
 # ═══════════════════════════════════════════════════════════════════════
 
 

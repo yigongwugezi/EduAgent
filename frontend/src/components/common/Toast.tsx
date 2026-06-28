@@ -54,12 +54,12 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
-            className={`flex items-center gap-2.5 px-4 py-3 rounded-xl border shadow-lg animate-fade-in-up ${bgMap[t.type]}`}
+            className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl border shadow-lg animate-toast-in ${bgMap[t.type]}`}
           >
             {iconMap[t.type]}
-            <span className="text-sm text-gray-800 flex-1">{t.message}</span>
+            <span className="text-sm text-surface-800 flex-1">{t.message}</span>
             <button onClick={() => remove(t.id)} className="p-0.5 hover:opacity-70">
-              <X className="w-4 h-4 text-gray-400" />
+              <X className="w-4 h-4 text-surface-400" />
             </button>
           </div>
         ))}

@@ -45,8 +45,7 @@ export type DimensionKey =
   | 'coding_ability'
   | 'learning_progress'
   | 'interest_direction'
-  | 'learning_rhythm'
-  | 'self_efficacy';
+  | 'learning_rhythm';
 
 export const DIMENSION_LABELS: Record<DimensionKey, string> = {
   major_background: '专业背景',
@@ -58,7 +57,6 @@ export const DIMENSION_LABELS: Record<DimensionKey, string> = {
   learning_progress: '学习进度',
   interest_direction: '兴趣方向',
   learning_rhythm: '学习节奏',
-  self_efficacy: '学习效能',
 };
 
 export interface KnowledgeGap {

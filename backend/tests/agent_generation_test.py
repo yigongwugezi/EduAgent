@@ -41,9 +41,8 @@ def test_agents_generate_from_course_knowledge_base() -> None:
         "learning_progress",
         "interest_direction",
         "learning_rhythm",
-        "self_efficacy",
     ]
-    assert_true(list(result["profile"].keys()) == expected_profile_keys, "profile should use stable 10-dimension keys")
+    assert_true(list(result["profile"].keys()) == expected_profile_keys, "profile should use stable 9-dimension keys")
     assert_true(
         all(
             all(field in result["profile"][key] for field in ("score", "confidence", "explanation", "evidence", "source"))

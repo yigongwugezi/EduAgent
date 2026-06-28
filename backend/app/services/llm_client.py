@@ -135,13 +135,6 @@ class MockLLMClient(BaseLLMClient):
                     "source": "inferred",
                     "evidence": "暂无数据",
                 },
-                "self_efficacy": {
-                    "label": "学习效能感",
-                    "value": "暂未确定",
-                    "confidence": 0.5,
-                    "source": "inferred",
-                    "evidence": "暂无数据",
-                },
             },
             ensure_ascii=False,
         )
