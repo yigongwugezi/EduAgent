@@ -35,6 +35,13 @@ async def lifespan(app: FastAPI):
     init_db()
     conversation_store.enable_db()
     learning_tracker.enable_db()
+
+    # ── RAG background init (non-blocking) ──────────────────────────
+    if settings.rag_enabled:
+        from app.rag.query_engine import rag_query_engine
+
+        rag_query_engine.start_background_init()
+
     yield
 
 
