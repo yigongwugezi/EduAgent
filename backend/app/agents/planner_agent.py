@@ -352,13 +352,14 @@ class PlannerAgent(BaseAgent):
 
 要求：
 1. 生成3-5个阶段，总天数必须正好{total_days}天
-2. 每个阶段包含：stage_id, title, duration, goal, tasks, resource_types, reason
+2. 每个阶段包含：stage_id, title, duration, goal, tasks, daily_tasks, resource_types, reason
 3. title必须以具体的学习内容命名（如"极限与连续"、"导数与微分"、"不定积分"），绝对不要用"第一阶段"、"补齐基础"这种模板化标题
 4. 如果用户要求"以学习内容为阶段划分"，严格按照内容主题划分阶段
 5. 如果用户提到特定教材（如同济版高等数学），参考该教材的章节结构来划分阶段
 6. 体现学生基础水平（如"高中导数学过"、"零基础"）和时间约束
 7. 如果对话中已经有诊断信息，参考薄弱点来调整阶段重点
-8. 只输出JSON，格式：{{"learning_path": [...]}}"""
+8. daily_tasks 必须为该阶段的每一天分配具体任务，格式：\n   [{{"day": 1, "tasks": ["任务1", "任务2"]}}, {{"day": 2, "tasks": ["任务3"]}}]\n   daily_tasks 数组长度必须等于该阶段覆盖的天数，每天至少一个任务
+9. 只输出JSON，格式：{{"learning_path": [...]}}"""
 
         try:
             raw = self.llm_client.chat(
@@ -420,6 +421,11 @@ class PlannerAgent(BaseAgent):
                 "duration": str(item.get("duration", f"第{i}阶段")),
                 "goal": str(item.get("goal", "完成本阶段核心知识学习。")),
                 "tasks": tasks or ["学习课程讲义", "完成配套练习"],
+                "daily_tasks": self._normalize_daily_tasks(
+                    item.get("daily_tasks", []),
+                    str(item.get("duration", f"第{i}阶段")),
+                    tasks,
+                ),
                 "resource_types": self._clean_types(item.get("resource_types", [])),
                 "reason": str(item.get("reason", "根据学生画像和课程结构自动规划。")),
                 "source": "llm_generated",
@@ -441,6 +447,88 @@ class PlannerAgent(BaseAgent):
                 result.append(norm)
         return result or ["lecture", "quiz"]
 
+    def _normalize_daily_tasks(
+        self,
+        daily_tasks_raw: Any,
+        duration: str,
+        stage_tasks: list[str],
+    ) -> list[dict]:
+        """Normalize daily_tasks from LLM output or derive from stage tasks.
+
+        If the LLM provided a valid per-day breakdown, validate and use it.
+        Otherwise, distribute stage_tasks round-robin across the stage's day range.
+        """
+        if isinstance(daily_tasks_raw, list) and daily_tasks_raw:
+            result = []
+            for entry in daily_tasks_raw:
+                if isinstance(entry, dict):
+                    day = int(entry.get("day", 1))
+                    day_tasks = entry.get("tasks", [])
+                    if isinstance(day_tasks, list):
+                        cleaned = [str(t).strip() for t in day_tasks if str(t).strip()]
+                        if cleaned:
+                            result.append({"day": day, "tasks": cleaned})
+            if result:
+                return result
+
+        # Derive from duration + stage_tasks
+        day_nums = re.findall(r"\d+", duration)
+        if len(day_nums) >= 2:
+            start_day, end_day = int(day_nums[0]), int(day_nums[1])
+        elif len(day_nums) == 1:
+            start_day = end_day = int(day_nums[0])
+        else:
+            start_day = end_day = 1
+
+        num_days = max(1, end_day - start_day + 1)
+        if not stage_tasks:
+            stage_tasks = ["学习课程讲义", "完成配套练习"]
+
+        daily: dict[int, list[str]] = {d: [] for d in range(start_day, end_day + 1)}
+        for idx, task in enumerate(stage_tasks):
+            day = start_day + (idx % num_days)
+            daily[day].append(task)
+
+        return [
+            {"day": day, "tasks": day_tasks}
+            for day, day_tasks in sorted(daily.items())
+            if day_tasks
+        ]
+
+    def _derive_daily_tasks_from_fallback(
+        self,
+        tasks: list[str],
+        duration: str,
+        stage_idx: int,
+        n_stages: int,
+        total_days: int,
+    ) -> list[dict]:
+        """Derive daily tasks for the rule-based fallback path."""
+        day_nums = re.findall(r"\d+", duration)
+        if len(day_nums) >= 2:
+            start_day, end_day = int(day_nums[0]), int(day_nums[1])
+        elif len(day_nums) == 1:
+            start_day = end_day = int(day_nums[0])
+        else:
+            dps = max(1, ceil(total_days / n_stages))
+            start_day = min(total_days, (stage_idx - 1) * dps + 1)
+            end_day = min(total_days, max(start_day, stage_idx * dps))
+
+        num_days = max(1, end_day - start_day + 1)
+        if not tasks:
+            tasks = ["学习课程讲义", "完成配套练习"]
+
+        daily: dict[int, list[str]] = {d: [] for d in range(start_day, end_day + 1)}
+        for idx, task in enumerate(tasks):
+            day = start_day + (idx % num_days)
+            daily[day].append(task)
+
+        return [
+            {"day": day, "tasks": day_tasks}
+            for day, day_tasks in sorted(daily.items())
+            if day_tasks
+        ]
+
     # ── 规则兜底 ──
 
     def _build_rule_path(self, points, profile, total_days, diag_meta) -> list[dict]:
@@ -456,6 +544,10 @@ class PlannerAgent(BaseAgent):
                     "duration": f"第1-{max(1, total_days // 3)}天",
                     "goal": "建立课程核心概念框架，掌握基本定义和术语。",
                     "tasks": ["阅读入门讲义", "完成基础概念练习", "整理知识结构图"],
+                    "daily_tasks": self._derive_daily_tasks_from_fallback(
+                        ["阅读入门讲义", "完成基础概念练习", "整理知识结构图"],
+                        f"第1-{max(1, total_days // 3)}天", 1, 3, total_days,
+                    ),
                     "resource_types": ["lecture", "quiz", "mindmap"],
                     "reason": f"学习周期{total_days}天，从基础概念起步。",
                     "source": "rule_fallback",
@@ -466,6 +558,10 @@ class PlannerAgent(BaseAgent):
                     "duration": f"第{max(1, total_days // 3) + 1}-{max(2, total_days * 2 // 3)}天",
                     "goal": "掌握核心计算方法和解题技巧。",
                     "tasks": ["学习核心方法讲义", "完成专项练习题", "分析典型例题"],
+                    "daily_tasks": self._derive_daily_tasks_from_fallback(
+                        ["学习核心方法讲义", "完成专项练习题", "分析典型例题"],
+                        f"第{max(1, total_days // 3) + 1}-{max(2, total_days * 2 // 3)}天", 2, 3, total_days,
+                    ),
                     "resource_types": ["lecture", "quiz", "practice"],
                     "reason": "在基础概念之上，深入核心技能训练。",
                     "source": "rule_fallback",
@@ -476,6 +572,10 @@ class PlannerAgent(BaseAgent):
                     "duration": f"第{max(2, total_days * 2 // 3) + 1}-{total_days}天",
                     "goal": "综合运用所学知识解决实际问题，查漏补缺。",
                     "tasks": ["完成综合测试", "整理错题本", "复习薄弱环节"],
+                    "daily_tasks": self._derive_daily_tasks_from_fallback(
+                        ["完成综合测试", "整理错题本", "复习薄弱环节"],
+                        f"第{max(2, total_days * 2 // 3) + 1}-{total_days}天", 3, 3, total_days,
+                    ),
                     "resource_types": ["quiz", "reading", "practice"],
                     "reason": f"最后{total_days - max(2, total_days * 2 // 3)}天集中复习和综合应用。",
                     "source": "rule_fallback",
@@ -493,6 +593,10 @@ class PlannerAgent(BaseAgent):
                     "duration": self._calc_duration(i, n_stages, total_days),
                     "goal": "先完成基础测验，确认真实薄弱点后再进入针对性学习。",
                     "tasks": ["完成基础测验", "回顾错题", "确认优先薄弱点"],
+                    "daily_tasks": self._derive_daily_tasks_from_fallback(
+                        ["完成基础测验", "回顾错题", "确认优先薄弱点"],
+                        self._calc_duration(i, n_stages, total_days), i, n_stages, total_days,
+                    ),
                     "resource_types": ["quiz", "practice"],
                     "reason": str(lead.get("reason", "证据不足，需先诊断。")),
                     "source": "rule_fallback",
@@ -505,6 +609,10 @@ class PlannerAgent(BaseAgent):
                 "duration": self._calc_duration(i, n_stages, total_days),
                 "goal": self._make_goal(lead, profile, names),
                 "tasks": self._make_tasks(lead, profile, i, names),
+                "daily_tasks": self._derive_daily_tasks_from_fallback(
+                    self._make_tasks(lead, profile, i, names),
+                    self._calc_duration(i, n_stages, total_days), i, n_stages, total_days,
+                ),
                 "resource_types": self._make_resource_types(profile, i),
                 "reason": self._make_reason(group, profile, total_days),
                 "source": "rule_fallback",

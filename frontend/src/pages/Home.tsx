@@ -5,12 +5,15 @@ import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useProfile } from '../hooks/useProfile';
 import { getCurrentLearner } from './LoginPage';
 import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2 } from 'lucide-react';
+import DailyTaskPanel from '../components/tasks/DailyTaskPanel';
+import { useDailyTasks } from '../hooks/useDailyTasks';
 
 export default function Home() {
   const nav = useNavigate();
   const { subjects, activeSubject, create, setActive, remove } = useSubjectStore();
   const { analytics } = useLearningAnalytics();
   const { profile } = useProfile();
+  const { completedCount: taskCompleted, totalCount: taskTotal } = useDailyTasks();
   const user = getCurrentLearner();
 
   const streak = profile?.history?.streak || 0;
@@ -54,6 +57,12 @@ export default function Home() {
           </div>
           <h2 className="font-display text-2xl font-bold mb-2">欢迎回来，{user?.name || '学习者'}！</h2>
           <p className="text-white/80 mb-4">继续你的学习之旅，今天继续探索新知识</p>
+          {taskTotal > 0 && taskTotal > taskCompleted && (
+            <p className="text-white/70 text-sm mb-4 flex items-center gap-1.5">
+              <span className="w-2 h-2 bg-warning-300 rounded-full animate-pulse" />
+              今日还有 {taskTotal - taskCompleted} 项任务待完成
+            </p>
+          )}
           <button onClick={() => nav('/chat')} className="flex items-center gap-2 px-5 py-2.5 bg-white rounded-xl text-primary-600 font-semibold hover:bg-primary-50 transition-colors shadow-lg">
             <PlayCircle size={18} /> 开始学习 <ChevronRight size={18} />
           </button>
@@ -181,6 +190,9 @@ export default function Home() {
 
         {/* 右侧 - 占1列 */}
         <div className="flex flex-col space-y-6">
+          {/* 每日任务 */}
+          <DailyTaskPanel />
+
           {/* 快速操作 */}
           <div className="bg-white rounded-2xl p-6 shadow-soft">
             <h3 className="font-display text-lg font-semibold text-surface-800 mb-4">快速操作</h3>

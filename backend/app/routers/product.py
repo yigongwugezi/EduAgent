@@ -28,9 +28,12 @@ from app.agents.diagnosis_agent import DiagnosisAgent
 from app.agents.conversation_agent import ConversationAgent
 from app.config import settings
 from app.db.engine import SessionLocal
-from app.db.models import LearnerModel, SessionModel
+from app.db.models import DailyTaskModel, LearnerModel, SessionModel
 from app.db.repository import (
     get_bookmarked_ids,
+    get_daily_tasks as repo_get_daily_tasks,
+    get_daily_tasks_for_learner as repo_get_daily_tasks_for_learner,
+    get_latest_learning_path as repo_get_latest_learning_path,
     get_learner,
     get_learner_aggregated_profile,
     get_learner_sessions,
@@ -39,6 +42,7 @@ from app.db.repository import (
     list_sessions as repo_list_sessions,
     save_profile_snapshot,
     toggle_bookmark,
+    update_task_completion as repo_update_task_completion,
     delete_session as repo_delete_session,
 )
 from app.services.agent_service import (
@@ -3007,6 +3011,186 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             logger.warning("Failed to track stage completion for session %s", session_id)
     return _product_response({"ok": True}, session_id=session_id, source="system")
+
+
+# ── Daily Tasks ──────────────────────────────────────────────────────────
+
+
+def _compute_current_day(created_at, max_days: int) -> int:
+    """Compute which day of the plan we're on.
+
+    Day 1 = the plan's creation date.
+    Returns a value between 1 and max_days (inclusive).
+    """
+    from datetime import datetime, timezone as _tz
+    if created_at is None:
+        return 1
+    now = datetime.now(_tz.utc)
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=_tz.utc)
+    delta = (now - created_at).days
+    current_day = delta + 1
+    return max(1, min(current_day, max_days))
+
+
+def _task_to_dict(task: "DailyTaskModel", sess: "SessionModel") -> dict[str, Any]:
+    """Convert a DailyTaskModel + SessionModel to a response dict."""
+    return {
+        "id": task.id,
+        "sessionId": sess.id,
+        "subjectId": sess.subject_id or "",
+        "subjectName": sess.title or "未命名科目",
+        "stageId": task.stage_id,
+        "dayIndex": task.day_index,
+        "dayLabel": task.day_label,
+        "title": task.title,
+        "description": task.description,
+        "completed": bool(task.completed) if task.completed is not None else False,
+        "completedAt": int(task.completed_at.timestamp() * 1000) if task.completed_at else None,
+        "source": task.source,
+    }
+
+
+@router.get("/daily-tasks/today")
+def get_todays_daily_tasks(
+    learnerId: str = "",
+    sessionId: str = "",
+    subjectId: str = "",
+) -> dict[str, Any]:
+    """Get all daily tasks for TODAY across all subjects for a learner.
+
+    If learnerId is provided, aggregates across all sessions for that learner.
+    If only sessionId is provided, returns tasks for that single session.
+    At least one of learnerId or sessionId must be provided.
+    """
+    if not learnerId and not sessionId:
+        raise MissingSessionIdError("learnerId or sessionId required")
+
+    today_tasks: list[dict[str, Any]] = []
+    completed_count = 0
+
+    db = SessionLocal()
+    try:
+        sessions_to_scan: list[SessionModel] = []
+
+        if learnerId:
+            sessions_to_scan = repo_list_sessions(db, learner_id=learnerId)
+        elif sessionId:
+            sess = get_or_create_session(db, sessionId, subject_id=subjectId or None)
+            sessions_to_scan = [sess]
+
+        for sess in sessions_to_scan:
+            lp = repo_get_latest_learning_path(db, sess.id)
+            if not lp:
+                continue
+
+            current_day = _compute_current_day(
+                lp.created_at, lp.estimated_days or 14
+            )
+
+            tasks = repo_get_daily_tasks(db, sess.id, day_index=current_day)
+            for t in tasks:
+                task_data = _task_to_dict(t, sess)
+                task_data["courseName"] = lp.course_name or ""
+                today_tasks.append(task_data)
+                if t.completed:
+                    completed_count += 1
+
+        from datetime import datetime, timezone as _tz
+        today_str = datetime.now(_tz.utc).strftime("%Y-%m-%d")
+
+        return _product_response(
+            {
+                "tasks": today_tasks,
+                "todayDate": today_str,
+                "completedCount": completed_count,
+                "totalCount": len(today_tasks),
+            },
+            session_id=sessionId or "",
+            source="db",
+        )
+    finally:
+        db.close()
+
+
+@router.patch("/daily-tasks/{task_id}/complete")
+def complete_daily_task(
+    task_id: int,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Toggle completion status of a daily task.
+
+    Subject isolation: the sessionId in the payload must match the
+    task's session_id.  This prevents cross-subject manipulation.
+    """
+    session_id = _payload_session_id(payload)
+    completed = bool(payload.get("completed", True))
+
+    db = SessionLocal()
+    try:
+        task = repo_update_task_completion(db, task_id, session_id, completed=completed)
+        if task is None:
+            raise NotFoundError(
+                f"Daily task {task_id} not found or session mismatch",
+                resource="daily_task",
+                resource_id=str(task_id),
+            )
+        sess = db.get(SessionModel, session_id)
+        return _product_response(
+            {
+                "ok": True,
+                "task": _task_to_dict(task, sess) if sess else None,
+            },
+            session_id=session_id,
+            source="user_action",
+        )
+    finally:
+        db.close()
+
+
+@router.get("/learning-path/{raw_session_id}/daily-tasks")
+def get_session_daily_tasks(
+    raw_session_id: str,
+    day: int | None = None,
+    sessionId: str = "",
+    subjectId: str = "",
+) -> dict[str, Any]:
+    """Get daily tasks for a specific session/learning path.
+
+    Optionally filter by day_index.  If no day specified, returns tasks
+    for the computed current day.
+    """
+    session_id = _resolve_session_id(sessionId or raw_session_id, subjectId)
+
+    db = SessionLocal()
+    try:
+        lp = repo_get_latest_learning_path(db, session_id)
+        if not lp:
+            return _product_response(
+                {"tasks": [], "dayCount": 0, "currentDay": 1},
+                session_id=session_id,
+                source="none",
+            )
+
+        day_index = day if day is not None else _compute_current_day(
+            lp.created_at, lp.estimated_days or 14
+        )
+
+        tasks = repo_get_daily_tasks(db, session_id, day_index=day_index)
+        sess = db.get(SessionModel, session_id)
+
+        return _product_response(
+            {
+                "tasks": [_task_to_dict(t, sess) for t in tasks] if sess else [],
+                "dayCount": lp.estimated_days or 14,
+                "currentDay": day_index,
+                "courseName": lp.course_name or "",
+            },
+            session_id=session_id,
+            source="db",
+        )
+    finally:
+        db.close()
 
 
 @router.get("/learning-analytics")

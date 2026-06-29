@@ -77,6 +77,9 @@ class SessionModel(Base):
     events: Mapped[list["LearningEventModel"]] = relationship(
         "LearningEventModel", back_populates="session", cascade="all, delete-orphan"
     )
+    daily_tasks: Mapped[list["DailyTaskModel"]] = relationship(
+        "DailyTaskModel", back_populates="session", cascade="all, delete-orphan"
+    )
 
 
 # ── Message ──────────────────────────────────────────────────────────────
@@ -198,3 +201,34 @@ class LearningEventModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
 
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="events")
+
+
+# ── Daily Task ───────────────────────────────────────────────────────────
+
+class DailyTaskModel(Base):
+    """A single day's task within a learning path stage.
+
+    Enables per-day task completion tracking and cross-subject
+    today's-todolist aggregation.  Source-tracking distinguishes
+    agent-generated tasks from rule-based fallback derivations.
+    """
+
+    __tablename__ = "daily_tasks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("sessions.id", ondelete="CASCADE"), index=True
+    )
+    stage_id: Mapped[str] = mapped_column(String(64), default="")
+    day_index: Mapped[int] = mapped_column(Integer, default=1)
+    day_label: Mapped[str] = mapped_column(String(32), default="第1天")
+    title: Mapped[str] = mapped_column(String(256), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True, default=None)
+    source: Mapped[str] = mapped_column(String(32), default="agent_generated")
+    # agent_generated | rule_fallback
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+    session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="daily_tasks")

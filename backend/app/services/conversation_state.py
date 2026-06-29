@@ -16,6 +16,7 @@ from app.db.repository import (
     get_or_create_session,
     save_message,
     save_profile_snapshot,
+    upsert_daily_tasks,
     upsert_learning_path,
     upsert_resource,
     get_latest_profile,
@@ -309,6 +310,13 @@ class ConversationStore:
                         "estimatedDays": _safe_estimated_days(result.get("estimatedDays"), stages),
                     }
                     upsert_learning_path(db, state.session_id, path_data)
+                    # Derive and persist daily tasks from stage data
+                    if stages:
+                        daily_tasks_list = self._derive_daily_tasks_from_stages(
+                            state.session_id, stages
+                        )
+                        if daily_tasks_list:
+                            upsert_daily_tasks(db, state.session_id, daily_tasks_list)
                 for item in result.get("resources", []):
                     raw_resource_id = str(item.get("resource_id", f"res_{time.time()}"))
                     resource_id = raw_resource_id if raw_resource_id.startswith(f"{state.session_id}_") else f"{state.session_id}_{raw_resource_id}"
@@ -345,6 +353,81 @@ class ConversationStore:
             finally:
                 if db is not None:
                     db.close()
+
+    def _derive_daily_tasks_from_stages(
+        self,
+        session_id: str,
+        stages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Flatten per-stage daily_tasks into flat records for the daily_tasks table.
+
+        Handles both LLM-generated daily_tasks (per-day breakdown) and
+        fallback data.  Each item in the returned list is a dict suitable
+        for upsert_daily_tasks().
+        """
+        result: list[dict[str, Any]] = []
+
+        for stage in stages:
+            if not isinstance(stage, dict):
+                continue
+
+            stage_id = stage.get("stage_id", "")
+            duration = str(stage.get("duration", "第1天"))
+            daily_tasks_raw = stage.get("daily_tasks")
+            stage_tasks = stage.get("tasks", [])
+            if not isinstance(stage_tasks, list):
+                stage_tasks = []
+            source = stage.get("source", "rule_fallback")
+
+            # Parse day range from duration like "第1-3天"
+            day_nums = re.findall(r"\d+", duration)
+            if len(day_nums) >= 2:
+                start_day, end_day = int(day_nums[0]), int(day_nums[1])
+            elif len(day_nums) == 1:
+                start_day = end_day = int(day_nums[0])
+            else:
+                start_day = end_day = 1
+
+            if daily_tasks_raw and isinstance(daily_tasks_raw, list):
+                # Use LLM-derived or fallback-derived daily breakdown
+                for entry in daily_tasks_raw:
+                    if not isinstance(entry, dict):
+                        continue
+                    day = int(entry.get("day", start_day))
+                    titles = entry.get("tasks", [])
+                    if isinstance(titles, list):
+                        for t in titles:
+                            title = str(t).strip()
+                            if title:
+                                result.append({
+                                    "session_id": session_id,
+                                    "stage_id": stage_id,
+                                    "day_index": day,
+                                    "day_label": f"第{day}天",
+                                    "title": title,
+                                    "source": source,
+                                })
+            else:
+                # Last-resort: distribute stage tasks across the stage's day range
+                num_days = max(1, end_day - start_day + 1)
+                if not stage_tasks:
+                    stage_tasks = ["学习课程讲义", "完成配套练习"]
+
+                for idx, task_text in enumerate(stage_tasks):
+                    title = str(task_text).strip()
+                    if not title:
+                        continue
+                    day = start_day + (idx % num_days)
+                    result.append({
+                        "session_id": session_id,
+                        "stage_id": stage_id,
+                        "day_index": day,
+                        "day_label": f"第{day}天",
+                        "title": title,
+                        "source": source,
+                    })
+
+        return result
 
     def set_diagnosis(self, session_id: str, diagnosis: dict[str, Any]) -> None:
         state = self.get(session_id)

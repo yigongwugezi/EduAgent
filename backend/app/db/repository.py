@@ -15,6 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db.models import (
+    DailyTaskModel,
     LearnerModel,
     LearningEventModel,
     LearningPathModel,
@@ -924,3 +925,125 @@ def get_event_analytics(db: Session, session_id: str) -> dict[str, Any]:
             for evt in events[:5]
         ],
     }
+
+
+# ── Daily Tasks ──────────────────────────────────────────────────────────
+
+
+def upsert_daily_tasks(
+    db: Session,
+    session_id: str,
+    tasks: list[dict[str, Any]],
+) -> int:
+    """Batch upsert daily tasks for a session.
+
+    Deletes existing tasks for the session and inserts the new set.
+    This is called when a learning path is (re)generated.
+
+    Returns the number of tasks inserted.
+    """
+    db.query(DailyTaskModel).filter(
+        DailyTaskModel.session_id == session_id
+    ).delete()
+
+    count = 0
+    for t in tasks:
+        task = DailyTaskModel(
+            session_id=session_id,
+            stage_id=t.get("stage_id", ""),
+            day_index=t.get("day_index", 1),
+            day_label=t.get("day_label", f"第{t.get('day_index', 1)}天"),
+            title=t.get("title", ""),
+            description=t.get("description"),
+            source=t.get("source", "agent_generated"),
+        )
+        db.add(task)
+        count += 1
+    db.commit()
+    return count
+
+
+def get_daily_tasks(
+    db: Session,
+    session_id: str,
+    day_index: int | None = None,
+) -> list[DailyTaskModel]:
+    """Get daily tasks for a session, optionally filtered by day index."""
+    q = db.query(DailyTaskModel).filter(
+        DailyTaskModel.session_id == session_id
+    )
+    if day_index is not None:
+        q = q.filter(DailyTaskModel.day_index == day_index)
+    return q.order_by(DailyTaskModel.day_index, DailyTaskModel.id).all()
+
+
+def get_daily_tasks_for_learner(
+    db: Session,
+    learner_id: str,
+    day_index: int,
+) -> list[dict[str, Any]]:
+    """Cross-subject: get all daily tasks for a learner on a specific day.
+
+    Joins through sessions to find all of a learner's sessions,
+    then fetches tasks for each session filtered by day_index.
+    Returns enriched dicts with session/subject metadata.
+    """
+    sessions = (
+        db.query(SessionModel)
+        .filter(SessionModel.learner_id == learner_id)
+        .all()
+    )
+
+    results: list[dict[str, Any]] = []
+    for sess in sessions:
+        tasks = (
+            db.query(DailyTaskModel)
+            .filter(
+                DailyTaskModel.session_id == sess.id,
+                DailyTaskModel.day_index == day_index,
+            )
+            .order_by(DailyTaskModel.id)
+            .all()
+        )
+        for t in tasks:
+            results.append({
+                "id": t.id,
+                "sessionId": sess.id,
+                "subjectId": sess.subject_id or "",
+                "subjectName": sess.title or "未命名科目",
+                "stageId": t.stage_id,
+                "dayIndex": t.day_index,
+                "dayLabel": t.day_label,
+                "title": t.title,
+                "description": t.description,
+                "completed": t.completed,
+                "completedAt": int(t.completed_at.timestamp() * 1000) if t.completed_at else None,
+                "source": t.source,
+            })
+
+    return results
+
+
+def update_task_completion(
+    db: Session,
+    task_id: int,
+    session_id: str,
+    completed: bool,
+) -> DailyTaskModel | None:
+    """Toggle completion state of a single daily task.
+
+    Scoped to session_id to enforce subject isolation:
+    a task's session must match the provided session_id.
+    """
+    task = db.query(DailyTaskModel).filter(
+        DailyTaskModel.id == task_id,
+        DailyTaskModel.session_id == session_id,
+    ).first()
+    if task is None:
+        return None
+    task.completed = completed
+    task.completed_at = datetime.now(timezone.utc) if completed else None
+    task.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(task)
+    return task

@@ -605,6 +605,101 @@ Response:
 }
 ```
 
+### GET /daily-tasks/today
+
+> **Added v0.7.0** — 跨学科今日任务聚合。
+
+Purpose: get all daily tasks for today across all subjects for a learner, or for a single session.
+
+Query params:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| learnerId | string | conditional | Aggregate across all sessions for this learner |
+| sessionId | string | conditional | Get tasks for a single session only |
+
+At least one of `learnerId` or `sessionId` must be provided. "Today" is computed relative to each learning path's creation date.
+
+Response:
+
+```json
+{
+  "tasks": [
+    {
+      "id": 1,
+      "sessionId": "session_abc",
+      "subjectId": "subject_1",
+      "subjectName": "AI导论",
+      "courseName": "人工智能导论",
+      "stageId": "stage_1",
+      "dayIndex": 3,
+      "dayLabel": "第3天",
+      "title": "学习极限定义",
+      "description": null,
+      "completed": false,
+      "completedAt": null,
+      "source": "agent_generated"
+    }
+  ],
+  "todayDate": "2026-06-29",
+  "completedCount": 1,
+  "totalCount": 5
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| source | string | `"agent_generated"` or `"rule_fallback"` — tracks provenance of each task |
+
+### PATCH /daily-tasks/{task_id}/complete
+
+> **Added v0.7.0** — 每日任务完成状态切换。
+
+Purpose: toggle the completion state of a daily task. Subject isolation is enforced: the `sessionId` in the request body must match the task's owning session.
+
+Request:
+
+```json
+{
+  "sessionId": "session_abc",
+  "completed": true
+}
+```
+
+Response:
+
+```json
+{
+  "ok": true,
+  "task": { "...": "..." }
+}
+```
+
+Error: HTTP 404 with `NOT_FOUND` code if the task does not exist or the sessionId does not match (subject isolation).
+
+### GET /learning-path/{session_id}/daily-tasks
+
+> **Added v0.7.0** — 单会话每日任务查询。
+
+Purpose: get daily tasks for a specific learning path, optionally filtered by day index.
+
+Query params:
+
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| day | int | no | Day index to filter by. Defaults to current day relative to plan creation date. |
+
+Response:
+
+```json
+{
+  "tasks": [ "..." ],
+  "dayCount": 14,
+  "currentDay": 3,
+  "courseName": "人工智能导论"
+}
+```
+
 ### GET /learner/{learner_id}
 
 Purpose: get learner details with aggregated profile across all learning sessions.
