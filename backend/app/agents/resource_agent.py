@@ -420,8 +420,8 @@ class ResourceAgent(BaseAgent):
             return []
 
         try:
-            from app.rag.query_engine import RagQueryEngine
-            engine = RagQueryEngine()
+            from app.rag.query_engine import rag_query_engine
+            engine = rag_query_engine
             if not engine.is_ready():
                 return []
         except Exception:
