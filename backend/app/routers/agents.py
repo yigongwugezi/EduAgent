@@ -48,6 +48,7 @@ def run_agents(payload: AgentRunRequest) -> dict[str, Any]:
             "code": 0,
             "message": "success",
             "data": {
+                "reply": result.get("reply", ""),
                 "session_id": result.get("session_id", session_id),
                 "course_id": result.get("course_id", course_id or ""),
                 "overall_status": result.get("overall_status", "completed"),

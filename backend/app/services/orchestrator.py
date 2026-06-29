@@ -1,8 +1,6 @@
-"""Agent orchestrator with per-agent error isolation and timeout handling.
-
-Coordinates the stage-1 multi-agent learning workflow.  Each agent runs in
-isolation — one failure does not crash the pipeline.  Results are aggregated
-and returned with structured step metadata.
+"""
+Agent orchestrator with per-agent error isolation and timeout handling.
+v2: 增加 ConversationAgent 做对话理解，LLM 优先，规则兜底。
 """
 
 from __future__ import annotations
@@ -13,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from typing import Any, Callable
 
 from app.agents import (
+    ConversationAgent,
     DiagnosisAgent,
     KnowledgeAgent,
     PlannerAgent,
@@ -29,6 +28,7 @@ from app.services.llm_client import get_llm_client
 
 AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "profile_agent": ["profile"],
+    "conversation_agent": ["reply", "action", "intent"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
     "planner_agent": ["learning_path", "estimatedDays"],
@@ -40,20 +40,13 @@ AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
 class AgentOrchestrator:
     """Coordinates the multi-agent learning workflow with error resilience.
 
-    Each agent is executed independently.  If an agent fails or times out
-    the pipeline continues with the next agent, and the partial result is
-    returned with ``overall_status: "partial"``.
+    v2 流程：
+    1. ProfileAgent — 生成/更新学习画像
+    2. ConversationAgent — LLM 理解用户意图，生成自然回复 + 决策
+    3. 根据 ConversationAgent 的 action 决定是否继续后续 Agent
+    4. KnowledgeAgent → DiagnosisAgent → PlannerAgent → ResourceAgent → ReviewAgent
 
-    Usage::
-
-        orchestrator = AgentOrchestrator()
-        result = orchestrator.run(
-            session_id="sess_001",
-            course_id="ai_intro",
-            user_message="我是大三学生...",
-        )
-        # result["overall_status"]  -> "completed" | "partial" | "failed"
-        # result["agent_steps"]     -> list of per-agent step dicts
+    如果 ConversationAgent 的 action 是 "none" 或 "unsafe"，跳过后续 Agent。
     """
 
     def __init__(self) -> None:
@@ -63,14 +56,14 @@ class AgentOrchestrator:
 
     # ── Public API ─────────────────────────────────────────────────────
 
-    # ── Stage-to-progress mapping ─────────────────────────────────
     AGENT_STAGE_MAP: dict[str, tuple[str, int]] = {
-        "profile_agent":   ("profiling", 25),
-        "knowledge_agent": ("knowledge", 30),
-        "diagnosis_agent": ("diagnosis", 40),
-        "planner_agent":   ("planning",  55),
-        "resource_agent":  ("generating", 75),
-        "review_agent":    ("reviewing",  85),
+        "profile_agent":      ("profiling", 15),
+        "conversation_agent": ("understanding", 25),
+        "knowledge_agent":    ("knowledge", 35),
+        "diagnosis_agent":    ("diagnosis", 50),
+        "planner_agent":      ("planning", 65),
+        "resource_agent":     ("generating", 80),
+        "review_agent":       ("reviewing", 90),
     }
 
     def run(
@@ -86,22 +79,25 @@ class AgentOrchestrator:
         Args:
             session_id: Current session identifier.
             course_id: Target course identifier.
-            user_message: The constructed prompt to send to agents.
+            user_message: The user's raw message (not constructed prompt).
+            profile_facts: Optional pre-extracted profile facts.
             progress_callback: Optional ``(stage_key, stage_label, progress_pct) -> None``.
 
         Returns:
-            A dict with keys: session_id, course_id, profile, diagnosis,
+            A dict with keys: session_id, course_id, reply, profile, diagnosis,
             learning_path, resources, knowledge_context, review,
             agent_steps, overall_status, overall_error.
         """
         AGENT_LABELS = {
-            "profile_agent": "正在生成画像",
-            "knowledge_agent": "正在检索知识",
-            "diagnosis_agent": "正在诊断分析",
-            "planner_agent": "正在规划路径",
-            "resource_agent": "正在生成资源",
-            "review_agent": "正在检查质量",
+            "profile_agent":      "正在生成画像",
+            "conversation_agent": "正在理解意图",
+            "knowledge_agent":    "正在检索知识",
+            "diagnosis_agent":    "正在诊断分析",
+            "planner_agent":      "正在规划路径",
+            "resource_agent":     "正在生成资源",
+            "review_agent":       "正在检查质量",
         }
+
         context: dict[str, Any] = {
             "session_id": session_id,
             "course_id": course_id,
@@ -119,13 +115,18 @@ class AgentOrchestrator:
         any_failed = False
         overall_error_parts: list[str] = []
 
-        for agent in self._build_agents():
+        # ── 构建 Agent 列表 ──
+        agents = self._build_agents()
+
+        # ── 判断是否跳过后续 Agent ──
+        skip_pipeline = False
+
+        for agent in agents:
             merged_context = {**context, **result}
             step = self._run_single_agent(agent, merged_context)
             result["agent_steps"].append(step)
 
             if step["status"] == "completed":
-                # Merge agent outputs (everything except the step metadata)
                 for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
                     if key in step:
                         result[key] = step[key]
@@ -133,20 +134,37 @@ class AgentOrchestrator:
                 any_failed = True
                 err = step.get("error", "unknown error")
                 overall_error_parts.append(f"{agent.agent_id}: {err}")
-                # Populate fallback keys so downstream agents have empty structures
                 for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
                     if key not in result:
                         result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
 
-            # ── Report progress after each agent ──
+            # ── ConversationAgent 决策：是否需要继续 ──
+            if agent.agent_id == "conversation_agent":
+                action = result.get("action", "none")
+                if action in ("none", "unsafe"):
+                    skip_pipeline = True
+                    break  # 纯对话/不安全，跳过后续所有 Agent
+
+            # ── Report progress ──
             if progress_callback:
-                stage_key = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[0]
-                pct = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))[1]
+                stage_info = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))
+                stage_key = stage_info[0]
+                pct = stage_info[1]
                 label = AGENT_LABELS.get(agent.agent_id, agent.agent_name)
                 if stage_key:
                     progress_callback(stage_key, label, pct)
 
-        # Determine overall status
+        # ── 如果跳过流水线，填充默认值 ──
+        if skip_pipeline:
+            for key_list in AGENT_OUTPUT_KEYS.values():
+                for key in key_list:
+                    result.setdefault(key, [] if key in {"resources", "learning_path", "agent_steps"} else {})
+            result["overall_status"] = "completed"
+            result["overall_error"] = None
+            result["source"] = "conversation_only"
+            return result
+
+        # ── 确定总体状态 ──
         if not result["agent_steps"]:
             result["overall_status"] = "failed"
             result["overall_error"] = "No agents were executed."
@@ -162,7 +180,7 @@ class AgentOrchestrator:
             result["overall_error"] = None
             result["source"] = "agent_pipeline"
 
-        # Ensure all expected output keys exist
+        # ── 确保所有输出 key 存在 ──
         for key_list in AGENT_OUTPUT_KEYS.values():
             for key in key_list:
                 result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
@@ -182,14 +200,17 @@ class AgentOrchestrator:
     def _build_agents(self) -> list:
         """Build the agent pipeline.
 
-        ProfileAgent and ResourceAgent receive the LLM client for real
-        generation.  Others use mock data for now (gradually migrating).
+        顺序：
+        1. ProfileAgent — 画像（如果已有画像会跳过）
+        2. ConversationAgent — LLM 理解意图（新增）
+        3-7. 原流水线
         """
         mock_data = self._load_mock_data() if settings.enable_mock_fallback else {}
         return [
             ProfileAgent(mock_data=mock_data, llm_client=self.llm_client),
+            ConversationAgent(mock_data=mock_data, llm_client=self.llm_client),
             KnowledgeAgent(mock_data=mock_data),
-            DiagnosisAgent(mock_data=mock_data),
+            DiagnosisAgent(mock_data=mock_data, llm_client=self.llm_client),
             PlannerAgent(mock_data=mock_data, llm_client=self.llm_client),
             ResourceAgent(mock_data=mock_data, llm_client=self.llm_client),
             ReviewAgent(mock_data=mock_data),
@@ -198,10 +219,7 @@ class AgentOrchestrator:
     # ── Single-agent execution ─────────────────────────────────────────
 
     def _run_single_agent(self, agent, context: dict[str, Any]) -> dict[str, Any]:
-        """Run a single agent with timeout and error handling.
-
-        Returns a step dict compatible with ``AgentStepResult``.
-        """
+        """Run a single agent with timeout and error handling."""
         start = time.time()
         step: dict[str, Any] = {
             "agent_id": agent.agent_id,
@@ -227,7 +245,6 @@ class AgentOrchestrator:
                     step["finished_at"] = time.time()
                     step["duration_ms"] = (step["finished_at"] - start) * 1000
 
-                    # Try to get fallback data
                     try:
                         fallback = agent.get_fallback(context)
                         agent_step = fallback.pop("agent_step", {})
@@ -235,7 +252,9 @@ class AgentOrchestrator:
                         step.update(fallback)
                     except Exception:
                         import logging
-                        logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback for agent %s", step.get("agent_id", "unknown"))
+                        logging.getLogger("app.services.orchestrator").warning(
+                            "Failed to merge fallback for agent %s", step.get("agent_id", "unknown")
+                        )
 
                     return step
 
@@ -245,14 +264,12 @@ class AgentOrchestrator:
             step["status"] = agent_step.get("status", "completed")
             step["summary"] = agent_step.get("summary", "Agent completed successfully.")
 
-            # Validate result if the agent supports it
             try:
                 agent.validate_result(partial)
             except Exception as exc:
                 step["status"] = "failed"
                 step["error"] = f"Validation error: {exc}"
 
-            # Merge output keys into the step dict for upstream aggregation
             for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
                 if key in partial:
                     step[key] = partial[key]
@@ -262,7 +279,6 @@ class AgentOrchestrator:
             step["error"] = f"{type(exc).__name__}: {exc}"
             step["summary"] = f"Agent failed with {type(exc).__name__}."
 
-            # Try fallback
             try:
                 fallback = agent.get_fallback(context)
                 agent_step = fallback.pop("agent_step", {})
@@ -270,7 +286,9 @@ class AgentOrchestrator:
                 step.update(fallback)
             except Exception:
                 import logging
-                logging.getLogger("app.services.orchestrator").warning("Failed to merge fallback in outer handler for agent %s", step.get("agent_id", "unknown"))
+                logging.getLogger("app.services.orchestrator").warning(
+                    "Failed to merge fallback in outer handler for agent %s", step.get("agent_id", "unknown")
+                )
 
         step["finished_at"] = time.time()
         step["duration_ms"] = (step["finished_at"] - start) * 1000

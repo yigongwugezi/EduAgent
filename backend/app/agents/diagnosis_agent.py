@@ -1,7 +1,18 @@
+"""
+学习诊断智能体 — 综合分析学习行为、画像、用户自述等多源证据。
+LLM 优先进行综合诊断，规则保留完整兜底。
+"""
+
+import json
+import logging
 import re
+from collections import Counter
 from typing import Any
 
 from app.agents.base import BaseAgent
+from app.services.llm_client import LLMClientError
+
+logger = logging.getLogger(__name__)
 
 
 class DiagnosisAgent(BaseAgent):
@@ -9,6 +20,7 @@ class DiagnosisAgent(BaseAgent):
     agent_name = "学习诊断智能体"
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """主入口"""
         user_message = str(context.get("user_message") or "").strip()
         profile = self._profile_map(context.get("profile"))
         profile_facts = context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {}
@@ -16,9 +28,409 @@ class DiagnosisAgent(BaseAgent):
         resources = list(context.get("resources") or [])
         points = list(context.get("knowledge_context", {}).get("retrieved_points", []))
         analytics = context.get("analytics") if isinstance(context.get("analytics"), dict) else {}
-
-        candidates = self._event_candidates(analytics)
         existing_diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
+
+        # ── LLM 优先路径 ──
+        if self.llm_client:
+            llm_result = self._try_llm_diagnosis(
+                user_message=user_message,
+                profile=profile,
+                profile_facts=profile_facts,
+                analytics=analytics,
+                existing_diagnosis=existing_diagnosis,
+                stages=stages,
+                resources=resources,
+                points=points,
+            )
+            if llm_result:
+                return llm_result
+
+        # ── 规则兜底（完整保留原有逻辑） ──
+        logger.info("LLM unavailable or failed, using rule-based diagnosis")
+        return self._rule_based_diagnosis(
+            user_message=user_message,
+            profile=profile,
+            profile_facts=profile_facts,
+            stages=stages,
+            resources=resources,
+            points=points,
+            analytics=analytics,
+            existing_diagnosis=existing_diagnosis,
+        )
+
+    def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        ctx = context or {}
+        return {
+            "diagnosis": {
+                "weak_topics": [],
+                "weak_knowledge_points": [],
+                "diagnosis_summary": "诊断智能体暂时不可用，请稍后重试。",
+                "summary": "诊断智能体暂时不可用，请稍后重试。",
+                "strengths": [],
+                "confidence": 0.0,
+                "reason": "智能体生成失败，使用规则兜底",
+                "source": "rule_based_fallback",
+                "quality_status": "fallback",
+                "needs_more_evidence": True,
+                "evidence": [],
+                "evidence_chain": [],
+                "next_actions": [],
+                "recommended_next_actions": [],
+                "limitations": ["诊断智能体当前不可用"],
+                "risk_flags": ["diagnosis_unavailable"],
+                "recommended_stage_id": None,
+                "recommended_resource_ids": [],
+                "priority": "medium",
+                "recommended_strategy": "智能体恢复后建议重新诊断",
+            },
+            "agent_step": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "status": "failed",
+                "summary": "DiagnosisAgent fell back to defaults.",
+                "error_reason": "Diagnosis agent failed",
+                "source": "rule_based_fallback",
+                "quality_status": "fallback",
+                "started_at": None,
+                "finished_at": None,
+            },
+        }
+
+    # ═══════════════════════════════════════════════════════════════
+    # LLM 路径
+    # ═══════════════════════════════════════════════════════════════
+
+    def _try_llm_diagnosis(
+        self,
+        user_message: str,
+        profile: dict,
+        profile_facts: dict,
+        analytics: dict,
+        existing_diagnosis: dict,
+        stages: list,
+        resources: list,
+        points: list,
+    ) -> dict | None:
+        """尝试用 LLM 进行综合诊断"""
+        try:
+            evidence = self._collect_llm_evidence(
+                user_message, profile, profile_facts, analytics,
+                existing_diagnosis, stages, resources, points
+            )
+            raw = self._call_llm_for_diagnosis(evidence)
+            parsed = self._parse_llm_diagnosis(raw)
+            if parsed and parsed.get("weak_topics"):
+                return self._format_llm_diagnosis(parsed, evidence, stages, resources, analytics)
+        except Exception as e:
+            logger.warning(f"LLM diagnosis failed: {e}")
+        return None
+
+    def _collect_llm_evidence(
+        self,
+        user_message: str,
+        profile: dict,
+        profile_facts: dict,
+        analytics: dict,
+        existing_diagnosis: dict,
+        stages: list,
+        resources: list,
+        points: list,
+    ) -> dict:
+        """收集所有证据供 LLM 分析"""
+        evidence = {
+            "user_message": user_message,
+            "profile": {},
+            "analytics_summary": {},
+            "previous_diagnosis": {},
+            "learning_path_summary": [],
+            "knowledge_points": [],
+        }
+
+        # 画像
+        for key, item in profile.items():
+            if isinstance(item, dict):
+                val = str(item.get("value", "")).strip()
+                if val and val != "未提及":
+                    evidence["profile"][key] = val
+
+        for key, val in profile_facts.items():
+            if val and str(val).strip():
+                evidence["profile"][key] = str(val)
+
+        # 行为数据摘要
+        if analytics:
+            evidence["analytics_summary"] = {
+                "eventCount": analytics.get("eventCount", 0),
+                "quizAccuracy": analytics.get("quizAccuracy"),
+                "weakTopics": analytics.get("weakTopics", [])[:10],
+                "eventBreakdown": analytics.get("eventBreakdown", {}),
+            }
+            recent = analytics.get("recentEvents", [])
+            if recent:
+                evidence["analytics_summary"]["recentEvents"] = [
+                    {
+                        "event": e.get("event"),
+                        "metadata": e.get("metadata", {}),
+                    }
+                    for e in recent[:10] if isinstance(e, dict)
+                ]
+
+        # 历史诊断
+        if existing_diagnosis:
+            evidence["previous_diagnosis"] = {
+                "weak_topics": existing_diagnosis.get("weak_topics", [])[:5],
+                "confidence": existing_diagnosis.get("confidence", 0),
+                "summary": existing_diagnosis.get("diagnosis_summary", ""),
+            }
+
+        # 学习路径
+        for s in stages[:5]:
+            if isinstance(s, dict):
+                evidence["learning_path_summary"].append({
+                    "title": s.get("title", ""),
+                    "progress": s.get("progress", s.get("overallProgress", "")),
+                })
+
+        # 知识点
+        for p in points[:10]:
+            if isinstance(p, dict):
+                evidence["knowledge_points"].append({
+                    "name": p.get("name", ""),
+                    "difficulty": p.get("difficulty", "medium"),
+                })
+
+        return evidence
+
+    def _call_llm_for_diagnosis(self, evidence: dict) -> str:
+        """调用 LLM 进行诊断分析"""
+        prompt = f"""你是学习诊断专家。请分析以下学生数据，诊断薄弱知识点。
+
+## 学生自述
+{evidence['user_message']}
+
+## 学习画像
+{json.dumps(evidence['profile'], ensure_ascii=False, indent=2)}
+
+## 行为数据
+{json.dumps(evidence['analytics_summary'], ensure_ascii=False, indent=2)}
+
+## 历史诊断
+{json.dumps(evidence['previous_diagnosis'], ensure_ascii=False, indent=2)}
+
+## 学习路径
+{json.dumps(evidence['learning_path_summary'], ensure_ascii=False, indent=2)}
+
+## 课程知识点
+{json.dumps(evidence['knowledge_points'], ensure_ascii=False, indent=2)}
+
+请返回 JSON 格式诊断结果：
+{{
+    "weak_topics": [
+        {{
+            "topic": "知识点名称（完整准确，来自数据或学生自述）",
+            "confidence": 0.0-1.0,
+            "reason": "诊断依据（综合多源证据说明）",
+            "priority": "high|medium|low",
+            "source": "证据来源（user_message|analytics|profile|previous_diagnosis|course_knowledge）",
+            "evidence": ["具体证据1", "具体证据2"]
+        }}
+    ],
+    "strengths": ["学生掌握较好的知识点"],
+    "diagnosis_summary": "诊断总结（自然语言描述，3-5句话）",
+    "overall_confidence": 0.0-1.0,
+    "overall_reason": "综合判断依据",
+    "limitations": ["诊断的局限性说明"],
+    "needs_more_evidence": true/false,
+    "next_actions": ["建议的下一步行动"],
+    "risk_flags": ["风险标记"]
+}}
+
+重要：
+- topic 必须是完整知识点名，如"微积分的极限概念"而不能是"微积"或"极限"
+- 如果数据不足，在 limitations 和 needs_more_evidence 中诚实说明
+- 不要编造不存在的知识点
+- 如果学生自述了薄弱点，优先采纳并结合数据验证
+- 如果完全没有行为数据，降低 overall_confidence
+- 只输出 JSON，不要 Markdown 包裹
+"""
+        return self.llm_client.chat(
+            messages=[
+                {"role": "system", "content": "你是学习诊断专家。综合分析多源数据。只输出JSON。"},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.2,
+            max_tokens=1500,
+        )
+
+    def _parse_llm_diagnosis(self, raw: str) -> dict | None:
+        """解析 LLM 诊断输出"""
+        try:
+            text = raw.strip()
+            if text.startswith("```"):
+                text = re.sub(r"^```(?:json)?\s*", "", text)
+                text = re.sub(r"\s*```$", "", text)
+            start, end = text.find("{"), text.rfind("}")
+            if start >= 0 and end >= start:
+                text = text[start:end + 1]
+            result = json.loads(text)
+            if isinstance(result, dict):
+                return result
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse LLM diagnosis JSON: {e}")
+        return None
+
+    def _format_llm_diagnosis(
+        self,
+        parsed: dict,
+        evidence: dict,
+        stages: list,
+        resources: list,
+        analytics: dict,
+    ) -> dict:
+        """将 LLM 诊断结果格式化为标准输出"""
+        weak_topics = parsed.get("weak_topics", [])
+        strengths = parsed.get("strengths", [])
+        summary = parsed.get("diagnosis_summary", "")
+        confidence = float(parsed.get("overall_confidence", 0.5))
+        reason = parsed.get("overall_reason", "LLM 综合诊断")
+        limitations = parsed.get("limitations", [])
+        needs_more = parsed.get("needs_more_evidence", False)
+        next_actions = parsed.get("next_actions", [])
+        risk_flags = parsed.get("risk_flags", [])
+
+        # 转换 weak_topics 为标准格式
+        formatted_topics = []
+        for i, item in enumerate(weak_topics, 1):
+            topic = str(item.get("topic", "")).strip()
+            if not topic or topic in {"无诊断数据", "unknown", "none", ""}:
+                continue
+            formatted_topics.append({
+                "topic": topic,
+                "reason": str(item.get("reason", "")),
+                "confidence": float(item.get("confidence", 0.5)),
+                "priority": str(item.get("priority", "medium")),
+                "source": str(item.get("source", "llm_diagnosis")),
+                "evidence": list(item.get("evidence", [])),
+                "difficulty": "medium",
+                "prerequisites": [],
+                "recommended_stage_id": None,
+                "recommended_resource_ids": [],
+                "next_actions": [],
+            })
+
+        # 生成 weak_knowledge_points（兼容旧格式）
+        weak_knowledge_points = []
+        for i, item in enumerate(formatted_topics, 1):
+            weak_knowledge_points.append({
+                "point_id": f"diagnosis_{i}",
+                "chapter_id": None,
+                "name": item["topic"],
+                "reason": item["reason"],
+                "priority": item["priority"],
+                "difficulty": item.get("difficulty", "medium"),
+                "prerequisites": item.get("prerequisites", []),
+            })
+
+        # 收集证据
+        all_evidence = []
+        for item in formatted_topics:
+            all_evidence.extend(item.get("evidence", []))
+        if analytics.get("quizAccuracy") is not None:
+            all_evidence.append(f"测验正确率：{analytics['quizAccuracy']}%")
+
+        # 证据链
+        evidence_chain = []
+        for item in formatted_topics:
+            evidence_chain.append({
+                "source": item.get("source", "llm_diagnosis"),
+                "signal": item.get("evidence", [""])[0] if item.get("evidence") else item["topic"],
+                "related_knowledge_point": item["topic"],
+                "weight": item.get("confidence", 0.5),
+                "reason": item.get("reason", ""),
+            })
+
+        if not evidence_chain:
+            evidence_chain.append({
+                "source": "llm_diagnosis",
+                "signal": evidence.get("user_message", ""),
+                "related_knowledge_point": None,
+                "weight": 0.3,
+                "reason": "诊断证据不足",
+            })
+
+        # 匹配学习路径阶段
+        recommended_stage_id = None
+        if formatted_topics and stages:
+            first_topic = formatted_topics[0]["topic"]
+            for stage in stages:
+                if isinstance(stage, dict) and first_topic in str(stage.get("title", "")):
+                    recommended_stage_id = stage.get("stage_id") or stage.get("id")
+                    break
+
+        # 匹配推荐资源
+        recommended_resource_ids = []
+        for topic_item in formatted_topics[:3]:
+            topic = topic_item["topic"]
+            for res in resources[:10]:
+                if isinstance(res, dict) and topic in str(res.get("title", "")):
+                    rid = res.get("resource_id") or res.get("id")
+                    if rid:
+                        recommended_resource_ids.append(str(rid))
+        recommended_resource_ids = list(dict.fromkeys(recommended_resource_ids))[:5]
+
+        diagnosis = {
+            "summary": summary,
+            "diagnosis_summary": summary,
+            "weak_topics": formatted_topics,
+            "weak_knowledge_points": weak_knowledge_points,
+            "strengths": strengths,
+            "reason": reason,
+            "source": "llm_generated",
+            "confidence": confidence,
+            "next_actions": next_actions,
+            "recommended_next_actions": next_actions,
+            "limitations": limitations,
+            "evidence": all_evidence,
+            "evidence_chain": evidence_chain,
+            "needs_more_evidence": needs_more,
+            "risk_flags": risk_flags,
+            "recommended_stage_id": recommended_stage_id,
+            "recommended_resource_ids": recommended_resource_ids,
+            "priority": formatted_topics[0].get("priority", "medium") if formatted_topics else "low",
+            "recommended_strategy": "；".join(next_actions) if next_actions else "根据诊断结果针对性学习",
+        }
+
+        return {
+            "diagnosis": diagnosis,
+            "agent_step": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "status": "completed",
+                "summary": f"LLM 诊断完成，发现 {len(formatted_topics)} 个薄弱点",
+                "source": "llm_generated",
+                "quality_status": "passed",
+                "started_at": None,
+                "finished_at": None,
+            },
+        }
+
+    # ═══════════════════════════════════════════════════════════════
+    # 规则兜底（完整保留原 DiagnosisAgent 全部逻辑）
+    # ═══════════════════════════════════════════════════════════════
+
+    def _rule_based_diagnosis(
+        self,
+        user_message: str,
+        profile: dict,
+        profile_facts: dict,
+        stages: list,
+        resources: list,
+        points: list,
+        analytics: dict,
+        existing_diagnosis: dict,
+    ) -> dict:
+        """完整保留的规则诊断逻辑"""
+        candidates = self._event_candidates(analytics)
         candidates.extend(self._existing_diagnosis_candidates(existing_diagnosis))
         candidates.extend(self._message_candidates(user_message))
         candidates.extend(self._profile_candidates(profile, profile_facts))
@@ -58,7 +470,6 @@ class DiagnosisAgent(BaseAgent):
             "summary": self._summary(weak_topics),
             "diagnosis_summary": self._summary(weak_topics),
             "weak_topics": weak_topics,
-            # Keep the existing field for PlannerAgent, ResourceAgent and persisted snapshots.
             "weak_knowledge_points": weak_knowledge_points,
             "strengths": [],
             "reason": reason,
@@ -76,10 +487,24 @@ class DiagnosisAgent(BaseAgent):
             "priority": weak_topics[0].get("priority", "low") if weak_topics else "low",
             "recommended_strategy": "；".join(next_actions),
         }
+
         return {
             "diagnosis": diagnosis,
-            "agent_step": self.agent_step(),
+            "agent_step": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "status": "completed",
+                "summary": f"规则诊断完成，发现 {len(weak_topics)} 个薄弱点",
+                "source": "rule_based",
+                "quality_status": "warning",
+                "started_at": None,
+                "finished_at": None,
+            },
         }
+
+    # ═══════════════════════════════════════════════════════════════
+    # 以下完整保留原 DiagnosisAgent 所有辅助方法
+    # ═══════════════════════════════════════════════════════════════
 
     def _profile_map(self, raw_profile: Any) -> dict[str, Any]:
         if isinstance(raw_profile, dict):
@@ -231,34 +656,30 @@ class DiagnosisAgent(BaseAgent):
             topic = str(item.get("topic") or item.get("name") or "").strip()
             if not topic:
                 continue
-            candidates.append(
-                {
-                    "topic": topic,
-                    "reason": str(item.get("reason") or "Previous structured diagnosis marked this as a weak topic."),
-                    "source": "previous_diagnosis",
-                    "confidence": min(self._clamp(item.get("confidence"), default=0.62), 0.68),
-                    "priority": str(item.get("priority") or "medium"),
-                    "evidence": [f"[previous_diagnosis] weak topic candidate={topic}"],
-                    "recommended_stage_id": item.get("recommended_stage_id"),
-                    "recommended_resource_ids": item.get("recommended_resource_ids") or [],
-                }
-            )
+            candidates.append({
+                "topic": topic,
+                "reason": str(item.get("reason") or "Previous structured diagnosis marked this as a weak topic."),
+                "source": "previous_diagnosis",
+                "confidence": min(self._clamp(item.get("confidence"), default=0.62), 0.68),
+                "priority": str(item.get("priority") or "medium"),
+                "evidence": [f"[previous_diagnosis] weak topic candidate={topic}"],
+                "recommended_stage_id": item.get("recommended_stage_id"),
+                "recommended_resource_ids": item.get("recommended_resource_ids") or [],
+            })
         return candidates
 
     def _message_candidates(self, message: str) -> list[dict[str, Any]]:
         topics = self._message_topics(message)
         candidates = []
         for topic in topics:
-            candidates.append(
-                {
-                    "topic": topic,
-                    "reason": "用户消息明确表达该知识点不会、混淆或基础薄弱。",
-                    "source": "user_message",
-                    "confidence": 0.74,
-                    "priority": "high",
-                    "evidence": [f"用户自述：{message}"],
-                }
-            )
+            candidates.append({
+                "topic": topic,
+                "reason": "用户消息明确表达该知识点不会、混淆或基础薄弱。",
+                "source": "user_message",
+                "confidence": 0.74,
+                "priority": "high",
+                "evidence": [f"用户自述：{message}"],
+            })
         return candidates
 
     def _message_topics(self, message: str) -> list[str]:
@@ -287,25 +708,19 @@ class DiagnosisAgent(BaseAgent):
                         topics.append(topic)
         return list(dict.fromkeys(topics))[:4]
 
-    def _profile_candidates(
-        self,
-        profile: dict[str, Any],
-        profile_facts: dict[str, Any],
-    ) -> list[dict[str, Any]]:
+    def _profile_candidates(self, profile: dict[str, Any], profile_facts: dict[str, Any]) -> list[dict[str, Any]]:
         weak_text = self._profile_value(profile, "error_patterns", "weak_points")
         weak_text = weak_text or str(profile_facts.get("weak_points", "")).strip()
         candidates = []
         for topic in self._split_topics(weak_text):
-            candidates.append(
-                {
-                    "topic": topic,
-                    "reason": "学习画像或用户输入明确提到该知识点掌握较弱，需要优先验证和补齐。",
-                    "source": "profile",
-                    "confidence": 0.68,
-                    "priority": "high",
-                    "evidence": [f"画像薄弱点：{weak_text}"],
-                }
-            )
+            candidates.append({
+                "topic": topic,
+                "reason": "学习画像或用户输入明确提到该知识点掌握较弱，需要优先验证和补齐。",
+                "source": "profile",
+                "confidence": 0.68,
+                "priority": "high",
+                "evidence": [f"画像薄弱点：{weak_text}"],
+            })
         return candidates
 
     def _path_candidates(self, stages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -317,37 +732,33 @@ class DiagnosisAgent(BaseAgent):
                 is_incomplete = True
             title = str(stage.get("title") or stage.get("goal") or "").strip()
             if title and is_incomplete:
-                return [
-                    {
-                        "topic": title,
-                        "reason": "当前学习路径尚未完成该阶段，暂将其作为需要验证的学习重点。",
-                        "source": "learning_path_inference",
-                        "confidence": 0.42,
-                        "priority": "medium",
-                        "evidence": [f"未完成路径阶段：{title}"],
-                        "recommended_stage_id": stage.get("stage_id") or stage.get("id"),
-                    }
-                ]
+                return [{
+                    "topic": title,
+                    "reason": "当前学习路径尚未完成该阶段，暂将其作为需要验证的学习重点。",
+                    "source": "learning_path_inference",
+                    "confidence": 0.42,
+                    "priority": "medium",
+                    "evidence": [f"未完成路径阶段：{title}"],
+                    "recommended_stage_id": stage.get("stage_id") or stage.get("id"),
+                }]
         return []
 
     def _knowledge_candidates(self, points: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates = []
         for index, point in enumerate(points[:3], start=1):
             topic = str(point.get("name") or f"重点知识点 {index}").strip()
-            candidates.append(
-                {
-                    "topic": topic,
-                    "reason": "缺少作答证据，暂按课程知识依赖顺序列为待验证重点，而不是确定薄弱结论。",
-                    "source": "course_knowledge_inference",
-                    "confidence": 0.35,
-                    "priority": "medium" if index <= 2 else "low",
-                    "evidence": [f"课程知识点：{topic}"],
-                    "point_id": point.get("point_id"),
-                    "chapter_id": point.get("chapter_id"),
-                    "difficulty": point.get("difficulty", "medium"),
-                    "prerequisites": point.get("prerequisites", []),
-                }
-            )
+            candidates.append({
+                "topic": topic,
+                "reason": "缺少作答证据，暂按课程知识依赖顺序列为待验证重点，而不是确定薄弱结论。",
+                "source": "course_knowledge_inference",
+                "confidence": 0.35,
+                "priority": "medium" if index <= 2 else "low",
+                "evidence": [f"课程知识点：{topic}"],
+                "point_id": point.get("point_id"),
+                "chapter_id": point.get("chapter_id"),
+                "difficulty": point.get("difficulty", "medium"),
+                "prerequisites": point.get("prerequisites", []),
+            })
         return candidates
 
     def _split_topics(self, value: str) -> list[str]:
@@ -395,13 +806,7 @@ class DiagnosisAgent(BaseAgent):
             return "previous_diagnosis"
         return source or "unknown"
 
-    def _enrich_topic(
-        self,
-        candidate: dict[str, Any],
-        stages: list[dict[str, Any]],
-        resources: list[dict[str, Any]],
-        analytics: dict[str, Any],
-    ) -> dict[str, Any]:
+    def _enrich_topic(self, candidate, stages, resources, analytics):
         item = dict(candidate)
         topic = str(item["topic"])
         stage = self._matching_stage(topic, stages)
@@ -417,19 +822,11 @@ class DiagnosisAgent(BaseAgent):
             item["evidence"].append(f"[learning_path] recommended_stage_id={stage_id}")
         if resource_ids:
             item["evidence"].append(f"[resources] recommended_resource_ids={', '.join(resource_ids)}")
-        item["evidence"].extend(
-            self._mapped_supporting_evidence(topic, stage_id, resource_ids, analytics)
-        )
-        item["evidence"].extend(
-            self._resource_provenance_evidence(resource_ids, resources)
-        )
+        item["evidence"].extend(self._mapped_supporting_evidence(topic, stage_id, resource_ids, analytics))
+        item["evidence"].extend(self._resource_provenance_evidence(resource_ids, resources))
         return item
 
-    def _resource_provenance_evidence(
-        self,
-        resource_ids: list[str],
-        resources: list[dict[str, Any]],
-    ) -> list[str]:
+    def _resource_provenance_evidence(self, resource_ids, resources):
         selected = set(resource_ids)
         evidence = []
         for resource in resources:
@@ -441,44 +838,33 @@ class DiagnosisAgent(BaseAgent):
             stage_id = str(resource.get("related_stage_id") or "unresolved")
             chapter = str(resource.get("related_chapter") or "unresolved")
             evidence.append(
-                f"[resources] Resource provenance: {resource_id}, source={source}, source_type={source_type}, "
-                f"stage={stage_id}, chapter={chapter}"
+                f"[resources] Resource provenance: {resource_id}, source={source}, "
+                f"source_type={source_type}, stage={stage_id}, chapter={chapter}"
             )
         return evidence
 
-    def _matching_stage(self, topic: str, stages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    def _matching_stage(self, topic, stages):
         for stage in stages:
-            text = " ".join(
-                str(value)
-                for value in [
-                    stage.get("title", ""),
-                    stage.get("goal", ""),
-                    " ".join(str(task) for task in stage.get("tasks", [])),
-                ]
-            )
+            text = " ".join(str(v) for v in [
+                stage.get("title", ""),
+                stage.get("goal", ""),
+                " ".join(str(t) for t in stage.get("tasks", [])),
+            ])
             if topic in text or any(token and token in text for token in self._topic_tokens(topic)):
                 return stage
         return None
 
-    def _matching_resource_ids(
-        self,
-        topic: str,
-        stage_id: str | None,
-        resources: list[dict[str, Any]],
-        analytics: dict[str, Any],
-    ) -> list[str]:
+    def _matching_resource_ids(self, topic, stage_id, resources, analytics):
         activity = self._resource_activity(analytics)
-        matches: list[str] = []
+        matches = []
         for resource in resources:
             knowledge_points = resource.get("related_knowledge_points") or resource.get("knowledge_points") or []
-            text = " ".join(
-                [
-                    str(resource.get("title", "")),
-                    str(resource.get("description", "")),
-                    str(resource.get("related_chapter", "")),
-                    " ".join(str(point) for point in knowledge_points),
-                ]
-            )
+            text = " ".join([
+                str(resource.get("title", "")),
+                str(resource.get("description", "")),
+                str(resource.get("related_chapter", "")),
+                " ".join(str(p) for p in knowledge_points),
+            ])
             same_stage = bool(stage_id and resource.get("related_stage_id") == stage_id)
             same_topic = topic in text or any(token and token in text for token in self._topic_tokens(topic))
             resource_id = resource.get("resource_id") or resource.get("id")
@@ -486,27 +872,21 @@ class DiagnosisAgent(BaseAgent):
                 matches.append(str(resource_id))
         unique_matches = list(dict.fromkeys(matches))
         unique_matches.sort(
-            key=lambda resource_id: (
-                0 if resource_id in activity["viewed"] else 1,
-                -activity["counts"].get(resource_id, 0),
+            key=lambda rid: (
+                0 if rid in activity["viewed"] else 1,
+                -activity["counts"].get(rid, 0),
             )
         )
         return unique_matches[:3]
 
-    def _topic_tokens(self, topic: str) -> list[str]:
+    def _topic_tokens(self, topic):
         return [token for token in re.split(r"[、，,；;\s/]|和|与", topic) if len(token) >= 2]
 
-    def _topic_actions(
-        self,
-        topic: str,
-        stage_id: str | None,
-        resource_ids: list[str],
-        analytics: dict[str, Any],
-    ) -> list[str]:
-        actions = [f"先复习“{topic}”的核心概念和前置知识"]
+    def _topic_actions(self, topic, stage_id, resource_ids, analytics):
+        actions = [f"先复习「{topic}」的核心概念和前置知识"]
         if resource_ids:
             activity = self._resource_activity(analytics)
-            started = [resource_id for resource_id in resource_ids if resource_id in activity["viewed"]]
+            started = [rid for rid in resource_ids if rid in activity["viewed"]]
             if started:
                 actions.append(f"先完成已浏览但未完成的资源：{', '.join(started)}")
             else:
@@ -524,10 +904,10 @@ class DiagnosisAgent(BaseAgent):
         actions.append("Submit feedback after using the recommended resource.")
         return actions
 
-    def _resource_activity(self, analytics: dict[str, Any]) -> dict[str, Any]:
-        completed: set[str] = set()
-        viewed: set[str] = set()
-        counts: dict[str, int] = {}
+    def _resource_activity(self, analytics):
+        completed = set()
+        viewed = set()
+        counts = {}
         for item in analytics.get("topResources") or []:
             if not isinstance(item, dict) or not item.get("resourceId"):
                 continue
@@ -546,13 +926,7 @@ class DiagnosisAgent(BaseAgent):
                 viewed.add(resource_id)
         return {"completed": completed, "viewed": viewed - completed, "counts": counts}
 
-    def _mapped_supporting_evidence(
-        self,
-        topic: str,
-        stage_id: str | None,
-        resource_ids: list[str],
-        analytics: dict[str, Any],
-    ) -> list[str]:
+    def _mapped_supporting_evidence(self, topic, stage_id, resource_ids, analytics):
         evidence = []
         for event in self._recent_events(analytics):
             metadata = self._event_metadata(event)
@@ -574,14 +948,7 @@ class DiagnosisAgent(BaseAgent):
                 evidence.append(f"阶段进度：{event_stage or resource_id} 状态 {status or 'unknown'}")
         return evidence
 
-    def _limitations(
-        self,
-        profile: dict[str, Any],
-        stages: list[dict[str, Any]],
-        resources: list[dict[str, Any]],
-        analytics: dict[str, Any],
-        weak_topics: list[dict[str, Any]],
-    ) -> list[str]:
+    def _limitations(self, profile, stages, resources, analytics, weak_topics):
         limitations = []
         if not profile:
             limitations.append("缺少结构化学习画像，无法充分判断基础、目标和学习偏好。")
@@ -593,24 +960,23 @@ class DiagnosisAgent(BaseAgent):
         events = self._recent_events(analytics)
         breakdown = analytics.get("eventBreakdown") if isinstance(analytics.get("eventBreakdown"), dict) else {}
         diagnostic_count = sum(
-            int(breakdown.get(event_type, 0) or 0)
-            for event_type in ("quiz_result", "quiz_submit", "practice_result", "feedback")
+            int(breakdown.get(et, 0) or 0)
+            for et in ("quiz_result", "quiz_submit", "practice_result", "feedback")
         )
         has_topic = any(
-            self._event_metadata(event).get("topic")
-            or self._event_metadata(event).get("knowledgePoint")
-            for event in events
-            if event.get("event") in {"quiz_result", "quiz_submit", "practice_result", "feedback"}
+            self._event_metadata(e).get("topic") or self._event_metadata(e).get("knowledgePoint")
+            for e in events
+            if e.get("event") in {"quiz_result", "quiz_submit", "practice_result", "feedback"}
         )
         has_result = any(
             {"wrong", "accuracy", "score", "correct", "total", "mastery"}.intersection(
-                self._event_metadata(event)
+                self._event_metadata(e)
             )
-            for event in events
+            for e in events
         )
         resource_behavior_count = sum(
-            int(breakdown.get(event_type, 0) or 0)
-            for event_type in ("resource_view", "resource_complete", "node_progress")
+            int(breakdown.get(et, 0) or 0)
+            for et in ("resource_view", "resource_complete", "node_progress")
         )
 
         if not event_count:
@@ -651,11 +1017,7 @@ class DiagnosisAgent(BaseAgent):
             )
         return limitations
 
-    def _next_actions(
-        self,
-        weak_topics: list[dict[str, Any]],
-        analytics: dict[str, Any],
-    ) -> list[str]:
+    def _next_actions(self, weak_topics, analytics):
         if not weak_topics:
             actions = [
                 "补充目标课程、已有基础和自述薄弱点",
@@ -685,7 +1047,7 @@ class DiagnosisAgent(BaseAgent):
             actions.append("Complete one quiz_result or practice_result so the next diagnosis has behavioral evidence.")
         return list(dict.fromkeys(actions))[:5]
 
-    def _overall_confidence(self, weak_topics: list[dict[str, Any]], analytics: dict[str, Any]) -> float:
+    def _overall_confidence(self, weak_topics, analytics):
         if not weak_topics:
             return 0.15
         values = [self._clamp(item.get("confidence"), default=0.3) for item in weak_topics]
@@ -694,13 +1056,13 @@ class DiagnosisAgent(BaseAgent):
             confidence = min(confidence, 0.58)
         return round(confidence, 2)
 
-    def _has_behavioral_diagnosis_evidence(self, analytics: dict[str, Any]) -> bool:
+    def _has_behavioral_diagnosis_evidence(self, analytics):
         if analytics.get("weakTopics"):
             return True
         breakdown = analytics.get("eventBreakdown")
         if isinstance(breakdown, dict) and any(
-            int(breakdown.get(event_type, 0) or 0) > 0
-            for event_type in ("quiz_result", "quiz_submit", "practice_result")
+            int(breakdown.get(et, 0) or 0) > 0
+            for et in ("quiz_result", "quiz_submit", "practice_result")
         ):
             return True
         result_fields = {"wrong", "accuracy", "score", "correct", "total", "mastery"}
@@ -712,7 +1074,7 @@ class DiagnosisAgent(BaseAgent):
                 return True
         return False
 
-    def _overall_reason(self, weak_topics: list[dict[str, Any]]) -> str:
+    def _overall_reason(self, weak_topics):
         if not weak_topics:
             return "当前缺少可验证的画像薄弱点和学习行为证据，无法形成确定诊断。"
         sources = {str(item.get("source")) for item in weak_topics}
@@ -720,53 +1082,45 @@ class DiagnosisAgent(BaseAgent):
             return "诊断综合了当前学习行为、学习画像、路径阶段和可用资源。"
         return "诊断基于当前学习画像、学习路径和资源关联推断，仍需行为数据进一步验证。"
 
-    def _summary(self, weak_topics: list[dict[str, Any]]) -> str:
+    def _summary(self, weak_topics):
         if not weak_topics:
             return "现有数据不足以确认具体薄弱点，建议先补充学习信息并完成一次可记录的练习。"
         names = "、".join(str(item["topic"]) for item in weak_topics[:3])
         return f"当前优先关注：{names}。请按建议行动验证并逐步收窄诊断范围。"
 
-    def _collect_evidence(
-        self,
-        weak_topics: list[dict[str, Any]],
-        analytics: dict[str, Any],
-    ) -> list[str]:
+    def _collect_evidence(self, weak_topics, analytics):
         evidence = []
         for item in weak_topics:
-            evidence.extend(str(value) for value in item.get("evidence", []) if value)
+            evidence.extend(str(v) for v in item.get("evidence", []) if v)
         evidence.extend(self._analytics_evidence(analytics))
         evidence.extend(self._event_source_evidence(analytics))
         return list(dict.fromkeys(evidence))
 
-    def _evidence_chain(self, weak_topics: list[dict[str, Any]], user_message: str) -> list[dict[str, Any]]:
-        chain: list[dict[str, Any]] = []
+    def _evidence_chain(self, weak_topics, user_message):
+        chain = []
         for item in weak_topics:
             source = self._chain_source(str(item.get("source") or "rule_based"))
             topic = str(item.get("topic") or "")
             signal = self._chain_signal(item, user_message)
-            chain.append(
-                {
-                    "source": source,
-                    "signal": signal,
-                    "related_knowledge_point": topic,
-                    "weight": self._clamp(item.get("confidence"), default=0.4),
-                    "reason": str(item.get("reason") or "该证据支持当前薄弱点诊断。"),
-                }
-            )
+            chain.append({
+                "source": source,
+                "signal": signal,
+                "related_knowledge_point": topic,
+                "weight": self._clamp(item.get("confidence"), default=0.4),
+                "reason": str(item.get("reason") or "该证据支持当前薄弱点诊断。"),
+            })
         if not chain:
             signal = user_message or "缺少明确薄弱点、学习路径或测验结果。"
-            chain.append(
-                {
-                    "source": "fallback_rule",
-                    "signal": signal,
-                    "related_knowledge_point": None,
-                    "weight": 0.2,
-                    "reason": "当前输入只能说明存在学习困惑，尚不足以定位具体知识点。",
-                }
-            )
+            chain.append({
+                "source": "fallback_rule",
+                "signal": signal,
+                "related_knowledge_point": None,
+                "weight": 0.2,
+                "reason": "当前输入只能说明存在学习困惑，尚不足以定位具体知识点。",
+            })
         return chain
 
-    def _chain_source(self, source: str) -> str:
+    def _chain_source(self, source):
         mapping = {
             "user_message": "user_message",
             "profile": "profile",
@@ -779,7 +1133,7 @@ class DiagnosisAgent(BaseAgent):
         }
         return mapping.get(source, "rule_based")
 
-    def _chain_signal(self, item: dict[str, Any], user_message: str) -> str:
+    def _chain_signal(self, item, user_message):
         evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
         if evidence:
             return str(evidence[0])
@@ -787,19 +1141,12 @@ class DiagnosisAgent(BaseAgent):
             return user_message
         return str(item.get("topic") or "weak topic candidate")
 
-    def _needs_more_evidence(self, weak_topics: list[dict[str, Any]], analytics: dict[str, Any]) -> bool:
+    def _needs_more_evidence(self, weak_topics, analytics):
         if not weak_topics:
             return True
         return not self._has_behavioral_diagnosis_evidence(analytics)
 
-    def _risk_flags(
-        self,
-        weak_topics: list[dict[str, Any]],
-        analytics: dict[str, Any],
-        profile: dict[str, Any],
-        stages: list[dict[str, Any]],
-        resources: list[dict[str, Any]],
-    ) -> list[str]:
+    def _risk_flags(self, weak_topics, analytics, profile, stages, resources):
         flags = []
         if not weak_topics:
             flags.append("insufficient_evidence")
@@ -813,7 +1160,7 @@ class DiagnosisAgent(BaseAgent):
             flags.append("missing_resources")
         return flags
 
-    def _event_source_evidence(self, analytics: dict[str, Any]) -> list[str]:
+    def _event_source_evidence(self, analytics):
         evidence = []
         breakdown = analytics.get("eventBreakdown")
         if isinstance(breakdown, dict) and breakdown:
@@ -833,7 +1180,7 @@ class DiagnosisAgent(BaseAgent):
                 break
         return evidence
 
-    def _analytics_evidence(self, analytics: dict[str, Any]) -> list[str]:
+    def _analytics_evidence(self, analytics):
         evidence = []
         quiz_accuracy = analytics.get("quizAccuracy")
         if quiz_accuracy is not None:
@@ -841,7 +1188,6 @@ class DiagnosisAgent(BaseAgent):
                 evidence.append(f"[analytics] quizAccuracy={float(quiz_accuracy):.0f}%")
             except (TypeError, ValueError):
                 pass
-        if quiz_accuracy is not None:
             try:
                 evidence.append(f"测验统计：累计正确率 {float(quiz_accuracy):.0f}%")
             except (TypeError, ValueError):
@@ -849,11 +1195,7 @@ class DiagnosisAgent(BaseAgent):
 
         breakdown = analytics.get("eventBreakdown")
         if isinstance(breakdown, dict) and breakdown:
-            details = "，".join(
-                f"{event_type} {count} 次"
-                for event_type, count in breakdown.items()
-                if count
-            )
+            details = "，".join(f"{et} {c} 次" for et, c in breakdown.items() if c)
             if details:
                 evidence.append(f"学习事件统计：{details}")
 
@@ -881,19 +1223,17 @@ class DiagnosisAgent(BaseAgent):
         for item in (analytics.get("topResources") or [])[:1]:
             if isinstance(item, dict) and item.get("resourceId"):
                 evidence.append(f"[resource_view] topResource={item['resourceId']}; count={item.get('count', 0)}")
-                evidence.append(
-                    f"资源活跃：{item['resourceId']} 累计 {item.get('count', 0)} 次学习事件"
-                )
+                evidence.append(f"资源活跃：{item['resourceId']} 累计 {item.get('count', 0)} 次学习事件")
         return evidence
 
-    def _is_negative_feedback(self, metadata: dict[str, Any]) -> bool:
+    def _is_negative_feedback(self, metadata):
         try:
             low_rating = "rating" in metadata and float(metadata["rating"]) <= 2
         except (TypeError, ValueError):
             low_rating = False
         return low_rating or metadata.get("difficultyMatch") is False
 
-    def _feedback_evidence(self, resource_id: str, metadata: dict[str, Any]) -> str:
+    def _feedback_evidence(self, resource_id, metadata):
         details = []
         if "rating" in metadata:
             details.append(f"评分 {metadata['rating']}")
@@ -901,13 +1241,13 @@ class DiagnosisAgent(BaseAgent):
             details.append("难度不匹配")
         return f"资源反馈：{resource_id or '未标注资源'} {'，'.join(details)}"
 
-    def _recommended_resource_ids(self, weak_topics: list[dict[str, Any]]) -> list[str]:
+    def _recommended_resource_ids(self, weak_topics):
         resource_ids = []
         for item in weak_topics:
-            resource_ids.extend(str(value) for value in item.get("recommended_resource_ids", []) if value)
+            resource_ids.extend(str(v) for v in item.get("recommended_resource_ids", []) if v)
         return list(dict.fromkeys(resource_ids))[:5]
 
-    def _clamp(self, value: Any, default: float) -> float:
+    def _clamp(self, value, default):
         try:
             return max(0.0, min(1.0, float(value)))
         except (TypeError, ValueError):

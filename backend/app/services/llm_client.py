@@ -182,7 +182,7 @@ class DeepSeekLLMClient(BaseLLMClient):
         if not self.api_key:
             raise LLMClientError("DEEPSEEK_API_KEY is not configured.")
 
-        timeout = kwargs.get("timeout", settings.llm_request_timeout)
+        timeout = kwargs.pop("timeout", settings.llm_request_timeout)
         max_retries = kwargs.get("retry_count", settings.llm_retry_count)
         retry_delay = kwargs.get("retry_delay", settings.llm_retry_delay)
 
@@ -194,7 +194,6 @@ class DeepSeekLLMClient(BaseLLMClient):
             except error.HTTPError as exc:
                 last_error = exc
                 status = exc.code if hasattr(exc, "code") else None
-                # 4xx errors (except 429) are not retryable
                 if status is not None and 400 <= status < 500 and status != 429:
                     raise LLMClientError(
                         f"DeepSeek API returned HTTP {status}: {self._read_error_body(exc)}",
@@ -245,7 +244,6 @@ class DeepSeekLLMClient(BaseLLMClient):
             "messages": messages,
             "temperature": kwargs.get("temperature", self.temperature),
         }
-        # Pass through optional OpenAI-compatible params
         for key in ("max_tokens", "top_p", "stop", "stream"):
             if key in kwargs:
                 payload[key] = kwargs[key]
@@ -260,7 +258,7 @@ class DeepSeekLLMClient(BaseLLMClient):
             method="POST",
         )
 
-        with request.urlopen(req, timeout=timeout) as response:  # type: ignore[arg-type]
+        with request.urlopen(req, timeout=timeout) as response:
             body = json.loads(response.read().decode("utf-8"))
 
         return body["choices"][0]["message"]["content"]

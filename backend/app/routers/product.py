@@ -25,7 +25,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from app.agents.diagnosis_agent import DiagnosisAgent
-from app.agents.intent_agent import IntentAgent
+from app.agents.conversation_agent import ConversationAgent
 from app.config import settings
 from app.db.engine import SessionLocal
 from app.db.models import LearnerModel, SessionModel
@@ -254,10 +254,24 @@ def _intent_context(session_id: str | None = None) -> dict[str, Any]:
 
 
 def _classify_intent(message: str, session_id: str | None = None) -> dict[str, Any]:
-    return IntentAgent(mock_data={}, llm_client=_llm_client()).classify(
-        message,
-        context=_intent_context(session_id),
-    )
+    """用 ConversationAgent 进行对话理解，返回包含 reply 和 action 的结果。"""
+    agent = ConversationAgent(mock_data={}, llm_client=_llm_client())
+    context = _intent_context(session_id)
+    context["user_message"] = message
+    if "profile_facts" not in context:
+        context["profile_facts"] = {}
+    context["profile_facts"]["_raw_user_message"] = message
+
+    # 加载对话历史
+    if session_id:
+        state = conversation_store.get(session_id)
+        history = [
+            {"role": m["role"], "content": m["content"]}
+            for m in state.messages[-20:]
+        ]
+        context["conversation_history"] = history
+
+    return agent.run(context)
 
 
 def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
@@ -282,7 +296,13 @@ def _public_intent_result(intent: dict[str, Any] | None) -> dict[str, Any]:
         "decomposition_source",
         "decomposition_confidence",
     )
-    return {field: intent.get(field) for field in fields}
+    result = {field: intent.get(field) for field in fields}
+    # 也带上 ConversationAgent 的 reply 和 action
+    if intent.get("reply"):
+        result["reply"] = intent["reply"]
+    if intent.get("action"):
+        result["action"] = intent["action"]
+    return result
 
 
 def _run_agents(
@@ -698,11 +718,9 @@ def _empty_learning_path(session_id: str) -> dict[str, Any]:
         "source": "none",
     }
 
-
 # ═══════════════════════════════════════════════════════════════════════
 # Reply generators (chat logic)
 # ═══════════════════════════════════════════════════════════════════════
-
 
 def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
     profile = _to_profile(result)
@@ -722,7 +740,7 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
         return (
             "## 学习方案生成说明\n\n"
             "当前画像信息尚不足以生成完整的个性化学习路径。\n\n"
-            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n\n"
+            f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n\n"
             "请补充你的专业背景、学习基础、薄弱点和学习目标等信息，"
             "我会重新生成针对性更强的学习路径。\n\n"
             "你可以直接告诉我：年级专业、已学过的课程、想学的方向、薄弱环节等。"
@@ -734,7 +752,7 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
             f"## 学习方案已生成（通用框架）\n\n"
             f"⚠️ 当前知识库中没有「{course_name}」的课程资料，"
             "以下为基于你画像信息生成的通用学习路径框架。\n\n"
-            f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"
+            f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n"
             f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
             f"- 识别的重点薄弱点：{weak}\n"
             f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n\n"
@@ -743,7 +761,7 @@ def _learning_plan_reply(result: dict[str, Any], intent: dict[str, Any]) -> str:
 
     return (
         "## 个性化学习方案已生成\n\n"
-        f"- 意图识别：{intent['intent']}，置信度 {intent['confidence']:.0%}\n"
+        f"- 意图识别：{intent.get('intent', intent.get('action', ''))}，置信度 {intent.get('confidence', 0):.0%}\n"
         f"- 已构建 {len(profile['dimensions'])} 维学生画像\n"
         f"- 识别的重点薄弱点：{weak}\n"
         f"- 学习路径：{path['estimatedDays']} 天，{len(path['stages'])} 个阶段\n"
@@ -759,14 +777,14 @@ def _casual_reply(session_id: str) -> str:
     known = "\n".join(conversation_store.known_lines(state))
     if known:
         return (
-            "\u4f60\u597d\uff0c\u6211\u662f EduAgent\u3002"
-            "\u4f60\u521a\u624d\u63d0\u4f9b\u7684\u4fe1\u606f\u6211\u5df2\u7ecf\u8bb0\u5f55\u4e86\uff0c"
-            "\u4e0d\u7528\u91cd\u65b0\u586b\u8868\u3002\n\n"
-            "\u6211\u76ee\u524d\u5df2\u8bb0\u5f55\uff1a\n"
+            "你好，我是 EduAgent。"
+            "你刚才提供的信息我已经记录了，"
+            "不用重新填表。\n\n"
+            "我目前已记录：\n"
             f"{known}\n\n"
-            "\u4f60\u53ef\u4ee5\u7ee7\u7eed\u8865\u5145\u60f3\u5b66\u7684\u8bfe\u7a0b\u3001"
-            "\u5df2\u6709\u57fa\u7840\u3001\u76ee\u6807\u6216\u504f\u597d\uff1b"
-            "\u4e5f\u53ef\u4ee5\u76f4\u63a5\u8bf4\u300c\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848\u300d\u3002"
+            "你可以继续补充想学的课程、"
+            "已有基础、目标或偏好；"
+            "也可以直接说「开始生成学习方案」。"
         )
     return (
         "你好，我是 EduAgent。你可以告诉我你的专业、学习基础、目标和偏好的学习方式，"
@@ -947,12 +965,12 @@ def _learning_plan_request_reply(
     state = conversation_store.get(session_id)
     readiness = conversation_store.readiness(state)
     force_generate_words = [
-        "\u76f4\u63a5\u751f\u6210",
-        "\u5148\u751f\u6210",
-        "\u751f\u6210\u770b\u770b",
-        "\u4e0d\u7528\u5728\u610f",
-        "\u4e0d\u5728\u610f\u51c6\u4e0d\u51c6",
-        "\u5148\u770b\u6548\u679c",
+        "直接生成",
+        "先生成",
+        "生成看看",
+        "不用在意",
+        "不在意准不准",
+        "先看效果",
     ]
     force_generate = any(word in message for word in force_generate_words)
     if readiness["readyToPlan"] or force_generate:
@@ -1091,19 +1109,77 @@ def _reply_for_intent(
     message: str, intent: dict[str, Any], session_id: str,
     progress_callback: Callable | None = None,
 ) -> tuple[str, bool]:
-    name = intent["intent"]
+    """根据 ConversationAgent 的结果决定回复和执行哪些 Agent。
+
+    优先使用 ConversationAgent 生成的 reply 自然语言回复。
+    如果 ConversationAgent 的 action 需要执行后端 Agent，则触发对应流程。
+    """
+    # 优先使用 ConversationAgent 生成的 reply
+    llm_reply = intent.get("reply", "")
+    action = intent.get("action", "none")
+
+    # 兼容旧版 intent 字段（规则兜底时）
+    legacy_intent = intent.get("intent", "unknown")
+
+    # 如果 ConversationAgent 返回了 reply 且 action 不需要执行 Agent
+    if llm_reply and action == "none":
+        return llm_reply, False
+
+    # 安全检查
+    if action == "unsafe" or legacy_intent == "unsafe":
+        return llm_reply or "抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。", False
+
+    # 根据 action 决定执行哪些 Agent
+    if action == "full_workflow":
+        # 完整流程：生成画像+诊断+规划+资源
+        state = conversation_store.get(session_id)
+        readiness = conversation_store.readiness(state)
+        if readiness["readyToPlan"] or True:  # 当 LLM 判定 full_workflow 时，直接执行
+            return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
+        else:
+            questions = "\n".join(f"- {q}" for q in conversation_store.next_questions(state, limit=2))
+            return (
+                f"好的，在生成完整方案之前，我还需要了解：\n{questions}"
+            ), False
+
+    if action == "diagnose":
+        diagnosis_reply = _diagnosis_reply(message, session_id)
+        return llm_reply or diagnosis_reply, True
+
+    if action == "plan":
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
+
+    if action == "resources":
+        return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
+
+    if action == "profile":
+        ran_agents = False
+        state = conversation_store.get(session_id)
+        if conversation_store.readiness(state)["readyToPlan"]:
+            try:
+                _run_agents(message, session_id=session_id, progress_callback=progress_callback)
+                ran_agents = True
+            except Exception:
+                logger.warning("Agent run failed during profile update for session %s", session_id)
+        reply = _profile_update_reply(session_id)
+        return llm_reply or reply, ran_agents
+
+    if action == "knowledge":
+        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
+
+    # ── 兼容旧版 intent（LLM 失败走规则兜底时） ──
+    name = legacy_intent
     if name == "casual_chat":
-        return _casual_reply(session_id), False
+        return llm_reply or _casual_reply(session_id), False
     if name == "date_query":
-        return _date_query_reply(), False
+        return llm_reply or _date_query_reply(), False
     if name == "clarification":
-        return _clarification_reply(session_id), False
+        return llm_reply or _clarification_reply(session_id), False
     if name == "info_request":
-        return _info_request_reply(session_id), False
+        return llm_reply or _info_request_reply(session_id), False
     if name == "profile_query":
-        return _profile_query_reply(session_id), False
+        return llm_reply or _profile_query_reply(session_id), False
     if name == "profile_update":
-        # Auto-trigger agent pipeline if profile is ready — run BEFORE generating reply
         ran_agents = False
         state = conversation_store.get(session_id)
         if conversation_store.readiness(state)["readyToPlan"]:
@@ -1113,26 +1189,24 @@ def _reply_for_intent(
             except Exception:
                 logger.warning("Agent run failed during profile_update reply for session %s", session_id)
         reply = _profile_update_reply(session_id)
-        return reply, ran_agents
+        return llm_reply or reply, ran_agents
     if name == "start_advice":
-        return _start_advice_reply(session_id), False
+        return llm_reply or _start_advice_reply(session_id), False
     if name == "learning_plan":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "resource_request":
         return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
     if name == "tutoring":
-        return _tutoring_reply(message), False
+        return llm_reply or _tutoring_reply(message), False
     if name == "diagnosis":
-        return _diagnosis_reply(message, session_id), True
+        return llm_reply or _diagnosis_reply(message, session_id), True
     if name == "full_workflow":
         return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
     if name == "progress_feedback":
-        return _feedback_reply(message, session_id), False
-    if name == "unsafe":
-        return "这个请求可能不适合处理。你可以换成正常的学习问题或课程规划需求。", False
-    if name == "full_workflow":
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    return _unknown_reply(intent), False
+        return llm_reply or _feedback_reply(message, session_id), False
+
+    # 最终兜底
+    return llm_reply or _unknown_reply(intent), False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1142,7 +1216,16 @@ def _reply_for_intent(
 
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:
     """Check whether the given intent will trigger agent execution."""
-    name = intent["intent"]
+    # 优先看 ConversationAgent 的 action
+    action = intent.get("action", "")
+    if action in ("diagnose", "plan", "resources", "full_workflow", "knowledge"):
+        return True
+    if action == "profile":
+        state = conversation_store.get(session_id)
+        return conversation_store.readiness(state)["readyToPlan"]
+    
+    # 兼容旧版 intent
+    name = intent.get("intent", "")
     if name in ("learning_plan", "full_workflow", "resource_request"):
         return True
     if name == "profile_update":
@@ -1257,20 +1340,26 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
         else:
-            reply, ran_agents = _reply_for_intent(message, intent, session_id)
+            # ── action=none，直接返回 LLM 回复，不执行 Agent ──
+            llm_reply = intent.get("reply", "")
+            if llm_reply:
+                reply = llm_reply
+                ran_agents = False
+            else:
+                reply, ran_agents = _reply_for_intent(message, intent, session_id)
+            
             conversation_store.append_message(session_id, "assistant", reply)
+            
             if ran_agents:
-                # profile_update triggered agents — show completed stages
+                # 触发了 Agent — 显示完成阶段
                 for stage_key, stage_label, pct in GEN_STAGES:
                     yield f"data: {json.dumps({'stage': stage_label, 'agentName': stage_key, 'progress': pct, 'done': False}, ensure_ascii=False)}\n\n"
-            elif intent.get("intent") == "unknown":
-                # 低置信度 unknown — 告知前端展示 clarification 交互面板
-                yield f"data: {json.dumps({'isClarification': True, 'done': False}, ensure_ascii=False)}\n\n"
+            
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
         final_event: dict[str, Any] = {"done": True}
-        if intent["intent"] == "diagnosis":
+        if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis":
             result = conversation_store.get(session_id).last_result or {}
             final_event["diagnosis"] = result.get("diagnosis", {})
         yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
@@ -1305,7 +1394,7 @@ def send_chat(payload: dict[str, Any]) -> dict[str, Any]:
     }
     result = conversation_store.get(session_id).last_result or {}
     diagnosis = result.get("diagnosis", {}) if isinstance(result, dict) else {}
-    if intent["intent"] == "diagnosis" or (
+    if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis" or (
         isinstance(diagnosis, dict) and diagnosis and _looks_like_diagnosis_reply(reply)
     ):
         response["diagnosis"] = diagnosis
@@ -1498,7 +1587,7 @@ def generation_progress(task_id: str) -> dict[str, Any]:
         source="mock",
     )
 
-
+    
 # ═══════════════════════════════════════════════════════════════════════
 # Profile endpoints — read from DB, trigger via POST
 # ═══════════════════════════════════════════════════════════════════════
@@ -1807,14 +1896,14 @@ def get_resources(
     source: str = "",
     search: str = "",
     knowledgePoint: str = "",
-    relatedStageId: str = "",   # 从学习路径跳转时按阶段筛选
-    resourceIds: str = "",       # 从节点跳转时按指定资源 ID 筛选（逗号分隔）
-    taskId: str = "",             # 按 task_id 精确匹配（节点级筛选）
-    chapter: str = "",            # 按章节筛选
-    qualityStatus: str = "",      # 质检状态 passed|needs_review|fallback_passed
-    studyStatus: str = "",        # 学习状态 new|in_progress|completed
-    bookmarked: str = "",         # 收藏筛选 "true"|"false"
-    sortBy: str = "default",       # 排序: default|newest|shortest|easiest|hardest|status|stage
+    relatedStageId: str = "",
+    resourceIds: str = "",
+    taskId: str = "",
+    chapter: str = "",
+    qualityStatus: str = "",
+    studyStatus: str = "",
+    bookmarked: str = "",
+    sortBy: str = "default",
 ) -> dict[str, Any]:
     """Read resources from DB. Supports multi-condition combined filtering and sorting."""
     session_id = _resolve_session_id(sessionId, subjectId)
@@ -1831,16 +1920,13 @@ def get_resources(
             if rid:
                 _resource_id_set.add(rid)
                 _resource_id_suffixes.add(rid)
-                # Also match with session prefix (resource IDs in nodes don't have
-                # the session_id_ prefix that actual saved resources have)
-                _resource_id_set.add(f"_{rid}")  # suffix match helper
+                _resource_id_set.add(f"_{rid}")
 
     def _matches(item: dict[str, Any]) -> bool:
         if _resource_id_set:
             item_id = item.get("id", "")
             if item_id in _resource_id_set:
                 return True
-            # Also check suffix match (node IDs vs saved IDs with session prefix)
             for suffix in _resource_id_suffixes:
                 if item_id.endswith(f"_{suffix}") or item_id.endswith(suffix):
                     return True
@@ -1881,22 +1967,18 @@ def get_resources(
             kps = item.get("knowledgePoints", item.get("knowledge_points", []))
             if knowledgePoint not in kps:
                 return False
-        # ── 章节筛选 ──
         if chapter:
             item_chapter = item.get("relatedChapter", item.get("related_chapter", ""))
             if chapter not in item_chapter:
                 return False
-        # ── 质检状态筛选 ──
         if qualityStatus:
             item_qs = item.get("qualityStatus", item.get("quality_status", ""))
             if item_qs != qualityStatus:
                 return False
-        # ── 学习状态筛选 ──
         if studyStatus:
             item_ss = item.get("studyStatus", item.get("study_status", "new"))
             if item_ss != studyStatus:
                 return False
-        # ── 收藏状态筛选 ──
         if _bookmarked_filter is not None:
             if item.get("bookmarked", False) != _bookmarked_filter:
                 return False
@@ -1935,9 +2017,7 @@ def get_resources(
             "fallbackReason": item.get("fallbackReason", item.get("fallback_reason", "")),
         }
 
-    # Merge DB resources with in-memory resources.
-    # DB resources carry persisted state (study_status, bookmarks).
-    # In-memory resources carry full content (title, description, etc.).
+    # Merge DB resources with in-memory resources
     db_resources = ag_get_resources(session_id)
     db_map: dict[str, dict[str, Any]] = {}
     if db_resources:
@@ -1951,7 +2031,6 @@ def get_resources(
     merged: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
-    # Build in-memory lookup (full content, may lack persisted state)
     memory_map: dict[str, dict[str, Any]] = {}
     if state and state.last_result:
         for item in state.last_result.get("resources", []):
@@ -1960,9 +2039,6 @@ def get_resources(
             if rid:
                 memory_map[rid] = normalized
 
-    # Clean up orphaned DB stubs (created by previous buggy PATCH that saved
-    # resources with empty titles). These have no matching memory data and
-    # would show garbled content, so remove them from DB.
     orphaned_ids = [
         rid for rid, item in db_map.items()
         if rid not in memory_map
@@ -1981,26 +2057,23 @@ def get_resources(
         for oid in orphaned_ids:
             db_map.pop(oid, None)
 
-    # Merge: DB state overlaid on memory content
     all_ids = set(db_map.keys()) | set(memory_map.keys())
     for rid in all_ids:
         db_item = db_map.get(rid)
         mem_item = memory_map.get(rid)
         if db_item and (db_item.get("title") or "").strip() and db_item.get("title") != "学习资源":
-            item = db_item  # DB has full content → use as-is
+            item = db_item
         elif mem_item:
-            # Memory has content, DB may have state → merge (carries study_status)
             item = {**mem_item, **(db_item or {})}
             item["id"] = rid
         elif db_item:
-            item = db_item  # DB stub only → still show minimally
+            item = db_item
         else:
             continue
         if _matches(item):
             seen_ids.add(rid)
             merged.append(item)
 
-    # ── 排序 ──
     _DIFFICULTY_ORDER = {"easy": 0, "medium": 1, "hard": 2}
 
     def _sort_key(r: dict[str, Any]) -> tuple:
@@ -2024,12 +2097,11 @@ def get_resources(
             return (is_completed, -created_at)
         elif sortBy == "stage":
             return (has_stage, is_completed, -created_at)
-        else:  # default: recommended — completed at end, then by stage, newest
+        else:
             return (is_completed, has_stage, -created_at)
 
     merged.sort(key=_sort_key)
 
-    # ── 完成统计 ──
     completed_count = sum(1 for r in merged if r.get("studyStatus") == "completed")
     total_count = len(merged)
 
@@ -2052,7 +2124,6 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
     """Get a single resource by ID — tries DB first, then in-memory fallback."""
     session_id = _resolve_session_id(sessionId, subjectId)
 
-    # Try DB first
     db_resources = ag_get_resources(session_id)
     db_match = next((r for r in db_resources if r["id"] == resource_id), None)
     if db_match:
@@ -2081,7 +2152,6 @@ def get_resource(resource_id: str, sessionId: str = "", subjectId: str = "") -> 
             session_id=session_id, subject_id=subjectId, source="db",
         )
 
-    # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
     if state.last_result:
         resources = [
@@ -2110,7 +2180,6 @@ def bookmark_resource(resource_id: str, sessionId: str = "", subjectId: str = ""
     session_id = _resolve_session_id(sessionId, subjectId)
     try:
         db = SessionLocal()
-        # Ensure resource exists in DB before toggling bookmark
         from app.db.repository import get_resource as repo_get_resource, upsert_resource as repo_upsert_resource
         state = conversation_store.get(session_id)
         if state.last_result:
@@ -2158,7 +2227,6 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
             repo_update_status(db, session_id, resource_id, study_status)
             return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
 
-        # Resource not found for this session — check if it exists at all
         from app.db.models import ResourceModel
         resource_any = db.get(ResourceModel, resource_id)
         if resource_any:
@@ -2171,7 +2239,6 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
                 source="user_action",
             )
 
-        # 尚未入库，尝试从内存找完整数据再存
         state = conversation_store.get(session_id)
         if state and state.last_result:
             for item in state.last_result.get("resources", []):
@@ -2189,7 +2256,6 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
                     })
                     return _product_response({"ok": True, "studyStatus": study_status}, session_id=session_id, subject_id=subjectId, source="user_action")
 
-        # Resource not found anywhere
         return _product_response(
             {"ok": False},
             session_id=session_id,
@@ -2200,11 +2266,6 @@ def update_resource_study_status(resource_id: str, payload: dict[str, Any], sess
         )
     finally:
         db.close()
-
-
-# ═══════════════════════════════════════════════════════════════════════
-# Batch resource operations
-# ═══════════════════════════════════════════════════════════════════════
 
 
 @router.post("/resources/batch/study-status")
@@ -2247,7 +2308,6 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
     resource_ids: list[str] | None = payload.get("resourceIds")
 
-    # Gather all resources for this session
     db_resources = ag_get_resources(session_id)
     db_map: dict[str, dict[str, Any]] = {r["id"]: r for r in db_resources}
 
@@ -2260,14 +2320,12 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
             if rid and rid not in db_map:
                 db_map[rid] = normalized
 
-    # Apply resourceIds filter if provided
     if resource_ids:
         id_set = set(resource_ids)
         items = [r for rid, r in db_map.items() if rid in id_set]
     else:
         items = list(db_map.values())
 
-    # Build export text
     lines: list[str] = []
     for i, r in enumerate(items, 1):
         title = r.get("title", "未命名资源")
@@ -2287,11 +2345,7 @@ def batch_export_resources(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/resources/generate")
 def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trigger agent pipeline to generate resources for a topic.
-
-    Accepts optional ``type`` (resource type), ``difficulty``, and ``subjectId``
-    from the frontend to tailor the generated resource.
-    """
+    """Trigger agent pipeline to generate resources for a topic."""
     session_id = _payload_session_id(payload)
     topic = str(payload.get("topic", "学习主题"))
     resource_type = str(payload.get("type", "")).strip()
@@ -2299,7 +2353,6 @@ def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
     subject_id = str(payload.get("subjectId", "")).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
 
-    # Build a richer prompt that includes type, difficulty, and subject context
     parts = [f"请为「{topic}」"]
     if resource_type:
         type_labels = {
@@ -2332,23 +2385,12 @@ def generate_resource(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.post("/resources/import-from-kb")
 def import_resources_from_kb(payload: dict[str, Any]) -> dict[str, Any]:
-    """Import knowledge base chapters directly as resources.
-
-    This bypasses the agent pipeline and creates resources from the course
-    chapter content in the knowledge base.  Useful for seeding the resource
-    library when no agent-generated resources exist yet.
-
-    Accepts:
-        sessionId (required): target session
-        courseId (optional): course to import from (default: first available)
-        subjectId (optional): subject context
-    """
+    """Import knowledge base chapters directly as resources."""
     session_id = _payload_session_id(payload)
     course_id = str(payload.get("courseId", "")).strip()
     subject_id = str(payload.get("subjectId", "")).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
 
-    # Find the course to import from
     if course_id:
         course = course_catalog.get_course(course_id)
     else:
@@ -2407,7 +2449,6 @@ def import_resources_from_kb(payload: dict[str, Any]) -> dict[str, Any]:
                 "difficulty": difficulty,
             })
 
-        # Also create stage-level mindmap and reading resources
         all_titles = [str(ch.get("title", "")) for ch in chapters]
         mindmap_id = f"{session_id}_kb_{course.get('course_id', 'kb')}_mindmap"
         mindmap_lines = ["mindmap", f"  root(({course_name}))"]
@@ -2554,32 +2595,14 @@ def resource_knowledge_graph_legacy(resource_id: str) -> dict[str, Any]:
 
 
 # ── In-memory node progress store ────────────────────────────────────
-# Keyed by "{session_id}:{node_id}" for session isolation.
-# Two learners with the same node_id (e.g. "stage_1_node_1") won't
-# interfere with each other.
 _node_progress_store: dict[str, dict[str, Any]] = {}
 
 
 def _nkey(session_id: str, node_id: str) -> str:
-    """Build a session-isolated key for the node progress store."""
     return f"{session_id}:{node_id}"
 
 
 def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> list[dict[str, Any]]:
-    """Derive node status from resource study_statuses, and auto-unlock stages.
-
-    Node status is NOT stored as a separate fact — it is DERIVED from the
-    completion states of ALL resources tagged with that node's ``task_id``.
-
-    Rules (in priority order):
-    1. All resources completed → mastered (100%)
-    2. Any resource completed → in_progress (60%)
-    3. Node unlocked in store → available (0%)
-    4. Otherwise → locked (0%)
-
-    When ALL nodes in a stage are mastered, the first node of the next stage
-    is automatically unlocked (stored in ``_node_progress_store``).
-    """
     if not session_id:
         return stages
     for stage in stages:
@@ -2614,16 +2637,11 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
                 node["mastery"] = 60
             elif _nkey(session_id, nid) in _node_progress_store:
                 saved = _node_progress_store[_nkey(session_id, nid)]
-                # Store tracks unlock status only; status must derive from resources.
                 node["status"] = saved.get("status", node["status"])
                 node["mastery"] = 0
-            # else: keep default (locked/available from learning path)
-            # Safety: status and mastery must be consistent
             if node.get("mastery", 0) >= 100 and node.get("status") != "mastered":
                 node["mastery"] = 60
 
-    # ── Auto-unlock: unlock next stage's first node when current stage
-    #    is fully mastered. Skip if node already has a derived status.
     for i, stage in enumerate(stages):
         nodes = stage.get("nodes", [])
         if not nodes:
@@ -2646,13 +2664,12 @@ def _apply_node_progress(stages: list[dict[str, Any]], session_id: str = "") -> 
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# Learning path endpoints — read from DB, trigger via POST
+# Learning path endpoints
 # ═══════════════════════════════════════════════════════════════════════
 
 
 @router.get("/learning-path")
 def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    """Read the latest learning path from DB. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
@@ -2663,7 +2680,6 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
         mastered = sum(1 for n in all_nodes if n.get("status") == "mastered")
         overall = round(mastered / len(all_nodes) * 100) if all_nodes else 0
 
-        # Resource completion stats per stage
         stage_resource_stats: dict[str, dict[str, int]] = {}
         stage_ids = [s.get("id", "") for s in stages]
         try:
@@ -2672,7 +2688,6 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
                 sid = r.get("related_stage_id", "") or r.get("relatedStageId", "")
                 if not sid:
                     continue
-                # Match stage IDs (stage_1, stage_2, etc.)
                 matched = next((s for s in stage_ids if sid in s or s in sid), None)
                 if not matched:
                     continue
@@ -2698,7 +2713,6 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             "source": "agent_generated",
         }
 
-    # Try DB first
     db_path = ag_get_learning_path(session_id)
     if db_path:
         raw_stages = db_path.get("stages", [])
@@ -2721,7 +2735,6 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
             session_id=session_id, subject_id=subjectId, source="db",
         )
 
-    # Fall back to in-memory last_result
     state = conversation_store.get(session_id)
     if state.last_result:
         path = _to_learning_path(state.last_result)
@@ -2739,11 +2752,6 @@ def get_learning_path(sessionId: str = "", subjectId: str = "") -> dict[str, Any
 
 @router.post("/learning-path/generate")
 def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
-    """Trigger agent pipeline and generate a learning path.
-
-    Accepts optional ``userMessage``, ``courseId``, and ``subjectId`` from the
-    frontend to steer path generation toward the user's stated needs.
-    """
     session_id = _payload_session_id(payload)
     user_message = str(payload.get("userMessage", "")).strip()
     course_id = str(payload.get("courseId", "")).strip()
@@ -2752,10 +2760,8 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
 
     state = conversation_store.get(session_id)
 
-    # Prefer explicit userMessage from frontend; fall back to profile prompt
     if user_message:
         message = user_message
-        # If courseId is provided, prepend it as context
         if course_id:
             selected = course_catalog.get_course(course_id)
             if selected:
@@ -2773,7 +2779,6 @@ def generate_learning_path(payload: dict[str, Any]) -> dict[str, Any]:
 @router.patch("/learning-path/nodes/{node_id}")
 def update_node_progress(node_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
-    # 持久化节点进度到会话隔离的内存存储
     _node_progress_store[_nkey(session_id, node_id)] = {
         "status": payload.get("status", "available"),
         "mastery": payload.get("mastery", 0),
@@ -2798,9 +2803,6 @@ def submit_feedback(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
-# Allowed event types for the public POST /feedback/event endpoint.
-# Internal-only event types (stage_complete, chat_feedback) are NOT
-# included — they are only logged by backend code directly.
 _VALID_EVENT_TYPES: frozenset[str] = frozenset({
     "resource_view", "resource_complete", "quiz_result",
     "practice_result", "node_progress", "feedback",
@@ -2811,12 +2813,10 @@ _VALID_EVENT_TYPES: frozenset[str] = frozenset({
 def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     session_id = _payload_session_id(payload)
 
-    # Validate event_type — only known types are accepted via the public API
     event_type = payload.get("event", "")
     if event_type not in _VALID_EVENT_TYPES:
         raise InvalidEventTypeError(event_type)
 
-    # Record subject_id in event metadata for multi-subject analytics
     if payload.get("subjectId"):
         metadata = payload.get("metadata")
         if isinstance(metadata, dict):
@@ -2824,7 +2824,6 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
             metadata["subjectId"] = payload["subjectId"]
             payload["metadata"] = metadata
 
-    # Auto-fill duration from resource's estimated_minutes for completion events
     if payload.get("event") == "resource_complete" and payload.get("resourceId"):
         try:
             from app.db.repository import get_resource as _get_res
@@ -2845,13 +2844,8 @@ def log_study_event(payload: dict[str, Any]) -> dict[str, Any]:
     return _product_response({"ok": True}, session_id=session_id, source="user_action")
 
 
-
-
-
 def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
-    """Log a node_progress event to the learning tracker with rich metadata."""
     try:
-        # Try to enrich with stage title and node name from learning path
         stage_title = ""
         node_name = ""
         stage_id_part = node_id.rsplit("_node_", 1)[0] if "_node_" in node_id else ""
@@ -2889,12 +2883,6 @@ def _log_node_progress(session_id: str, node_id: str, status: str) -> None:
 
 @router.patch("/learning-path/auto-advance")
 def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
-    """Auto-advance node progress when a user views/completes a resource.
-
-    Uses ``taskId`` (e.g. ``stage_1_node_2``) to pinpoint the exact node.
-    Falls back to iterating all tasks within ``relatedStageId`` when
-    ``taskId`` is not provided.
-    """
     session_id = _payload_session_id(payload)
     related_stage_id = str(payload.get("relatedStageId", ""))
     task_id = str(payload.get("taskId", "")).strip()
@@ -2903,7 +2891,7 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
         return _product_response({"ok": False}, session_id=session_id, status="error", message="relatedStageId and valid event required", source="system")
 
     if task_id and not task_id.startswith(related_stage_id):
-        task_id = ""  # mismatched stage — ignore
+        task_id = ""
 
     def _update(node_id: str, status: str, mastery: int) -> None:
         _node_progress_store[_nkey(session_id, node_id)] = {
@@ -2935,7 +2923,6 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
                 _log_node_progress(session_id, next_id, "available")
         _log_node_progress(session_id, task_id, "completed")
 
-        # 检查本阶段所有节点是否全部完成 → 触发 stage_complete
         try:
             from app.services.agent_service import get_learning_path as _get_lp
             path = _get_lp(session_id)
@@ -2967,7 +2954,6 @@ def auto_advance_node(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/learning-analytics")
 def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, Any]:
-    """Read learning analytics from DB. Never triggers agents."""
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
@@ -2982,11 +2968,6 @@ def learning_analytics(sessionId: str = "", subjectId: str = "") -> dict[str, An
     )
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# Learning timeline
-# ═══════════════════════════════════════════════════════════════════════
-
-
 @router.get("/learning-events/timeline")
 def learning_timeline(
     sessionId: str = "",
@@ -2995,15 +2976,6 @@ def learning_timeline(
     type: str = "",
     range: int = 0,
 ) -> dict[str, Any]:
-    """Get recent learning events as a timeline, enriched with resource metadata.
-
-    Args:
-        sessionId: Session identifier.
-        subjectId: Optional subject identifier.
-        limit: Max events to return (default 50).
-        type: Filter by event type (e.g. ``resource_view``, ``quiz_result``). Empty = all.
-        range: Time range in days. 0 = all. 1 = today, 7 = last 7 days, 30 = last 30 days.
-    """
     session_id = _resolve_session_id(sessionId, subjectId)
     subject_id = str(subjectId).strip()
     _ensure_session_linked(session_id, subject_id=subject_id)
@@ -3017,14 +2989,12 @@ def learning_timeline(
     finally:
         db.close()
 
-    # Server-side filtering
     if type:
         raw_events = [e for e in raw_events if e.event_type == type]
     if range > 0:
         cutoff = time.time() - range * 86400
         raw_events = [e for e in raw_events if e.created_at and e.created_at.timestamp() >= cutoff]
 
-    # Build resource title lookup from DB + memory
     db_resources = ag_get_resources(session_id)
     resource_titles: dict[str, str] = {}
     resource_types: dict[str, str] = {}
@@ -3049,7 +3019,6 @@ def learning_timeline(
                 resource_stages[rid] = normalized.get("relatedStageId", "") or ""
                 resource_chapters[rid] = normalized.get("relatedChapter", "") or ""
 
-    # Event type → display config
     EVENT_CONFIG: dict[str, dict[str, Any]] = {
         "resource_view":     {"label": "查看了资源",     "icon": "👁️", "color": "blue"},
         "resource_complete": {"label": "完成了资源",     "icon": "✅", "color": "green"},
@@ -3060,7 +3029,6 @@ def learning_timeline(
         "node_progress":     {"label": "学习节点更新",   "icon": "📌", "color": "gray"},
     }
 
-    # Build resource knowledge points lookup
     resource_kps: dict[str, list[str]] = {}
     for r in db_resources:
         rid = r.get("id", "")
@@ -3079,7 +3047,6 @@ def learning_timeline(
         chapter = resource_chapters.get(rid, meta.get("relatedChapter", meta.get("related_chapter", "")) or "")
         config = EVENT_CONFIG.get(evt.event_type, {"label": evt.event_type, "icon": "📋", "color": "gray"})
 
-        # ── Enrich node_progress metadata with stage/node names ──
         if evt.event_type == "node_progress" and not meta.get("stageTitle") and meta.get("nodeId"):
             nid = str(meta.get("nodeId", ""))
             stage_id_part = nid.rsplit("_node_", 1)[0] if "_node_" in nid else ""
@@ -3100,7 +3067,6 @@ def learning_timeline(
                 except Exception:
                     logger.warning("Failed to enrich timeline node for session %s", session_id)
 
-        # ── Enrich resource events with knowledge points ──
         if rid and rid in resource_kps:
             meta["knowledgePoints"] = resource_kps[rid]
 

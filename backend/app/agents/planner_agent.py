@@ -1,4 +1,9 @@
+"""
+学习路径规划智能体 — LLM 主导，规则仅作为 LLM 不可用时的兜底。
+"""
+
 import json
+import logging
 import re
 from math import ceil
 from typing import Any
@@ -7,345 +12,300 @@ from app.agents.base import BaseAgent
 from app.services.course_catalog import course_catalog
 from app.services.llm_client import LLMClientError
 
+logger = logging.getLogger(__name__)
+
 
 class PlannerAgent(BaseAgent):
     agent_id = "planner_agent"
     agent_name = "学习路径规划智能体"
 
-    def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Return safe defaults for estimatedDays and learning_path.
+    # ── 公共接口 ──
 
-        When the planner cannot produce real output (timeout, LLM error),
-        callers must still receive a reasonable integer for estimatedDays
-        — not an empty dict or None.
-        Fallback data is marked with ``source: "rule_based_fallback"`` and
-        ``quality_status: "fallback"``.
-        """
+    def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
+        profile = context.get("profile", {})
+        weak_points = self._extract_weak_points(diagnosis)
+        planning_points = self._get_planning_points(context, weak_points)
+
+        # 时间：优先 LLM 理解，规则兜底
+        time_text = self._collect_time_text(context)
+        total_days = self._infer_days(time_text, profile)
+
+        # 诊断元信息（传给 LLM 参考）
+        diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile)
+
+        # 证据不足时，插入诊断探测点
+        if diag_meta["needs_more_diagnosis"] and not weak_points:
+            planning_points = [self._make_probe_point(diagnosis)]
+
+        if not planning_points:
+            # 没有知识点但还是要生成路径 → 传空列表给 LLM，让它根据对话上下文生成
+            pass
+
+        # LLM 生成路径
+        llm_path = self._try_generate_with_llm(context, profile, planning_points, total_days, diag_meta)
+        if llm_path:
+            return self._make_result(llm_path, total_days, diag_meta)
+
+        # 规则兜底
+        logger.info("LLM unavailable or failed, using rule-based path")
+        rule_path = self._build_rule_path(planning_points, profile, total_days, diag_meta)
+        return self._make_result(rule_path, total_days, diag_meta)
+
+    def get_fallback(self, context: dict[str, Any] | None = None) -> dict[str, Any]:
+        ctx = context or {}
+        time_text = self._collect_time_text(ctx)
+        total_days = self._infer_days(time_text, ctx.get("profile", {}))
         return {
+            "learning_path": [],
+            "stages": [],
+            "estimatedDays": total_days,
+            "plan_summary": "规划智能体暂时不可用，请稍后重试。",
+            "diagnosis_used": False,
+            "diagnosis_references": [],
+            "stage_rationales": [],
+            "needs_more_diagnosis": True,
+            "priority_basis": ["fallback"],
+            "recommended_resource_strategy": "智能体恢复后，建议先从基础诊断确认薄弱点。",
+            "risk_flags": ["planner_unavailable"],
             "agent_step": {
                 "agent_id": self.agent_id,
                 "agent_name": self.agent_name,
                 "status": "failed",
-                "summary": f"Agent '{self.agent_id}' fell back to defaults.",
-                "error_reason": "Planner agent failed, returning empty learning path",
+                "summary": "PlannerAgent fell back to defaults.",
+                "error_reason": "Planner agent failed, returning empty path",
                 "source": "rule_based_fallback",
                 "quality_status": "fallback",
                 "started_at": None,
                 "finished_at": None,
             },
-            "learning_path": [],
-            "source": "rule_based_fallback",
-            "quality_status": "fallback",
-            "reason": "智能体生成失败，使用规则兜底",
-            "estimatedDays": self._infer_days(
-                str((context or {}).get("user_message", "")),
-                (context or {}).get("profile", {}),
-            ),
         }
 
-    def run(self, context: dict[str, Any]) -> dict[str, Any]:
-        diagnosis = context.get("diagnosis") if isinstance(context.get("diagnosis"), dict) else {}
-        weak_points = self._weak_points(diagnosis)
-        profile = context.get("profile", {})
-        total_days = self._infer_days(self._context_time_text(context), profile)
-        diagnosis_meta = self._diagnosis_meta(diagnosis, weak_points, total_days, profile)
-        planning_points = self._planning_points(context, weak_points)
+    # ── 时间推断 ──
 
-        if diagnosis_meta["needs_more_diagnosis"] and not weak_points:
-            planning_points = [self._diagnosis_probe_point(diagnosis)]
-
-        if not planning_points:
-            return self._result([], total_days, diagnosis_meta)
-
-        llm_path = self._generate_with_llm(context, profile, planning_points, total_days, diagnosis_meta)
-        if llm_path:
-            return self._result(llm_path, total_days, diagnosis_meta)
-
-        return self._result(
-            self._build_rule_path(planning_points, profile, total_days),
-            total_days,
-            diagnosis_meta,
-        )
-
-    def _build_rule_path(
-        self,
-        planning_points: list[dict[str, Any]],
-        profile: dict[str, Any],
-        total_days: int,
-    ) -> list[dict[str, Any]]:
-        stage_count = self._stage_count(planning_points, total_days)
-        grouped_points = self._group_points(planning_points, stage_count)
-
-        learning_path = []
-        for index, point_group in enumerate(grouped_points, start=1):
-            lead_point = point_group[0]
-            names = [str(point.get("name", "重点知识点")) for point in point_group]
-            if lead_point.get("point_id") == "diagnosis_probe":
-                learning_path.append(
-                    {
-                        "stage_id": f"stage_{index}",
-                        "title": str(lead_point["name"]),
-                        "duration": self._duration_for_index(index, stage_count, total_days),
-                        "goal": "先完成基础测验或练习记录，确认真实薄弱点后再进入针对性学习。",
-                        "tasks": ["完成一次基础测验", "回顾最近错题或困惑点", "确认需要优先补齐的薄弱点"],
-                        "resource_types": ["quiz", "practice"],
-                        "reason": str(lead_point["reason"]),
-                        "source": "agent_generated",
-                    }
-                )
-                continue
-            learning_path.append(
-                {
-                    "stage_id": f"stage_{index}",
-                    "title": self._stage_title(index, "、".join(names[:2])),
-                    "duration": self._duration_for_index(index, stage_count, total_days),
-                    "goal": self._goal(lead_point, profile, names),
-                    "tasks": self._tasks(lead_point, profile, index, names),
-                    "resource_types": self._resource_types(profile, index),
-                    "reason": self._reason(point_group, profile, total_days),
-                    "source": "agent_generated",
-                }
-            )
-
-        if total_days <= 3 and len(learning_path) < 5:
-            learning_path.append(
-                {
-                    "stage_id": f"stage_{len(learning_path) + 1}",
-                    "title": "快速复盘与考前检查",
-                    "duration": f"第 {total_days} 天",
-                    "goal": "用练习题和错题复盘检查核心概念，保证短周期学习能形成可交付结果。",
-                    "tasks": ["完成重点练习题", "整理易错点清单", "回看高优先级章节讲义"],
-                    "resource_types": ["quiz", "reading"],
-                    "reason": "学习时间较短，需要把最后阶段压缩为检测和复盘，避免只学不练。",
-                    "source": "agent_generated",
-                }
-            )
-
-        return learning_path
-
-    def _generate_with_llm(
-        self,
-        context: dict[str, Any],
-        profile: dict[str, Any],
-        planning_points: list[dict[str, Any]],
-        total_days: int,
-        diagnosis_meta: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        if not self.llm_client:
-            return []
-
-        course_id = str(context.get("course_id") or "")
-        course = course_catalog.get_course(course_id) or {
-            "course_id": course_id,
-            "course_name": context.get("knowledge_context", {}).get("course_name", course_id),
-            "chapters": planning_points,
-        }
-        payload = {
-            "session_id": context.get("session_id"),
-            "course_id": course_id,
-            "estimated_days": total_days,
-            "profile_facts": context.get("profile_facts", {}),
-            "profile": self._compact_profile(profile),
-            "diagnosis": diagnosis_meta,
-            "course": {
-                "course_id": course.get("course_id", course_id),
-                "course_name": course.get("course_name", course_id),
-                "chapters": [
-                    {
-                        "chapter_id": item.get("chapter_id", index),
-                        "title": item.get("title") or item.get("name"),
-                        "difficulty": item.get("difficulty", "medium"),
-                        "prerequisites": item.get("prerequisites", []),
-                    }
-                    for index, item in enumerate(course.get("chapters", planning_points), start=1)
-                ],
-            },
-            "candidate_points": planning_points,
-        }
-
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是 EduAgent 的学习路径规划智能体。你必须根据学生画像、课程知识库和时间安排生成个性化学习路径。\n"
-                    "要求：只输出 JSON；不要输出 Markdown；不要编造课程中不存在的章节；"
-                    "必须体现学生基础、薄弱点、学习目标、时间安排和学习偏好；"
-                    "如果诊断证据不足，第一阶段必须先安排诊断测验或薄弱点确认；"
-                    "每个阶段必须包含 stage_id、title、duration、goal、tasks、resource_types、reason。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"下面是规划输入 JSON，请生成 3-5 个阶段，estimated_days 必须等于 {total_days}。\n"
-                    f"{json.dumps(payload, ensure_ascii=False)}"
-                ),
-            },
+    def _collect_time_text(self, context: dict) -> str:
+        """收集所有可能包含时间信息的文本"""
+        parts = [
+            str(context.get("user_message", "")),
+            str(context.get("time_budget", "")),
         ]
+        profile_facts = context.get("profile_facts", {})
+        if isinstance(profile_facts, dict):
+            parts.append(str(profile_facts.get("time_budget", "")))
+        return " ".join(parts)
 
+    def _infer_days(self, time_text: str, profile: dict) -> int:
+        """推断学习天数：LLM 优先，规则兜底"""
+        if self.llm_client:
+            llm_days = self._llm_infer_days(time_text, profile)
+            if llm_days:
+                return llm_days
+        return self._rule_infer_days(time_text, profile)
+
+    def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
+        """用 LLM 理解时间"""
+        profile_text = self._compact_profile_text(profile)
+        prompt = f"""从以下信息提取学生的学习时间（天数）：
+
+用户消息和时间信息：{time_text}
+学习画像中的时间信息：{profile_text}
+
+常见时间表达参考：
+- "两个月" = 60天
+- "一个月" = 30天
+- "三周" = 21天
+- "两周" = 14天
+- "半年" = 180天
+- "一个半月" = 45天
+- "这学期" = 90天（默认一学期约3个月）
+- "每天2小时，持续1个月" = 30天（关注总周期而非每日时长）
+- 如果没有明确时间 = 14天
+
+只返回一个整数，不要解释。"""
         try:
-            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=1600)
-            parsed = self._parse_json(raw)
-        except (LLMClientError, json.JSONDecodeError, TypeError, ValueError):
-            return []
-
-        path = parsed.get("learning_path") if isinstance(parsed, dict) else None
-        if not isinstance(path, list):
-            return []
-        return self._normalize_llm_path(path, planning_points, total_days)
-
-    def _parse_json(self, text: str) -> dict[str, Any]:
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-            stripped = re.sub(r"\s*```$", "", stripped)
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start >= 0 and end >= start:
-            stripped = stripped[start : end + 1]
-        parsed = json.loads(stripped)
-        if not isinstance(parsed, dict):
-            raise ValueError("Planner LLM output must be a JSON object.")
-        return parsed
-
-    def _normalize_llm_path(
-        self,
-        path: list[Any],
-        planning_points: list[dict[str, Any]],
-        total_days: int,
-    ) -> list[dict[str, Any]]:
-        allowed_terms = {
-            str(point.get("name") or point.get("title") or "").strip()
-            for point in planning_points
-            if str(point.get("name") or point.get("title") or "").strip()
-        }
-        normalized = []
-        for index, item in enumerate(path[:5], start=1):
-            if not isinstance(item, dict):
-                continue
-            title = str(item.get("title") or f"第 {index} 阶段").strip()
-            tasks = [str(task).strip() for task in item.get("tasks", []) if str(task).strip()]
-            text = " ".join([title, str(item.get("goal", "")), " ".join(tasks)])
-            if allowed_terms and not any(term in text for term in allowed_terms):
-                continue
-            resource_types = self._clean_resource_types(item.get("resource_types", []))
-            normalized.append(
-                {
-                    "stage_id": str(item.get("stage_id") or f"stage_{index}"),
-                    "title": title,
-                    "duration": str(item.get("duration") or self._duration_for_index(index, min(len(path), 5), total_days)),
-                    "goal": str(item.get("goal") or "完成本阶段核心知识学习。"),
-                    "tasks": tasks[:5] or ["阅读课程讲义", "完成配套练习"],
-                    "resource_types": resource_types or ["lecture", "quiz"],
-                    "reason": str(item.get("reason") or "根据学生画像和课程知识库自动规划。"),
-                    "source": "agent_generated",
-                }
+            raw = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是精确的时间提取器。只返回整数天数。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+                max_tokens=10,
             )
-        return normalized if len(normalized) >= 2 else []
+            days = int(re.search(r'\d+', raw).group())
+            return max(1, min(365, days))
+        except Exception:
+            return None
 
-    def _planning_points(self, context: dict[str, Any], weak_points: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        course_id = str(context.get("course_id") or "")
-        course = course_catalog.get_course(course_id) or {}
-        chapters = [
-            {
-                "point_id": f"{course_id}_{chapter.get('chapter_id', index)}",
-                "chapter_id": str(chapter.get("chapter_id", index)).zfill(2),
-                "name": str(chapter.get("title", f"第 {index} 章")),
-                "title": str(chapter.get("title", f"第 {index} 章")),
-                "priority": "high" if index <= 3 else "medium",
-                "difficulty": chapter.get("difficulty", "medium"),
-                "prerequisites": chapter.get("prerequisites", []),
-            }
-            for index, chapter in enumerate(course.get("chapters", []), start=1)
-        ]
-        text = " ".join(
-            [
-                str(context.get("user_message", "")),
-                " ".join(str(value) for value in context.get("profile_facts", {}).values()),
-            ]
-        )
-        if chapters and self._is_whole_course_request(text):
-            return chapters
-        return weak_points or chapters
+    def _rule_infer_days(self, text: str, profile: dict) -> int:
+        """规则推断天数（兜底）"""
+        profile_texts = [text]
+        for key in ("time_budget", "learning_rhythm", "learning_goal", "learning_progress"):
+            item = profile.get(key, {})
+            val = item.get("value", "") if isinstance(item, dict) else item
+            if isinstance(val, str) and val.strip():
+                profile_texts.append(str(val))
 
-    def _weak_points(self, diagnosis: dict[str, Any]) -> list[dict[str, Any]]:
+        combined = " ".join(profile_texts)
+        combined = self._normalize_cn_numbers(combined)
+
+        m = re.search(r"(\d+)\s*个?\s*月", combined)
+        if m:
+            return max(1, min(365, int(m.group(1)) * 30))
+
+        m = re.search(r"(\d+)\s*个?\s*(?:周|星期)", combined)
+        if m:
+            return max(1, min(365, int(m.group(1)) * 7))
+
+        m = re.search(r"(\d+)\s*(?:天|日)", combined)
+        if m:
+            return max(1, min(365, int(m.group(1))))
+
+        m = re.search(r"(\d+)\s*个?\s*(?:小时|h)", combined)
+        if m and "每天" not in combined:
+            return max(1, ceil(int(m.group(1)) / 24))
+
+        cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+                   "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+        m = re.search(r"([一二两三四五六七八九])?十([一二三四五六七八九])?\s*个?\s*(天|日|周|星期|月)", combined)
+        if m:
+            tens = cn_map.get(m.group(1), 1) * 10 if m.group(1) else 10
+            ones = cn_map.get(m.group(2), 0)
+            total = tens + ones
+            unit = m.group(3)
+            if unit in ("周", "星期"):
+                return max(1, min(365, total * 7))
+            if unit == "月":
+                return max(1, min(365, total * 30))
+            return max(1, min(365, total))
+
+        m = re.search(r"([一二两三四五六七八九])\s*个?\s*(天|日|周|星期|月)", combined)
+        if m:
+            total = cn_map.get(m.group(1), 7)
+            unit = m.group(2)
+            if unit in ("周", "星期"):
+                return max(1, min(365, total * 7))
+            if unit == "月":
+                return max(1, min(365, total * 30))
+            return max(1, min(365, total))
+
+        return 14
+
+    def _normalize_cn_numbers(self, text: str) -> str:
+        """中文数字转阿拉伯数字（辅助规则兜底）"""
+        cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
+                      "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
+        cn_all = "一二两三四五六七八九"
+        units = r"(?:天|日|周|星期|个小时|小时|个月|月|分钟)"
+
+        text = re.sub(rf"([{cn_all}十])\s*个\s*({units})", r"\1\2", text)
+
+        for tc, tv in cn_digits.items():
+            for oc, ov in cn_digits.items():
+                text = re.sub(rf"{tc}十{oc}\s*({units})", rf"{tv}{ov}\1", text)
+
+        for tc, tv in cn_digits.items():
+            text = re.sub(rf"{tc}十\s*({units})", rf"{tv}0\1", text)
+
+        for oc, ov in cn_digits.items():
+            text = re.sub(rf"(?<![{cn_all}])十{oc}\s*({units})", rf"1{ov}\1", text)
+
+        text = re.sub(rf"(?<![{cn_all}])十\s*({units})", r"10\1", text)
+
+        for cn, digit in cn_digits.items():
+            text = re.sub(rf"{cn}\s*({units})", rf"{digit}\1", text)
+
+        text = re.sub(rf"半\s*({units})", r"0\1", text)
+
+        return text
+
+    # ── 弱知识点提取 ──
+
+    def _extract_weak_points(self, diagnosis: dict) -> list[dict]:
+        """从诊断结果提取弱知识点，过滤占位值"""
         result = []
-        for index, item in enumerate(diagnosis.get("weak_knowledge_points") or [], start=1):
+        raw = diagnosis.get("weak_knowledge_points") or diagnosis.get("weak_topics") or []
+        for i, item in enumerate(raw, 1):
             if isinstance(item, dict):
+                name = str(item.get("name") or item.get("topic") or "").strip()
                 point = dict(item)
-                name = str(point.get("name") or point.get("topic") or "").strip()
             else:
-                point = {}
                 name = str(item).strip()
-            if not name or self._is_placeholder_weak_point(name):
+                point = {}
+            if not name or self._is_placeholder(name):
                 continue
             point["name"] = name
             point.setdefault("title", name)
-            point.setdefault("point_id", f"diagnosis_{index}")
+            point.setdefault("point_id", f"dx_{i}")
             point.setdefault("priority", "high")
             point.setdefault("difficulty", "medium")
             point.setdefault("prerequisites", [])
             result.append(point)
         return result
 
-    def _is_placeholder_weak_point(self, name: str) -> bool:
-        normalized = name.strip().lower()
-        return normalized in {"无诊断数据", "暂无诊断数据", "unknown", "none", "未知", "无", "待诊断", "未诊断"}
+    def _is_placeholder(self, name: str) -> bool:
+        return name.strip().lower() in {
+            "无诊断数据", "暂无诊断数据", "unknown", "none", "未知", "无",
+            "待诊断", "未诊断", "n/a", "null", "",
+        }
 
-    def _diagnosis_meta(
-        self,
-        diagnosis: dict[str, Any],
-        weak_points: list[dict[str, Any]],
-        total_days: int,
-        profile: dict[str, Any],
-    ) -> dict[str, Any]:
-        evidence_chain = diagnosis.get("evidence_chain") if isinstance(diagnosis.get("evidence_chain"), list) else []
-        weak_names = [str(point.get("name")) for point in weak_points if point.get("name")]
-        references = [f"薄弱点：{name}" for name in weak_names]
-        for item in evidence_chain[:3]:
-            if not isinstance(item, dict):
-                continue
-            source = str(item.get("source") or "unknown")
-            related = str(item.get("related_knowledge_point") or item.get("signal") or "").strip()
-            reference = self._diagnosis_reference(source, related)
-            if reference:
-                references.append(reference)
+    # ── 规划知识点 ──
 
-        needs_more_evidence = diagnosis.get("needs_more_evidence") is True
-        fallback_only = bool(evidence_chain) and all(
-            isinstance(item, dict) and item.get("source") in {"fallback_rule", "rule_based"}
-            for item in evidence_chain
+    def _get_planning_points(self, context: dict, weak_points: list[dict]) -> list[dict]:
+        """获取规划用的知识点列表"""
+        course_id = str(context.get("course_id") or "")
+        course = course_catalog.get_course(course_id) or {}
+        chapters = [
+            {
+                "point_id": f"{course_id}_{ch.get('chapter_id', i)}",
+                "chapter_id": str(ch.get("chapter_id", i)).zfill(2),
+                "name": str(ch.get("title", f"第{i}章")),
+                "title": str(ch.get("title", f"第{i}章")),
+                "priority": "high" if i <= 3 else "medium",
+                "difficulty": ch.get("difficulty", "medium"),
+                "prerequisites": ch.get("prerequisites", []),
+            }
+            for i, ch in enumerate(course.get("chapters", []), 1)
+        ]
+
+        text = " ".join([
+            str(context.get("user_message", "")),
+            " ".join(str(v) for v in context.get("profile_facts", {}).values()),
+        ])
+        if chapters and self._is_whole_course(text):
+            return chapters
+
+        return weak_points or chapters
+
+    def _is_whole_course(self, text: str) -> bool:
+        return any(w in text for w in ["考试", "复习", "完整", "系统", "整门", "全", "通过"])
+
+    # ── 诊断元信息 ──
+
+    def _build_diagnosis_meta(self, diagnosis: dict, weak_points: list[dict],
+                               total_days: int, profile: dict) -> dict:
+        weak_names = [p.get("name", "") for p in weak_points if p.get("name")]
+        needs_more = diagnosis.get("needs_more_evidence", False) or (
+            bool(diagnosis) and not weak_points
         )
-        needs_more_diagnosis = (bool(diagnosis) and not weak_points) or (needs_more_evidence and fallback_only)
-        raw_flags = diagnosis.get("risk_flags")
-        risk_flags = list(raw_flags) if isinstance(raw_flags, list) else []
-        if needs_more_diagnosis and "evidence_insufficient" not in risk_flags:
-            risk_flags.append("evidence_insufficient")
-        time_limited = total_days <= 3 or self._has_limited_daily_time(profile)
-        if time_limited and "time_budget_tight" not in risk_flags:
-            risk_flags.append("time_budget_tight")
-
-        priority_basis = ["weak_point_severity" if weak_points else "diagnosis_confirmation"]
-        if time_limited:
-            priority_basis.append("time_budget")
-        if diagnosis.get("recommended_next_actions"):
-            priority_basis.append("recommended_next_actions")
+        flags = list(diagnosis.get("risk_flags", []))
+        if needs_more and "evidence_insufficient" not in flags:
+            flags.append("evidence_insufficient")
 
         return {
             "diagnosis_used": bool(diagnosis),
-            "diagnosis_references": references[:8],
-            "needs_more_diagnosis": needs_more_diagnosis,
-            "priority_basis": priority_basis,
-            "risk_flags": list(dict.fromkeys(str(flag) for flag in risk_flags if flag)),
-            "recommended_resource_strategy": (
-                "先用基础资料和小测确认薄弱点，再进入针对性练习。"
-                if needs_more_diagnosis
-                else "先补基础资料，再做专项练习，最后用测验复盘诊断薄弱点。"
-            ),
+            "weak_topic_names": weak_names,
+            "needs_more_diagnosis": needs_more,
+            "evidence_sources": [
+                e.get("source", "unknown") for e in (diagnosis.get("evidence_chain") or [])[:5]
+                if isinstance(e, dict)
+            ],
+            "risk_flags": flags,
+            "total_days": total_days,
         }
 
-    def _diagnosis_probe_point(self, diagnosis: dict[str, Any]) -> dict[str, Any]:
-        actions = diagnosis.get("recommended_next_actions") if isinstance(diagnosis.get("recommended_next_actions"), list) else []
+    def _make_probe_point(self, diagnosis: dict) -> dict:
+        actions = diagnosis.get("recommended_next_actions") or []
         return {
             "point_id": "diagnosis_probe",
             "name": "基础诊断与薄弱点确认",
@@ -353,341 +313,332 @@ class PlannerAgent(BaseAgent):
             "priority": "high",
             "difficulty": "medium",
             "prerequisites": [],
-            "reason": "当前诊断证据不足，需要先通过基础测验或追问确认具体薄弱点。",
+            "reason": "当前诊断证据不足，先通过测验确认具体薄弱点再制定精准计划。",
             "recommended_next_actions": actions,
         }
 
-    def _diagnosis_reference(self, source: str, related: str) -> str:
-        labels = {
-            "user_message": "用户表达",
-            "profile": "学习画像",
-            "learning_path": "学习路径",
-            "course_catalog": "课程目录",
-            "quiz_result": "测验记录",
-            "practice_result": "练习记录",
-            "fallback_rule": "诊断证据不足",
-            "rule_based": "诊断证据不足",
-            "unknown": "诊断证据",
-        }
-        label = labels.get(source, "诊断证据")
-        clean_related = self._friendly_visible_text(related)
-        if self._is_placeholder_weak_point(clean_related):
-            clean_related = ""
-        return f"{label}：{clean_related}" if clean_related else label
+    # ── LLM 生成 ──
 
-    def _friendly_visible_text(self, text: str) -> str:
-        raw = str(text or "")
-        if "Complete one" in raw and ("quiz_result" in raw or "practice_result" in raw):
-            return "建议先完成一次基础测验或练习记录，以便确认薄弱点。"
-        if "Submit feedback" in raw:
-            return "使用推荐资源后，可以补充学习反馈，便于后续调整路径。"
-        replacements = {
-            "Complete one quiz_result or practice_result so the next diagnosis has behavioral evidence.": "建议先完成一次基础测验或练习记录，以便确认薄弱点。",
-            "Submit feedback after using the recommended resource.": "使用推荐资源后，可以补充学习反馈，便于后续调整路径。",
-            "quiz_result": "测验记录",
-            "practice_result": "练习记录",
-            "recommended resource": "推荐资源",
-            "fallback_rule": "诊断证据不足",
+    def _try_generate_with_llm(self, context, profile, planning_points,
+                                 total_days, diag_meta) -> list[dict] | None:
+        if not self.llm_client:
+            return None
+
+        course_id = str(context.get("course_id") or "")
+        course = course_catalog.get_course(course_id) or {}
+        profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
+
+        # 获取用户原话和对话上下文
+        user_message = profile_facts.get("_raw_user_message", str(context.get("user_message", "")))
+        conversation_context = profile_facts.get("_conversation_context", "")
+
+        # 如果课程不在目录里，从上下文提取课程名
+        course_name = (
+            course.get("course_name")
+            or context.get("knowledge_context", {}).get("course_name")
+            or profile_facts.get("target_course")
+            or ""
+        )
+
+        payload = {
+            "course_name": course_name,
+            "estimated_days": total_days,
+            "student_profile": self._compact_profile(profile),
+            "diagnosis_meta": diag_meta,
+            "planning_points": [
+                {
+                    "name": p.get("name"),
+                    "difficulty": p.get("difficulty", "medium"),
+                    "prerequisites": p.get("prerequisites", []),
+                }
+                for p in planning_points
+            ] if planning_points else [],
         }
-        result = raw
-        for old, new in replacements.items():
-            result = result.replace(old, new)
+
+        prompt = f"""根据以下信息，生成一个 {total_days} 天的学习路径。
+
+用户最新要求：{user_message}
+
+对话上下文：
+{conversation_context}
+
+课程与画像数据：
+{json.dumps(payload, ensure_ascii=False, indent=2)}
+
+要求：
+1. 生成3-5个阶段，总天数必须正好{total_days}天
+2. 每个阶段包含：stage_id, title, duration, goal, tasks, resource_types, reason
+3. title必须以具体的学习内容命名（如"极限与连续"、"导数与微分"、"不定积分"），绝对不要用"第一阶段"、"补齐基础"这种模板化标题
+4. 如果用户要求"以学习内容为阶段划分"，严格按照内容主题划分阶段
+5. 如果用户提到特定教材（如同济版高等数学），参考该教材的章节结构来划分阶段
+6. 体现学生基础水平（如"高中导数学过"、"零基础"）和时间约束
+7. 如果对话中已经有诊断信息，参考薄弱点来调整阶段重点
+8. 只输出JSON，格式：{{"learning_path": [...]}}"""
+
+        try:
+            raw = self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是学习路径规划专家，擅长根据学生情况设计个性化学习阶段。只输出JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0.3,
+                max_tokens=1600,
+            )
+            parsed = self._parse_json(raw)
+            path = parsed.get("learning_path") if isinstance(parsed, dict) else None
+            if isinstance(path, list) and len(path) >= 1:
+                return self._normalize_path(path, planning_points, total_days)
+        except Exception as e:
+            logger.warning(f"LLM path generation failed: {e}")
+
+        return None
+
+    def _parse_json(self, text: str) -> dict:
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        start, end = text.find("{"), text.rfind("}")
+        if start >= 0 and end >= start:
+            text = text[start:end + 1]
+        result = json.loads(text)
+        if not isinstance(result, dict):
+            raise ValueError("Expected JSON object")
         return result
 
-    def _result(
-        self,
-        learning_path: list[dict[str, Any]],
-        total_days: int,
-        diagnosis_meta: dict[str, Any],
-    ) -> dict[str, Any]:
-        stage_rationales = [
-            {
-                "stage_id": stage.get("stage_id"),
-                "rationale": stage.get("reason", ""),
-            }
-            for stage in learning_path
-            if isinstance(stage, dict)
-        ]
-        summary = self._plan_summary(learning_path, diagnosis_meta, total_days)
-        return {
-            "learning_path": learning_path,
-            "stages": learning_path,
-            "estimatedDays": total_days,
-            "plan_summary": summary,
-            "summary": summary,
-            "diagnosis_used": diagnosis_meta["diagnosis_used"],
-            "diagnosis_references": diagnosis_meta["diagnosis_references"],
-            "stage_rationales": stage_rationales,
-            "needs_more_diagnosis": diagnosis_meta["needs_more_diagnosis"],
-            "priority_basis": diagnosis_meta["priority_basis"],
-            "recommended_resource_strategy": diagnosis_meta["recommended_resource_strategy"],
-            "risk_flags": diagnosis_meta["risk_flags"],
-            "agent_step": self.agent_step(),
+    def _normalize_path(self, path: list, planning_points: list, total_days: int) -> list[dict]:
+        """标准化LLM生成的路径"""
+        allowed = {
+            (p.get("name") or p.get("title") or "").strip()
+            for p in planning_points
         }
+        allowed.discard("")
 
-    def _plan_summary(
-        self,
-        learning_path: list[dict[str, Any]],
-        diagnosis_meta: dict[str, Any],
-        total_days: int,
-    ) -> str:
-        if diagnosis_meta["needs_more_diagnosis"]:
-            return f"诊断证据不足，先用快速测验确认薄弱点，再按结果压缩安排 {total_days} 天学习。"
-        titles = [str(stage.get("title", "")) for stage in learning_path[:2] if isinstance(stage, dict)]
-        if diagnosis_meta["diagnosis_references"]:
-            return f"根据诊断证据优先安排 {'、'.join(titles) or '核心薄弱点'}，总周期 {total_days} 天。"
-        return f"根据课程目录和学生画像生成 {total_days} 天学习路径。"
+        result = []
+        for i, item in enumerate(path[:5], 1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title", f"第{i}阶段")).strip()
+            tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
 
-    def _is_whole_course_request(self, text: str) -> bool:
-        return any(word in text for word in ["考试", "复习", "完整", "系统", "整门", "全", "通过"])
+            # 只有在 allowed 非空时才检查关联
+            if allowed:
+                text_blob = f"{title} {item.get('goal', '')} {' '.join(tasks)}"
+                if not any(term and term in text_blob for term in allowed):
+                    continue
 
-    def _stage_count(self, planning_points: list[dict[str, Any]], total_days: int) -> int:
-        if total_days <= 2:
-            return min(3, len(planning_points))
-        if total_days <= 5:
-            return min(4, len(planning_points))
-        return min(5, len(planning_points))
+            result.append({
+                "stage_id": str(item.get("stage_id", f"stage_{i}")),
+                "title": title,
+                "duration": str(item.get("duration", f"第{i}阶段")),
+                "goal": str(item.get("goal", "完成本阶段核心知识学习。")),
+                "tasks": tasks or ["学习课程讲义", "完成配套练习"],
+                "resource_types": self._clean_types(item.get("resource_types", [])),
+                "reason": str(item.get("reason", "根据学生画像和课程结构自动规划。")),
+                "source": "llm_generated",
+            })
 
-    def _group_points(self, planning_points: list[dict[str, Any]], stage_count: int) -> list[list[dict[str, Any]]]:
-        groups: list[list[dict[str, Any]]] = []
-        for index in range(stage_count):
-            start = round(index * len(planning_points) / stage_count)
-            end = round((index + 1) * len(planning_points) / stage_count)
-            groups.append(planning_points[start:end] or [planning_points[min(index, len(planning_points) - 1)]])
+        return result if len(result) >= 1 else []
+
+    def _clean_types(self, types: Any) -> list[str]:
+        aliases = {"case_study": "practice", "code": "practice", "video": "multimodal",
+                    "diagram": "mindmap", "text": "lecture", "exercise": "quiz"}
+        allowed = {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}
+        if not isinstance(types, list):
+            return ["lecture", "quiz"]
+        result = []
+        for t in types:
+            norm = aliases.get(str(t).strip(), str(t).strip())
+            if norm in allowed and norm not in result:
+                result.append(norm)
+        return result or ["lecture", "quiz"]
+
+    # ── 规则兜底 ──
+
+    def _build_rule_path(self, points, profile, total_days, diag_meta) -> list[dict]:
+        """规则生成路径（LLM不可用时）"""
+        n_stages = min(5, max(3, len(points))) if points else 3
+        groups = self._group_points(points, n_stages) if points else []
+        path = []
+
+        if not groups:
+            # 没有知识点时生成默认阶段
+            return [
+                {
+                    "stage_id": "stage_1",
+                    "title": "基础概念与入门",
+                    "duration": f"第1-{max(1, total_days // 3)}天",
+                    "goal": "建立课程核心概念框架，掌握基本定义和术语。",
+                    "tasks": ["阅读入门讲义", "完成基础概念练习", "整理知识结构图"],
+                    "resource_types": ["lecture", "quiz", "mindmap"],
+                    "reason": f"学习周期{total_days}天，从基础概念起步。",
+                    "source": "rule_fallback",
+                },
+                {
+                    "stage_id": "stage_2",
+                    "title": "核心技能与方法",
+                    "duration": f"第{max(1, total_days // 3) + 1}-{max(2, total_days * 2 // 3)}天",
+                    "goal": "掌握核心计算方法和解题技巧。",
+                    "tasks": ["学习核心方法讲义", "完成专项练习题", "分析典型例题"],
+                    "resource_types": ["lecture", "quiz", "practice"],
+                    "reason": "在基础概念之上，深入核心技能训练。",
+                    "source": "rule_fallback",
+                },
+                {
+                    "stage_id": "stage_3",
+                    "title": "综合应用与复习",
+                    "duration": f"第{max(2, total_days * 2 // 3) + 1}-{total_days}天",
+                    "goal": "综合运用所学知识解决实际问题，查漏补缺。",
+                    "tasks": ["完成综合测试", "整理错题本", "复习薄弱环节"],
+                    "resource_types": ["quiz", "reading", "practice"],
+                    "reason": f"最后{total_days - max(2, total_days * 2 // 3)}天集中复习和综合应用。",
+                    "source": "rule_fallback",
+                },
+            ]
+
+        for i, group in enumerate(groups, 1):
+            lead = group[0]
+            names = [p.get("name", "重点知识点") for p in group]
+
+            if lead.get("point_id") == "diagnosis_probe":
+                path.append({
+                    "stage_id": f"stage_{i}",
+                    "title": str(lead["name"]),
+                    "duration": self._calc_duration(i, n_stages, total_days),
+                    "goal": "先完成基础测验，确认真实薄弱点后再进入针对性学习。",
+                    "tasks": ["完成基础测验", "回顾错题", "确认优先薄弱点"],
+                    "resource_types": ["quiz", "practice"],
+                    "reason": str(lead.get("reason", "证据不足，需先诊断。")),
+                    "source": "rule_fallback",
+                })
+                continue
+
+            path.append({
+                "stage_id": f"stage_{i}",
+                "title": self._make_title(i, names),
+                "duration": self._calc_duration(i, n_stages, total_days),
+                "goal": self._make_goal(lead, profile, names),
+                "tasks": self._make_tasks(lead, profile, i, names),
+                "resource_types": self._make_resource_types(profile, i),
+                "reason": self._make_reason(group, profile, total_days),
+                "source": "rule_fallback",
+            })
+
+        return path
+
+    def _group_points(self, points, n_stages):
+        groups = []
+        for i in range(n_stages):
+            start = round(i * len(points) / n_stages)
+            end = round((i + 1) * len(points) / n_stages)
+            chunk = points[start:end]
+            if not chunk:
+                chunk = [points[min(i, len(points) - 1)]]
+            groups.append(chunk)
         return groups
 
-    def _infer_days(self, message: str, profile: dict[str, Any]) -> int:
-        # Collect time-relevant text from the agent prompt and ALL profile dimensions,
-        # not just learning_goal / learning_progress.  This catches time_budget stored
-        # in learning_rhythm as well as free-form day counts anywhere in the profile.
-        profile_texts = [message]
-        for key in ("learning_goal", "learning_progress", "learning_rhythm", "time_budget",
-                     "knowledge_base", "learning_goal_knowledge", "interests"):
-            item = profile.get(key, {})
-            val = item.get("value", "") if isinstance(item, dict) else item
-            if isinstance(val, str) and val.strip():
-                profile_texts.append(str(val))
+    def _make_title(self, i, names):
+        name_str = "、".join(names[:2])
+        if not name_str or name_str == "重点知识点":
+            return f"第{i}阶段"
+        return name_str
 
-        text = " ".join(profile_texts)
-        text = self._normalize_cn_number_time(text)
+    def _calc_duration(self, i, n_stages, total_days):
+        dps = max(1, ceil(total_days / n_stages))
+        start = min(total_days, (i - 1) * dps + 1)
+        end = min(total_days, max(start, i * dps))
+        return f"第{start}-{end}天" if start != end else f"第{start}天"
 
-        # --- Arabic-digit patterns (already normalised from Chinese) ---
-        # Allow optional measure-word "个" between digit and unit
-        # (e.g. "2个小时" → 2, "1个星期" → 7)
-        hour_match = re.search(r"(\d+)\s*个?\s*(?:小时|h|H)", text)
-        if hour_match and "每天" not in text:
-            return max(1, ceil(int(hour_match.group(1)) / 24))
-        day_match = re.search(r"(\d+)\s*(?:天|日)", text)
-        if day_match:
-            return max(1, min(60, int(day_match.group(1))))
-        week_match = re.search(r"(\d+)\s*个?\s*(?:周|星期)", text)
-        if week_match:
-            return max(1, min(60, int(week_match.group(1)) * 7))
-        month_match = re.search(r"(\d+)\s*个?\s*月", text)
-        if month_match:
-            return max(1, min(60, int(month_match.group(1)) * 30))
+    def _make_goal(self, point, profile, names):
+        name_str = "、".join(names or [point.get("name", "该知识点")])
+        goal = f"理解并掌握 {name_str} 的核心概念、典型题型和常见误区。"
+        prereqs = "、".join(str(x) for x in point.get("prerequisites", []) if x)
+        if prereqs:
+            goal += f" 同时补齐前置知识：{prereqs}。"
+        return goal
 
-        # --- Compound Chinese numbers (fallback for edge cases that
-        #     _normalize_cn_number_time may miss) ---
-        # e.g. "十二天" (12), "二十五天" (25), "二十天" (20)
-        cn_compound_match = re.search(
-            r"([一二两三四五六七八九])?十([一二三四五六七八九])?\s*个?\s*(天|日|周|星期|月)",
-            text,
-        )
-        if cn_compound_match:
-            tens = cn_compound_match.group(1)
-            ones = cn_compound_match.group(2)
-            unit = cn_compound_match.group(3)
-            cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-                       "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-            total = (cn_map.get(tens, 1) * 10 if tens else 10) + cn_map.get(ones, 0)
-            if unit in ("周", "星期"):
-                return max(1, min(60, total * 7))
-            if unit == "月":
-                return max(1, min(60, total * 30))
-            return max(1, min(60, total))
-
-        # --- Simple Chinese number + time unit (fallback) ---
-        cn_simple_match = re.search(
-            r"([一二两三四五六七八九])\s*个?\s*(天|日|周|星期|月)", text
-        )
-        if cn_simple_match:
-            cn_map = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
-                       "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-            total = cn_map.get(cn_simple_match.group(1), 7)
-            if cn_simple_match.group(2) in ("周", "星期"):
-                return max(1, min(60, total * 7))
-            if cn_simple_match.group(2) == "月":
-                return max(1, min(60, total * 30))
-            return max(1, min(60, total))
-
-        # Default: no time information found — use a reasonable default.
-        # 14 days is a typical two-week study plan; not hardcoded to any
-        # specific course or user — callers should always prefer
-        # user-provided time budget when available.
-        return 14
-
-    def _normalize_cn_number_time(self, text: str) -> str:
-        cn_all = "一二两三四五六七八九"
-        cn_digits = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
-                      "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
-        time_units = r"(?:天|日|周|星期|个小时|小时|个月|月|分钟)"
-        tu = time_units  # shorthand
-
-        # 0. Strip measure-word "个" between a Chinese number and a time unit
-        #    so that "一个星期" → "一星期", "两个小时" → "两小时", etc.
-        text = re.sub(rf"([{cn_all}十])\s*个\s*({tu})", r"\1\2", text)
-
-        # Order matters: most-specific patterns first to avoid partial matches.
-        #
-        # 1. Y十Z → YZ  (e.g. 二十五天 → 25天) — Chinese 21-99
-        for tens_char, tens_val in cn_digits.items():
-            for ones_char, ones_val in cn_digits.items():
-                text = re.sub(
-                    rf"{tens_char}十{ones_char}\s*({tu})",
-                    rf"{tens_val}{ones_val}\1",
-                    text,
-                )
-
-        # 2. Y十 → Y0  (e.g. 二十天 → 20天, 三十天 → 30天)
-        #    Must run AFTER Y十Z so "二十五" isn't partially consumed.
-        for tens_char, tens_val in cn_digits.items():
-            text = re.sub(
-                rf"{tens_char}十\s*({tu})",
-                rf"{tens_val}0\1",
-                text,
-            )
-
-        # 3. 十X → 1X  (e.g. 十二天 → 12天) — Chinese 11-19
-        #    Negative lookbehind: NOT preceded by another CN digit (prevents
-        #    matching "十五" inside "二十五").
-        for ones_char, ones_val in cn_digits.items():
-            text = re.sub(
-                rf"(?<![{cn_all}])十{ones_char}\s*({tu})",
-                rf"1{ones_val}\1",
-                text,
-            )
-
-        # 4. 十 → 10  (bare 十天 → 10天; negative lookbehind prevents matching
-        #    "十" inside "二十" or "十二")
-        text = re.sub(rf"(?<![{cn_all}])十\s*({tu})", rf"10\1", text)
-
-        # 5. Simple single-digit Chinese numbers (三天 → 3天, 七天 → 7天)
-        for cn, digit in cn_digits.items():
-            text = re.sub(rf"{cn}\s*({tu})", rf"{digit}\1", text)
-        # 半
-        text = re.sub(rf"半\s*({tu})", rf"0\1", text)
-
-        return text
-
-    def _context_time_text(self, context: dict[str, Any]) -> str:
-        profile_facts = context.get("profile_facts") if isinstance(context.get("profile_facts"), dict) else {}
-        return " ".join(
-            str(value)
-            for value in (
-                context.get("user_message", ""),
-                context.get("time_budget", ""),
-                context.get("learning_goal", ""),
-                profile_facts.get("time_budget", ""),
-            )
-            if value
-        )
-
-    def _has_limited_daily_time(self, profile: dict[str, Any]) -> bool:
-        text = " ".join(
-            str(item.get("value", "") if isinstance(item, dict) else item)
-            for item in profile.values()
-        )
-        return "每天" in text and "小时" in text
-
-    def _stage_title(self, index: int, point_name: str) -> str:
-        prefixes = ["补齐基础", "攻克核心", "专项练习", "综合复盘"]
-        return f"{prefixes[min(index - 1, len(prefixes) - 1)]}：{point_name}"
-
-    def _compact_profile(self, profile: dict[str, Any]) -> dict[str, str]:
-        compact = {}
-        for key, item in profile.items():
-            if isinstance(item, dict):
-                value = str(item.get("value", "")).strip()
-                if value and value != "未提及":
-                    compact[key] = value
-        return compact
-
-    def _clean_resource_types(self, value: Any) -> list[str]:
-        aliases = {
-            "case_study": "practice",
-            "code": "practice",
-            "diagram": "mindmap",
-            "text": "lecture",
-            "exercise": "quiz",
-        }
-        allowed = {"lecture", "mindmap", "quiz", "reading", "practice", "multimodal"}
-        if not isinstance(value, list):
-            return []
-        result = []
-        for item in value:
-            normalized = aliases.get(str(item).strip(), str(item).strip())
-            if normalized in allowed and normalized not in result:
-                result.append(normalized)
-        return result
-
-    def _duration_for_index(self, index: int, stage_count: int, total_days: int) -> str:
-        days_per_stage = max(1, ceil(total_days / max(1, stage_count)))
-        start_day = min(total_days, (index - 1) * days_per_stage + 1)
-        end_day = min(total_days, max(start_day, index * days_per_stage))
-        return f"第 {start_day}-{end_day} 天" if start_day != end_day else f"第 {start_day} 天"
-
-    def _goal(self, point: dict[str, Any], profile: dict[str, Any], names: list[str] | None = None) -> str:
-        prerequisites = "、".join(str(item) for item in point.get("prerequisites", []) if item)
-        point_names = "、".join(names or [str(point.get("name", "该知识点"))])
-        base = f"理解并掌握 {point_names} 的核心概念、典型题型和常见误区。"
-        if prerequisites:
-            base += f" 同时补齐前置要求：{prerequisites}。"
-        if "考试" in str(profile.get("learning_goal", {}).get("value", "")):
-            base += " 重点服务考试通过和基础题型稳定得分。"
-        return base
-
-    def _tasks(
-        self,
-        point: dict[str, Any],
-        profile: dict[str, Any],
-        index: int,
-        names: list[str] | None = None,
-    ) -> list[str]:
-        name = "、".join(names or [str(point.get("name", "知识点"))])
-        tasks = [
-            f"阅读《{name}》个性化讲义",
-            f"完成 {name} 的概念辨析练习",
-        ]
-        preference = str(profile.get("cognitive_style", {}).get("value", ""))
-        if any(word in preference for word in ["代码", "实操", "实验"]):
-            tasks.append(f"运行一个与 {name} 相关的代码/伪代码案例")
-        elif any(word in preference for word in ["图解", "思维导图"]):
-            tasks.append(f"查看 {name} 的结构图并复述知识关系")
+    def _make_tasks(self, point, profile, i, names):
+        name_str = "、".join(names or [point.get("name", "知识点")])
+        tasks = [f"学习《{name_str}》核心内容", f"完成 {name_str} 的配套练习"]
+        pref = str(profile.get("cognitive_style", {}).get("value", ""))
+        if any(w in pref for w in ["代码", "实操"]):
+            tasks.append(f"编写或运行 {name_str} 相关代码案例")
+        elif any(w in pref for w in ["图解", "思维导图"]):
+            tasks.append(f"绘制 {name_str} 知识结构图")
         else:
-            tasks.append(f"整理 {name} 的易错点清单")
-        if index > 1:
-            tasks.append("复盘上一阶段错题和未掌握概念")
+            tasks.append(f"整理 {name_str} 的易错点清单")
+        if i > 1:
+            tasks.append("复盘上一阶段错题")
         return tasks
 
-    def _reason(self, point_group: list[dict[str, Any]], profile: dict[str, Any], total_days: int) -> str:
+    def _make_reason(self, group, profile, total_days):
+        names = "、".join(p.get("name", "") for p in group if p.get("name"))
         goal = str(profile.get("learning_goal", {}).get("value", ""))
-        base = "、".join(str(point.get("name", "")) for point in point_group if point.get("name"))
         if total_days <= 3:
-            return f"学习周期只有 {total_days} 天，优先压缩安排 {base} 等高频基础内容。"
-        if self._has_limited_daily_time(profile):
-            return f"每天学习时间有限，优先安排 {base}，用基础资料和短练习压缩推进。"
+            return f"学习周期仅{total_days}天，优先安排{names}等核心内容。"
         if "考试" in goal:
-            return f"学生目标偏考试通过，{base} 是课程复习中的基础或高频模块。"
-        return f"根据课程先修关系和学生画像，当前阶段适合集中处理 {base}。"
+            return f"目标偏考试通过，{names}是高频模块。"
+        return f"根据课程先修关系，当前阶段适合集中处理{names}。"
 
-    def _resource_types(self, profile: dict[str, Any], index: int) -> list[str]:
-        preference = str(profile.get("cognitive_style", {}).get("value", ""))
+    def _make_resource_types(self, profile, i):
         types = ["lecture", "quiz"]
-        if any(word in preference for word in ["图解", "思维导图"]):
+        pref = str(profile.get("cognitive_style", {}).get("value", ""))
+        if any(w in pref for w in ["图解", "思维导图"]):
             types.append("mindmap")
-        if any(word in preference for word in ["代码", "实操", "实验"]):
+        if any(w in pref for w in ["代码", "实操"]):
             types.append("practice")
-        if index == 1:
+        if i == 1:
             types.append("reading")
         return list(dict.fromkeys(types))
+
+    # ── 工具 ──
+
+    def _compact_profile(self, profile: dict) -> dict:
+        result = {}
+        for k, v in profile.items():
+            if isinstance(v, dict):
+                val = str(v.get("value", "")).strip()
+                if val and val != "未提及":
+                    result[k] = val
+        return result
+
+    def _compact_profile_text(self, profile: dict) -> str:
+        return " ".join(self._compact_profile(profile).values())
+
+    def _make_result(self, path, total_days, diag_meta):
+        plan_summary = self._summarize(path, diag_meta, total_days)
+        return {
+            "learning_path": path,
+            "stages": path,
+            "estimatedDays": total_days,
+            "plan_summary": plan_summary,
+            "summary": plan_summary,
+            "diagnosis_used": diag_meta["diagnosis_used"],
+            "diagnosis_references": diag_meta.get("weak_topic_names", []),
+            "stage_rationales": [
+                {"stage_id": s.get("stage_id"), "rationale": s.get("reason", "")}
+                for s in path if isinstance(s, dict)
+            ],
+            "needs_more_diagnosis": diag_meta["needs_more_diagnosis"],
+            "priority_basis": diag_meta.get("evidence_sources", []),
+            "recommended_resource_strategy": (
+                "先做诊断确认薄弱点，再针对性学习。"
+                if diag_meta["needs_more_diagnosis"]
+                else "根据薄弱点优先补充基础，再做专项练习。"
+            ),
+            "risk_flags": diag_meta.get("risk_flags", []),
+            "agent_step": {
+                "agent_id": self.agent_id,
+                "agent_name": self.agent_name,
+                "status": "completed",
+                "summary": f"生成了{len(path)}个学习阶段",
+                "started_at": None,
+                "finished_at": None,
+            },
+        }
+
+    def _summarize(self, path, diag_meta, total_days):
+        if diag_meta["needs_more_diagnosis"]:
+            return f"诊断证据不足，先确认薄弱点，再按{total_days}天规划。"
+        titles = [s.get("title", "") for s in path[:2] if isinstance(s, dict)]
+        return f"根据诊断结果，{'、'.join(titles) or '核心薄弱点'}，总周期{total_days}天。"

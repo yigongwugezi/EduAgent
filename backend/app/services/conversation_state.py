@@ -322,7 +322,8 @@ class ConversationStore:
         )
         state.updated_at = time.time()
         if role == "user":
-            self.extract_facts(state, content)
+            # 用 LLM 提取事实，替换原来的正则 extract_facts
+            self.extract_facts_with_llm(state, content)
 
         if self._db_enabled:
             try:
@@ -463,9 +464,136 @@ class ConversationStore:
         state.last_result = result
         state.updated_at = time.time()
 
-    # ── Fact extraction (unchanged, pure processing logic) ─────────────
+    # ── Fact extraction ─────────────────────────────────────────────
+
+    def extract_facts_with_llm(self, state: ConversationState, message: str) -> None:
+        """用 LLM 从用户消息中提取画像事实，直接更新 state.facts。
+        
+        如果 LLM 不可用，回退到原来的正则 extract_facts。
+        """
+        state.last_updated_fields = []
+        state.last_updated_supplemental_fields = []
+        state.last_conflicts = []
+        
+        if not message.strip():
+            return
+        
+        try:
+            from app.services.llm_client import get_llm_client
+            from app.config import settings
+            llm = get_llm_client(settings.llm_provider)
+        except Exception:
+            self.extract_facts(state, message)
+            return
+        
+        # 构建已有的 facts 上下文
+        known_facts = "\n".join(
+            f"- {PROFILE_FIELD_DEFS[k]['label']}：{v}"
+            for k, v in state.facts.items()
+            if v
+        ) or "- 暂无已记录信息"
+
+        # 构建对话历史（最近6条）
+        history_text = "\n".join(
+            f"- {m['role']}: {m['content'][:200]}"
+            for m in state.messages[-6:]
+        )
+        
+        prompt = f"""你是一个学习画像提取器。从用户消息中提取以下维度的信息。
+
+## 已有画像
+{known_facts}
+
+## 对话历史（最近几轮）
+{history_text}
+
+## 用户最新消息
+{message}
+
+## 需要提取的维度
+- background: 身份/专业背景（如"软件工程大一学生"）
+- target_course: 目标课程/知识方向（如"微积分"、"Python"、"数据结构"）
+- knowledge_base: 已有基础（如"学过C语言"、"完全零基础"）
+- weak_points: 薄弱点（如"极限概念不清楚"）
+- learning_goal: 学习目标（如"应付期末考试拿高分"）
+- time_budget: 时间安排（如"每天3小时，持续1个月"）
+- preference: 学习偏好（如"喜欢做题"、"喜欢看视频"）
+
+## 规则
+1. 只提取用户明确提到的信息，不要推测
+2. 如果用户更新了之前的信息，用新的覆盖旧的
+3. 如果用户说的和已有信息不冲突，就合并
+4. 课程名要完整准确，如"微积分"不是"完全"，"数据结构"不是"数据"
+5. "完全零基础"中，"零基础"是基础水平，"完全"只是程度副词，不要提取"完全"作为课程名
+6. "我是软件专业的" → background: "软件专业"，不是"我是"
+7. 只返回 JSON，不要解释，不要用 markdown 包裹
+
+返回格式：
+{{"updates": {{"background": "软件工程大一学生", "target_course": "微积分"}}, "conflicts": []}}
+"""
+        
+        try:
+            raw = llm.chat(
+                messages=[
+                    {"role": "system", "content": "你是精准的信息提取器。只返回JSON。"},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=0,
+                max_tokens=500,
+            )
+            # 清理可能的 markdown 包裹
+            cleaned = raw.strip()
+            if cleaned.startswith("```"):
+                cleaned = cleaned.split("\n", 1)[1]
+                if cleaned.endswith("```"):
+                    cleaned = cleaned[:-3]
+            result = json.loads(cleaned.strip())
+            updates = result.get("updates", {})
+        except Exception:
+            self.extract_facts(state, message)
+            return
+        
+        # 应用更新
+        key_mapping = {
+            "background": "background",
+            "target_course": "target_course",
+            "knowledge_base": "knowledge_base",
+            "weak_points": "weak_points",
+            "learning_goal": "learning_goal",
+            "time_budget": "time_budget",
+            "preference": "preference",
+        }
+        
+        for llm_key, fact_key in key_mapping.items():
+            value = str(updates.get(llm_key, "")).strip()
+            if not value:
+                continue
+            # 过滤无效值
+            if value.lower() in {"完全", "未知", "未提及", "暂无", "无", "none", "null", ""}:
+                continue
+            if len(value) <= 1:
+                continue
+            
+            old_value = state.facts.get(fact_key, "")
+            if old_value != value:
+                if old_value:
+                    state.last_conflicts.append({
+                        "key": fact_key,
+                        "label": PROFILE_FIELD_DEFS.get(fact_key, {}).get("label", fact_key),
+                        "old": old_value,
+                        "new": value,
+                        "reason": "信息更新",
+                    })
+                state.facts[fact_key] = value
+                if fact_key not in state.last_updated_fields:
+                    state.last_updated_fields.append(fact_key)
+        
+        # 如果没有提取到任何信息，回退正则
+        if not state.last_updated_fields:
+            self.extract_facts(state, message)
 
     def extract_facts(self, state: ConversationState, message: str) -> None:
+        """原来的正则提取（保留作为 LLM 失败时的兜底）"""
         text = message.strip()
         state.last_updated_fields = []
         state.last_updated_supplemental_fields = []
@@ -565,7 +693,6 @@ class ConversationStore:
 
         _goal_words = {"考试", "考研", "项目", "竞赛", "作业", "就业", "入门", "提升", "查漏补缺", "学懂", "掌握"}
         if any(word in text for word in _goal_words):
-            # Extract just the clause containing the goal marker, not the entire message
             segments = re.split(r"[，。,.!?！？；;]", text)
             goal_segment = ""
             for seg in segments:
@@ -574,10 +701,6 @@ class ConversationStore:
                     break
             set_fact("learning_goal", goal_segment or text)
 
-        # Normalize Chinese single-digit numbers + time units to Arabic
-        # so that "两天" → "2天", "一小时" → "1小时", etc.
-        # Also strip measure-word "个" so "一个星期" → "1星期",
-        # "两个小时" → "2小时".
         _cn_map = {"一": "1", "二": "2", "两": "2", "三": "3", "四": "4",
                    "五": "5", "六": "6", "七": "7", "八": "8", "九": "9"}
         time_text = re.sub(
@@ -614,8 +737,6 @@ class ConversationStore:
 
         extracted_profile_facts = extract_profile_facts(text)
         for key, value in extracted_profile_facts.facts.items():
-            # Only fill gaps — never overwrite facts already set by the
-            # regex patterns above (which use identity-context matching).
             if key not in state.facts or not state.facts[key]:
                 set_fact(key, value)
         for key, values in extracted_profile_facts.supplemental.items():
@@ -646,7 +767,7 @@ class ConversationStore:
             if names:
                 state.facts["weak_points"] = "、".join(names)
 
-    # ── Read helpers (unchanged) ──────────────────────────────────────
+    # ── Read helpers ──────────────────────────────────────────────────
 
     def missing_fields(self, state: ConversationState, limit: int | None = None) -> list[dict[str, str]]:
         missing = [
@@ -723,7 +844,7 @@ class ConversationStore:
             return f"用户最新输入：{latest_message}\n\n当前已记录学习画像：\n{known}"
         return f"当前已记录学习画像：\n{known}"
 
-    # ── Internal helpers (unchanged) ──────────────────────────────────
+    # ── Internal helpers ──────────────────────────────────────────────
 
     def _clean_fact_value(self, value: str) -> str:
         cleaned = value.strip(" ：:，。,.!?！？；;")

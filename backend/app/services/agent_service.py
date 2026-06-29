@@ -107,7 +107,7 @@ def run_agents(
     """Run the multi-agent pipeline, persist results, and return them.
 
     Steps:
-    1. Build an enriched prompt from ConversationStore facts + latest message.
+    1. Build context from ConversationStore facts + conversation history.
     2. Match the target course (or use the caller-supplied ``course_id``).
     3. Call ``AgentOrchestrator.run()``.
     4. Save results via ``ConversationStore.set_result()`` (DB + in-memory).
@@ -115,7 +115,7 @@ def run_agents(
 
     Args:
         session_id: Current session identifier.
-        user_message: The latest user message.
+        user_message: The latest user message (raw, not wrapped).
         course_id: Optional explicit course ID.  If *None*, matched from facts.
         progress_callback: Optional callback forwarded to Orchestrator.
 
@@ -130,10 +130,15 @@ def run_agents(
     # Build enriched prompt from conversation state
     agent_message = conversation_store.profile_prompt(state, latest_message=user_message)
 
+    # Build conversation context (full dialogue history for LLM agents)
+    conversation_context = "\n".join(
+        f"{'学生' if m['role'] == 'user' else '助手'}: {m['content']}"
+        for m in state.messages[-20:]
+    )
+
     # Match course — only if caller hasn't already supplied one
     selected_course = None
     if course_id and course_id.startswith("custom_"):
-        # Caller passed a virtual course — use it directly, don't re-match
         resolved_course_id = course_id
     elif course_id:
         selected_course = course_catalog.get_course(course_id)
@@ -148,11 +153,14 @@ def run_agents(
 
     # Run orchestrator
     orchestrator = AgentOrchestrator()
+    facts = dict(state.facts)
+    facts["_raw_user_message"] = user_message
+    facts["_conversation_context"] = conversation_context
     result = orchestrator.run(
         session_id=session_id,
         course_id=resolved_course_id,
-        user_message=agent_message,
-        profile_facts=dict(state.facts),
+        user_message=user_message,
+        profile_facts=facts,
         progress_callback=progress_callback,
     )
 
@@ -215,18 +223,15 @@ def _extract_stage_id(r) -> str:
     2. ``knowledge_points`` list (old resources store stage_id in any position).
     3. ``tags`` list (fallback for very old data).
     """
-    # 1) Dedicated column
     col = getattr(r, "related_stage_id", None)
     if col:
         return str(col)
-    # 2) knowledge_points (stage_id may be anywhere in the list)
     kps = r.knowledge_points or []
     if kps and isinstance(kps, (list, tuple)):
         for kp in kps:
             t = str(kp).strip()
             if t.startswith("stage_") or t.startswith("s") or t.startswith("custom_"):
                 return t
-    # 3) tags
     tags = r.tags or []
     if tags and isinstance(tags, (list, tuple)):
         for tag in tags:
