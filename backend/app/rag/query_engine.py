@@ -189,11 +189,10 @@ class RagQueryEngine:
         if self._ready is not None:
             return self._ready
 
-        with self._init_lock:
-            if self._ready is not None:
-                return self._ready
-            self._do_init()
-            return self._ready is True
+        # _do_init() acquires _init_lock internally — do NOT hold it here
+        # or we deadlock since threading.Lock() is not reentrant.
+        self._do_init()
+        return self._ready is True
 
 
 # Module-level singleton — use this everywhere.
