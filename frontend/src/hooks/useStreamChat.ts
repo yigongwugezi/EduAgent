@@ -61,7 +61,7 @@ export function useStreamChat() {
       let hasRealAgentProgress = false;  // 追踪是否真的有智能体执行了
 
       try {
-        const reader = await streamRequest('/chat/stream', {
+        const reader = await streamRequest('/api/chat/stream', {
           message: content.trim(),
           sessionId: useChatStore.getState().currentSessionId,
           subjectId: useSubjectStore.getState().activeSubject?.id,

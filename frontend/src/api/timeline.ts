@@ -12,6 +12,6 @@ export async function getLearningTimeline(
   const params: Record<string, string | number | undefined> = { sessionId, subjectId, limit };
   if (type) params.type = type;
   if (range && range > 0) params.range = range;
-  const { data } = await client.get('/learning-events/timeline', { params });
+  const { data } = await client.get('/api/learning-events/timeline', { params });
   return data;
 }

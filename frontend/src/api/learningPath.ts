@@ -3,7 +3,7 @@ import type { LearningPath } from '../types/learningPath';
 
 /** 获取学习路径 */
 export async function getLearningPath(params: { sessionId: string; subjectId?: string }): Promise<{ path: LearningPath }> {
-  const { data } = await client.get('/learning-path', { params });
+  const { data } = await client.get('/api/learning-path', { params });
   return data;
 }
 
@@ -14,7 +14,7 @@ export async function generateLearningPath(params: {
   courseId?: string;
   userMessage?: string;
 }): Promise<{ path: LearningPath }> {
-  const { data } = await client.post('/learning-path/generate', params);
+  const { data } = await client.post('/api/learning-path/generate', params);
   return data;
 }
 
@@ -24,5 +24,5 @@ export async function updateNodeProgress(
   mastery: number,
   params: { sessionId: string; subjectId?: string; status?: string },
 ): Promise<void> {
-  await client.patch(`/learning-path/nodes/${nodeId}`, { mastery, ...params });
+  await client.patch(`/api/learning-path/nodes/${nodeId}`, { mastery, ...params });
 }

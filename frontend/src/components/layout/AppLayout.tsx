@@ -33,7 +33,7 @@ export default function AppLayout() {
   return (
     <ChatPanelCtx.Provider value={{ open: chatOpen, setOpen: setChatOpen, toggle: () => setChatOpen(v => !v) }}>
     <ToastProvider>
-      <div className="min-h-screen bg-surface-50 flex">
+      <div className="min-h-screen bg-surface-50 dark:bg-surface-900 flex">
         <aside className="w-64 fixed left-0 top-0 bottom-0 z-40">
           <ConsoleSidebar />
         </aside>
@@ -45,7 +45,7 @@ export default function AppLayout() {
       {showChat && !chatOpen && (
         <button
           onClick={() => setChatOpen(true)}
-          className="fixed bottom-6 right-6 z-50 w-11 h-11 rounded-xl flex items-center justify-center bg-white text-surface-600 hover:bg-primary-50 hover:text-primary-600 shadow-soft transition-all"
+          className="fixed bottom-6 right-6 z-50 w-11 h-11 rounded-xl flex items-center justify-center bg-white dark:bg-surface-700 text-surface-600 dark:text-gray-300 hover:bg-primary-50 dark:hover:bg-primary-500/10 hover:text-primary-600 dark:hover:text-primary-400 shadow-soft transition-all"
           title="AI 对话"
         >
           <MessageSquare size={22} />

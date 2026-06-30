@@ -8,6 +8,6 @@ export async function getAnalytics(params: {
   sessionId?: string;
   subjectId?: string;
 }): Promise<AnalyticsSummary> {
-  const { data } = await client.get('/learning-analytics', { params });
+  const { data } = await client.get('/api/learning-analytics', { params });
   return data;
 }

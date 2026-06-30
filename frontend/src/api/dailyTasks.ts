@@ -8,7 +8,7 @@ export async function getTodayTasks(params: {
   learnerId?: string;
   sessionId?: string;
 }): Promise<TodayTasksResponse> {
-  const { data } = await client.get('/daily-tasks/today', { params });
+  const { data } = await client.get('/api/daily-tasks/today', { params });
   return data;
 }
 
@@ -19,7 +19,7 @@ export async function getSessionTasks(params: {
   sessionId: string;
   day?: number;
 }): Promise<SessionTasksResponse> {
-  const { data } = await client.get(`/learning-path/${params.sessionId}/daily-tasks`, {
+  const { data } = await client.get(`/api/learning-path/${params.sessionId}/daily-tasks`, {
     params: { day: params.day },
   });
   return data;
@@ -32,6 +32,6 @@ export async function completeTask(
   taskId: number,
   payload: { sessionId: string; completed: boolean },
 ): Promise<TaskCompleteResponse> {
-  const { data } = await client.patch(`/daily-tasks/${taskId}/complete`, payload);
+  const { data } = await client.patch(`/api/daily-tasks/${taskId}/complete`, payload);
   return data;
 }

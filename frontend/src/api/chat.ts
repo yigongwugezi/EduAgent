@@ -18,7 +18,7 @@ export interface SessionListResponse {
 
 /** 发送消息（非流式） */
 export async function sendMessage(params: SendMessageParams): Promise<ChatResponse> {
-  const { data } = await client.post('/chat/send', params);
+  const { data } = await client.post('/api/chat/send', params);
   return data;
 }
 
@@ -26,30 +26,30 @@ export async function sendMessage(params: SendMessageParams): Promise<ChatRespon
 export async function getSessions(subjectId?: string): Promise<SessionListResponse> {
   const params: Record<string, string> = {};
   if (subjectId) params.subjectId = subjectId;
-  const { data } = await client.get('/chat/sessions', { params });
+  const { data } = await client.get('/api/chat/sessions', { params });
   return data;
 }
 
 /** 获取会话消息 */
 export async function getSessionMessages(sessionId: string): Promise<{ messages: ChatMessage[] }> {
-  const { data } = await client.get(`/chat/sessions/${sessionId}`);
+  const { data } = await client.get(`/api/chat/sessions/${sessionId}`);
   return data;
 }
 
 /** 删除会话 */
 export async function deleteSession(sessionId: string): Promise<void> {
-  await client.delete(`/chat/sessions/${sessionId}`);
+  await client.delete(`/api/chat/sessions/${sessionId}`);
 }
 
 /** 获取快捷指令 */
 export async function getQuickCommands(): Promise<{ commands: { id: string; label: string; icon: string; prompt: string }[] }> {
-  const { data } = await client.get('/chat/quick-commands');
+  const { data } = await client.get('/api/chat/quick-commands');
   return data;
 }
 
 /** 轮询生成进度 */
 export async function getGenerationProgress(taskId: string): Promise<{ progress: GenerationProgress }> {
-  const { data } = await client.get(`/chat/progress/${taskId}`);
+  const { data } = await client.get(`/api/chat/progress/${taskId}`);
   return data;
 }
 
@@ -63,7 +63,7 @@ export interface AgentInfo {
 }
 
 export async function getAgents(): Promise<{ agents: AgentInfo[] }> {
-  const { data } = await client.get('/chat/agents');
+  const { data } = await client.get('/api/chat/agents');
   return data;
 }
 
@@ -74,6 +74,6 @@ export async function recoverGeneration(sessionId: string): Promise<{
   generating: boolean;
   currentProgress: import('../types/chat').GenerationProgress | null;
 }> {
-  const { data } = await client.get('/chat/recover', { params: { sessionId } });
+  const { data } = await client.get('/api/chat/recover', { params: { sessionId } });
   return data;
 }

@@ -88,6 +88,16 @@ export const runtimeStorageKeys = {
     primary: 'r436_pending_generation',
     legacy: [],
   },
+  /** 深色模式 */
+  theme: {
+    primary: 'r436_runtime_theme',
+    legacy: [],
+  },
+  /** 字体缩放 */
+  fontSize: {
+    primary: 'r436_runtime_font_size',
+    legacy: [],
+  },
 } satisfies Record<string, StorageKeyPair | ((suffix: string) => StorageKeyPair)>;
 
 export { readItem as readStorageItem, writeItem as writeStorageItem, readJson as readStorageJson, writeJson as writeStorageJson };

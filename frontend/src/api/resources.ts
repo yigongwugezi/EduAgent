@@ -11,7 +11,7 @@ export interface ResourceListResponse {
 }
 
 export async function getResources(filter?: ResourceFilter & { sessionId: string; subjectId?: string }): Promise<ResourceListResponse> {
-  const { data } = await client.get('/resources', { params: filter });
+  const { data } = await client.get('/api/resources', { params: filter });
   return data;
 }
 
@@ -19,7 +19,7 @@ export async function getResourceById(
   id: string,
   params: { sessionId: string; subjectId?: string },
 ): Promise<{ resource: Resource }> {
-  const { data } = await client.get(`/resources/${id}`, { params });
+  const { data } = await client.get(`/api/resources/${id}`, { params });
   return data;
 }
 
@@ -27,7 +27,7 @@ export async function toggleBookmark(
   id: string,
   params: { sessionId: string; subjectId?: string },
 ): Promise<{ bookmarked: boolean }> {
-  const { data } = await client.post(`/resources/${id}/bookmark`, null, { params });
+  const { data } = await client.post(`/api/resources/${id}/bookmark`, null, { params });
   return data;
 }
 
@@ -38,7 +38,7 @@ export async function generateResource(params: {
   difficulty?: string;
   subjectId?: string;
 }): Promise<{ resource: Resource }> {
-  const { data } = await client.post('/resources/generate', params);
+  const { data } = await client.post('/api/resources/generate', params);
   return data;
 }
 
@@ -46,7 +46,7 @@ export async function getResourceKnowledgeGraph(
   resourceId: string,
   params: { sessionId: string; subjectId?: string },
 ): Promise<{ mermaidDef: string; source?: string; resourceId?: string }> {
-  const { data } = await client.get(`/resources/${resourceId}/knowledge-graph`, {
+  const { data } = await client.get(`/api/resources/${resourceId}/knowledge-graph`, {
     params,
   });
   return data;
@@ -75,7 +75,7 @@ export async function batchUpdateStudyStatus(
   resourceIds: string[],
   studyStatus: string,
 ): Promise<BatchResult> {
-  const { data } = await client.post('/resources/batch/study-status', {
+  const { data } = await client.post('/api/resources/batch/study-status', {
     sessionId,
     resourceIds,
     studyStatus,
@@ -89,7 +89,7 @@ export async function batchSetBookmark(
   resourceIds: string[],
   bookmarked: boolean,
 ): Promise<BatchResult> {
-  const { data } = await client.post('/resources/batch/bookmark', {
+  const { data } = await client.post('/api/resources/batch/bookmark', {
     sessionId,
     resourceIds,
     bookmarked,
@@ -102,7 +102,7 @@ export async function batchExportResources(
   sessionId: string,
   resourceIds?: string[],
 ): Promise<BatchExportResult> {
-  const { data } = await client.post('/resources/batch/export', {
+  const { data } = await client.post('/api/resources/batch/export', {
     sessionId,
     resourceIds: resourceIds || undefined,
   });
@@ -115,7 +115,7 @@ export async function updateStudyStatus(
   studyStatus: string,
   sessionId: string,
 ): Promise<{ ok: boolean; studyStatus: string }> {
-  const { data } = await client.patch(`/resources/${resourceId}/study-status`, {
+  const { data } = await client.patch(`/api/resources/${resourceId}/study-status`, {
     studyStatus,
   }, { params: { sessionId } });
   return data;
@@ -128,7 +128,7 @@ export async function autoAdvanceNode(params: {
   taskId?: string;
   event: string;
 }): Promise<{ ok: boolean }> {
-  const { data } = await client.patch('/learning-path/auto-advance', params);
+  const { data } = await client.patch('/api/learning-path/auto-advance', params);
   return data;
 }
 
@@ -143,6 +143,6 @@ export async function importResourcesFromKb(params: {
   courseId?: string;
   subjectId?: string;
 }): Promise<ImportFromKbResult> {
-  const { data } = await client.post('/resources/import-from-kb', params);
+  const { data } = await client.post('/api/resources/import-from-kb', params);
   return data;
 }
