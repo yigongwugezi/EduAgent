@@ -4,7 +4,7 @@ import {
   Check, X, Edit3, Trash2, Download, Upload,
   Brain, ChevronDown, Moon, Sun, GraduationCap,
 } from 'lucide-react';
-import { getCurrentLearner, logoutLearner } from './LoginPage';
+import { getCurrentLearner, useAuthStore } from '../store/authStore';
 import { useSubjectStore } from '../store/subjectStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { safeClearCache, exportAllData, importAllData, getCacheSize, formatBytes } from '../utils/cache';
@@ -345,7 +345,7 @@ export default function SettingsPage() {
             </SettingRow>
 
             <SettingRow label="切换学习者" description="退出当前账号以切换身份">
-              <button type="button" onClick={() => { logoutLearner(); window.location.href = '/login'; }}
+              <button type="button" onClick={() => { useAuthStore.getState().logout(); window.location.href = '/login'; }}
                 className="px-3 py-1.5 bg-gray-50 dark:bg-surface-600 border border-gray-200 dark:border-gray-500 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-surface-500 transition-colors">
                 切换账号
               </button>

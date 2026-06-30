@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.db import init_db
-from app.routers import agents, courses, health, product
+from app.routers import admin, agents, auth, courses, health, history, learner, product
 from app.services.conversation_state import conversation_store
 from app.services.learning_tracker import learning_tracker
 from app.utils.errors import AppError
@@ -153,6 +153,10 @@ async def generic_error_handler(request: Request, exc: Exception) -> JSONRespons
 
 # ── Routers ───────────────────────────────────────────────────────────
 
+app.include_router(admin.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+app.include_router(learner.router, prefix="/api")
+app.include_router(history.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
 app.include_router(courses.router, prefix="/api")
 app.include_router(agents.router, prefix="/api")

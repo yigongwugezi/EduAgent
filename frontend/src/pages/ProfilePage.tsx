@@ -8,7 +8,7 @@ import { Brain, BookOpen, Clock, AlertCircle, Heart, Code, Edit3, TrendingUp, Re
 import { PageLoading, PageError } from '../components/common/PageState';
 import { DIMENSION_LABELS } from '../types/profile';
 import type { DimensionKey } from '../types/profile';
-import { getCurrentLearner } from './LoginPage';
+import { getCurrentLearner } from '../store/authStore';
 
 const dimIcons: Record<string, React.ComponentType<{ size?: number | string; className?: string }>> = {
   major_background: BookOpen, knowledge_base: Brain, learning_goal: Heart,

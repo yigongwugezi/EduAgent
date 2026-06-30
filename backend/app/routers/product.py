@@ -313,14 +313,23 @@ def _run_agents(
     message: str,
     session_id: str,
     progress_callback: Callable | None = None,
+    agents_filter: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Trigger the full multi-agent pipeline via AgentService and persist results."""
+    """Trigger the multi-agent pipeline via AgentService and persist results.
+
+    Args:
+        agents_filter: 指定只运行哪些 Agent。None 表示全部。典型用法：
+            - None / ["profile_agent","knowledge_agent","diagnosis_agent","planner_agent","resource_agent","review_agent"]
+              → 全量生成
+            - ["profile_agent","diagnosis_agent"] → 只诊断
+            - ["profile_agent","planner_agent"] → 只规划
+            - ["profile_agent","resource_agent"] → 只推荐资源
+    """
     state = conversation_store.get(session_id)
     user_topic = state.facts.get("target_course") or message
     selected_course = course_catalog.match_course(user_topic)
 
     if selected_course is None:
-        # No matching course in catalog — build a virtual course from the user's stated topic
         selected_course = {
             "course_id": f"custom_{abs(hash(user_topic)) % 10000:04d}",
             "course_name": user_topic.strip(),
@@ -335,6 +344,7 @@ def _run_agents(
         user_message=message,
         course_id=course_id,
         progress_callback=progress_callback,
+        agents_filter=agents_filter,
     )
     if selected_course and "course" not in result:
         result["course"] = {
@@ -344,7 +354,6 @@ def _run_agents(
             "chapter_count": selected_course.get("chapter_count", len(selected_course.get("chapters", []))),
         }
     _apply_state_facts_to_result(result, state, selected_course)
-    # Persistence is handled by agent_service.run_agents() — no duplicate set_result here.
     return result
 
 
@@ -1091,26 +1100,22 @@ def _feedback_reply(message: str, session_id: str) -> str:
     )
 
 
-def _unknown_reply(intent: dict[str, Any]) -> str:
-    return (
-        "我还不太确定你想让我做什么，请选择一个方向。\n\n"
-        "你可以告诉我你是想：\n"
-        "• 生成我的学习画像\n"
-        "• 规划学习路径\n"
-        "• 推荐学习资源\n"
-        "• 诊断薄弱点\n"
-        "• 反馈学习进度"
-    )
+# _unknown_reply 已删除 —— 设计文档 §6.1 明确禁止"请选择方向"式模板话术。
+# 当 LLM 失败时，ConversationAgent._rule_fallback 返回 action + 空 reply，
+# 由 _casual_reply 作为最终兜底。
 
 
 def _reply_for_intent(
     message: str, intent: dict[str, Any], session_id: str,
     progress_callback: Callable | None = None,
 ) -> tuple[str, bool]:
-    """根据 ConversationAgent 的结果决定回复和执行哪些 Agent。
-    
-    优先使用 ConversationAgent 生成的 reply 自然语言回复。
-    如果 ConversationAgent 的 action 需要执行后端 Agent，则触发对应流程。
+    """统一回复入口。ConversationAgent 是唯一的总控。
+
+    流程：
+    1. ConversationAgent 已判断 action（intent 模式）
+    2. action=none/unsafe → 直接返回 ConversationAgent 的自然语言回复
+    3. action 需要执行 Agent → 调用 Orchestrator，然后 ConversationAgent
+       final_reply 模式根据真实执行结果生成最终回复
     """
     # 用 ConversationAgent 返回的 facts 更新 conversation_store
     llm_facts = intent.get("facts", {})
@@ -1132,114 +1137,144 @@ def _reply_for_intent(
                 if value not in invalid:
                     state.facts[fact_key] = value
 
-    # 优先使用 ConversationAgent 生成的 reply
     llm_reply = intent.get("reply", "")
     action = intent.get("action", "none")
-    
-    # 兼容旧版 intent 字段（规则兜底时）
-    legacy_intent = intent.get("intent", "unknown")
 
+    # ── 无上下文确认词追问 ──
     if intent.get("needs_clarification") and action == "none" and _is_bare_confirmation(message):
         return _confirmation_clarification_reply(), False
-    
-    # 如果 ConversationAgent 返回了 reply 且 action 不需要执行 Agent
-    if llm_reply and action == "none":
-        return llm_reply, False
-    
-    # 安全检查
-    if action == "unsafe" or legacy_intent == "unsafe":
-        return llm_reply or "抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。", False
-    
-    # 根据 action 决定执行哪些 Agent
-    if action == "full_workflow":
-    # LLM 已经判断信息足够，直接生成，不再检查画像完整度
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    
-    if action == "diagnose":
-        diagnosis_reply = _diagnosis_reply(message, session_id)
-        return llm_reply or diagnosis_reply, True
-    
-    if action == "plan":
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    
-    if action == "resources":
-        return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
-    
-    if action == "profile":
-        ran_agents = False
-        state = conversation_store.get(session_id)
-        if conversation_store.readiness(state)["readyToPlan"]:
-            try:
-                _run_agents(message, session_id=session_id, progress_callback=progress_callback)
-                ran_agents = True
-            except Exception:
-                logger.warning("Agent run failed during profile update for session %s", session_id)
-        reply = _profile_update_reply(session_id)
-        return llm_reply or reply, ran_agents
-    
-    if action == "knowledge":
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    
-    # ── 兼容旧版 intent（LLM 失败走规则兜底时） ──
-    name = legacy_intent
-    if name == "casual_chat":
+
+    # ── action=none：纯对话，不执行 Agent ──
+    if action == "none":
         return llm_reply or _casual_reply(session_id), False
-    if name == "date_query":
-        return llm_reply or _date_query_reply(), False
-    if name == "clarification":
-        return llm_reply or _clarification_reply(session_id), False
-    if name == "info_request":
-        return llm_reply or _info_request_reply(session_id), False
-    if name == "profile_query":
-        return llm_reply or _profile_query_reply(session_id), False
-    if name == "profile_update":
-        ran_agents = False
-        state = conversation_store.get(session_id)
-        if conversation_store.readiness(state)["readyToPlan"]:
-            try:
-                _run_agents(message, session_id=session_id, progress_callback=progress_callback)
-                ran_agents = True
-            except Exception:
-                logger.warning("Agent run failed during profile_update reply for session %s", session_id)
-        reply = _profile_update_reply(session_id)
-        return llm_reply or reply, ran_agents
-    if name == "start_advice":
-        return llm_reply or _start_advice_reply(session_id), False
-    if name == "learning_plan":
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    if name == "resource_request":
-        return _resource_request_reply(message, session_id, progress_callback=progress_callback), True
-    if name == "tutoring":
-        return llm_reply or _tutoring_reply(message), False
-    if name == "diagnosis":
-        return llm_reply or _diagnosis_reply(message, session_id), True
-    if name == "full_workflow":
-        return _learning_plan_request_reply(message, intent, session_id, progress_callback=progress_callback)
-    if name == "progress_feedback":
-        return llm_reply or _feedback_reply(message, session_id), False
-    
-    # 最终兜底：如果有 LLM 回复就用它，否则用旧版 unknown 模板
-    return llm_reply or _unknown_reply(intent), False
+
+    # ── 安全检查 ──
+    if action == "unsafe":
+        return llm_reply or "抱歉，我不能协助这类请求。如果你有学习相关的问题，我很乐意帮忙。", False
+
+    # ── action 需要执行 Agent ──
+    agent_actions = ("full_workflow", "diagnose", "plan", "resources", "profile", "knowledge")
+    if action in agent_actions:
+        # 硬条件检查：如果连学习对象都不知道，必须先问（§2.3）
+        if action in ("full_workflow", "plan"):
+            state = conversation_store.get(session_id)
+            if not _learning_subject(state):
+                return _ask_learning_subject_reply(), False
+
+        # §4.1 + §11.1：根据 action 只调需要的子 Agent，不全量跑
+        agents_filter = _agents_for_action(action)
+        logger.info("Scheduling agents for action=%s: %s", action, agents_filter)
+
+        try:
+            result = _run_agents(message, session_id=session_id,
+                                 progress_callback=progress_callback,
+                                 agents_filter=agents_filter)
+        except Exception as exc:
+            logger.warning("Agent run failed for session %s: %s", session_id, exc)
+            return f"生成模块暂时没有成功：{exc}。我没有假装已生成，你可以稍后重试。", False
+
+        if result.get("pipeline_executed") is False:
+            skip_reason = result.get("skip_reason") or result.get("overall_error") or "pipeline 未执行"
+            return f"生成流程这次没有完整执行（{skip_reason}）。你可以稍后重试。", False
+
+        # 调用 ConversationAgent final_reply 模式生成最终回复
+        final_reply = _generate_final_reply(message, session_id, result)
+        return final_reply, bool(result.get("learning_path"))
+
+    # 兜底
+    return llm_reply or _casual_reply(session_id), False
+
+
+def _agents_for_action(action: str) -> list[str] | None:
+    """根据 ConversationAgent 的 action 返回需要运行的 Agent 列表（§4.1, §11.1）。
+    返回 None 表示全量运行。
+    """
+    if action == "full_workflow":
+        return None  # 全量
+    if action == "diagnose":
+        return ["profile_agent", "diagnosis_agent"]
+    if action == "plan":
+        return ["profile_agent", "knowledge_agent", "diagnosis_agent", "planner_agent"]
+    if action == "resources":
+        return ["profile_agent", "planner_agent", "resource_agent"]
+    if action == "profile":
+        return ["profile_agent"]
+    if action == "knowledge":
+        return ["profile_agent", "knowledge_agent"]
+    return None
+
+
+def _generate_final_reply(message: str, session_id: str, result: dict[str, Any]) -> str:
+    """调用 ConversationAgent final_reply 模式，根据真实执行结果生成最终回复。"""
+    from app.agents.conversation_agent import ConversationAgent
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    agent = ConversationAgent(mock_data={}, llm_client=_llm_client())
+    state = conversation_store.get(session_id)
+    stages = result.get("learning_path", [])
+    resources = result.get("resources", [])
+    diagnosis = result.get("diagnosis", {})
+
+    context = {
+        "mode": "final_reply",
+        "user_message": message,
+        "profile_facts": {"_raw_user_message": message},
+        "conversation_history": [
+            {"role": m["role"], "content": m["content"]}
+            for m in state.messages[-20:]
+        ],
+        "pipeline_result": {
+            "pipeline_executed": bool(result.get("pipeline_executed")),
+            "agents_run": result.get("agents_run", []),
+            "learning_path_created": bool(stages),
+            "stage_count": len(stages),
+            "stage_titles": [
+                str(s.get("title", ""))
+                for s in stages[:8]
+                if isinstance(s, dict) and s.get("title")
+            ],
+            "resources_created": bool(resources),
+            "resource_count": len(resources),
+            "diagnosis_created": bool(diagnosis and diagnosis.get("weak_knowledge_points")),
+            "estimated_days": result.get("estimatedDays"),
+            "planner_metadata": result.get("planner_metadata"),
+            "skip_reason": result.get("skip_reason", ""),
+            "fallback_used": result.get("fallback_used", False),
+        },
+    }
+
+    try:
+        final_result = agent.run(context)
+        reply = final_result.get("reply", "")
+        if reply:
+            return reply
+    except Exception as exc:
+        _log.warning("ConversationAgent final_reply failed: %s", exc)
+
+    # LLM 失败 → 极简事实兜底（包含阶段标题以提供足够信息）
+    parts = []
+    if stages:
+        titles = [str(s.get("title", "")) for s in stages[:5] if isinstance(s, dict) and s.get("title")]
+        title_text = " → ".join(titles) if titles else f"{len(stages)} 个阶段"
+        estimated = result.get("estimatedDays")
+        if estimated:
+            parts.append(f"已生成 {len(stages)} 个阶段（约{estimated}天）的学习方案：{title_text}")
+        else:
+            parts.append(f"已生成 {len(stages)} 个阶段的学习方案：{title_text}")
+    if resources:
+        parts.append(f"配套 {len(resources)} 个学习资源")
+    if diagnosis and diagnosis.get("weak_knowledge_points"):
+        parts.append("已完成诊断分析")
+    if not parts:
+        return "生成流程已完成。你可以到学习路径和资源库页面查看详细内容。"
+    return "、".join(parts) + "。你可以到对应页面查看详细内容。"
 
 
 def _will_run_agents(intent: dict[str, Any], session_id: str) -> bool:
     """Check whether the given intent will trigger agent execution."""
-    # 优先看 ConversationAgent 的 action
     action = intent.get("action", "")
-    if action in ("diagnose", "plan", "resources", "full_workflow", "knowledge"):
-        return True
-    if action == "profile":
-        state = conversation_store.get(session_id)
-        return conversation_store.readiness(state)["readyToPlan"]
-    
-    # 兼容旧版 intent
-    name = intent.get("intent", "")
-    if name in ("learning_plan", "full_workflow", "resource_request"):
-        return True
-    if name == "profile_update":
-        state = conversation_store.get(session_id)
-        return conversation_store.readiness(state)["readyToPlan"]
-    return False
+    return action in ("diagnose", "plan", "resources", "full_workflow", "knowledge", "profile")
 
 
 GEN_STAGES = [
@@ -1419,15 +1454,29 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
 
         result = conversation_store.get(session_id).last_result or {}
         stages = result.get("learning_path", []) if isinstance(result, dict) else []
+        resources = result.get("resources", []) if isinstance(result, dict) else []
         final_event: dict[str, Any] = {
             "event": "done",
             "done": True,
             "sessionId": session_id,
+            # ── 执行状态 ──
             "pipeline_executed": bool(result.get("pipeline_executed")) if isinstance(result, dict) else False,
             "agents_run": result.get("agents_run", []) if isinstance(result, dict) else [],
             "learning_path_created": bool(stages),
             "stage_count": len(stages),
+            "resources_created": bool(resources),
+            "resource_count": len(resources),
             "planner_metadata": result.get("planner_metadata", {}) if isinstance(result, dict) else {},
+            # ── debug 字段（§12.1）──
+            "action": intent.get("action", "none"),
+            "confidence": intent.get("confidence", 0),
+            "should_run_pipeline": not result.get("skip_pipeline", True),
+            "skip_pipeline": result.get("skip_pipeline", False),
+            "skip_reason": result.get("skip_reason", ""),
+            "final_reply_owner": "conversation_agent",
+            "reply_source": result.get("source", ""),
+            "fallback_used": result.get("fallback_used", False),
+            "llm_retry_count": intent.get("llm_retry_count", 0),
         }
         if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis":
             final_event["diagnosis"] = result.get("diagnosis", {})

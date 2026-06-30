@@ -10,14 +10,15 @@ import LearningTimelinePage from '../pages/LearningTimelinePage';
 import ResourceGenerationPage from '../pages/ResourceGenerationPage';
 import ConversationHistoryPage from '../pages/ConversationHistoryPage';
 import SettingsPage from '../pages/SettingsPage';
+import AdminDashboard from '../pages/AdminDashboard';
 import LoginPage from '../pages/LoginPage';
 import NotFound from '../pages/NotFound';
-import { getCurrentLearner } from '../pages/LoginPage';
+import { useAuthStore } from '../store/authStore';
 
 /** 登录守卫：未登录跳转到 /login */
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const learner = getCurrentLearner();
-  if (!learner) {
+  const isAuthenticated = useAuthStore(s => s.isAuthenticated);
+  if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
   return <>{children}</>;
@@ -47,6 +48,7 @@ const router = createBrowserRouter([
       { path: 'generate', element: <ResourceGenerationPage /> },
       { path: 'history', element: <ConversationHistoryPage /> },
       { path: 'settings', element: <SettingsPage /> },
+      { path: 'admin', element: <AdminDashboard /> },
       { path: '*', element: <NotFound /> },
     ],
   },

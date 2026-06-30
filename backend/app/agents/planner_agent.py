@@ -432,15 +432,17 @@ class PlannerAgent(BaseAgent):
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 
 要求：
-1. 生成3-5个阶段，总天数必须正好{total_days}天
-2. 每个阶段包含：stage_id, title, duration, goal, tasks, daily_tasks, resource_types, reason
-3. title必须以具体的学习内容命名（如"极限与连续"、"导数与微分"、"不定积分"），绝对不要用"第一阶段"、"补齐基础"这种模板化标题
-4. 如果用户要求"以学习内容为阶段划分"，严格按照内容主题划分阶段
-5. 如果用户提到特定教材（如同济版高等数学），参考该教材的章节结构来划分阶段
-6. 体现学生基础水平（如"高中导数学过"、"零基础"）和时间约束
-7. 如果对话中已经有诊断信息，参考薄弱点来调整阶段重点
-8. daily_tasks 必须为该阶段的每一天分配具体任务，格式：\n   [{{"day": 1, "tasks": ["任务1", "任务2"]}}, {{"day": 2, "tasks": ["任务3"]}}]\n   daily_tasks 数组长度必须等于该阶段覆盖的天数，每天至少一个任务
-9. 只输出JSON，格式：{{"learning_path": [...]}}"""
+1. 生成4-5个阶段，总天数必须正好{total_days}天
+2. 每个阶段包含字段：
+   - stage_id: 字符串格式 "stage_N"（N为阶段序号，如"stage_1"、"stage_2"）
+   - title: 必须以具体学习内容命名，严禁模板化标题
+   - duration: 字符串格式 "第X-Y天"（单天用"第X天"），如"第1-3天"
+   - goal, tasks, daily_tasks, resource_types, reason 同上
+3. title必须以具体的学习内容命名（如"极限与连续"、"导数与微分"），绝对不要用"第一阶段"、"补齐基础"这种模板化标题
+4-7. 同上
+8. daily_tasks 格式：\n   [{{"day": 1, "tasks": ["任务1", "任务2"]}}, ...]\n   长度等于该阶段天数
+9. 只输出JSON，格式：{{"learning_path": [...]}}
+10. 对于微积分/高等数学，参考同济版章节结构，至少包含：极限与连续、导数与微分、导数应用、不定积分、定积分与综合复习"""
 
         try:
             raw = self.llm_client.chat(
@@ -449,7 +451,7 @@ class PlannerAgent(BaseAgent):
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.3,
-                max_tokens=1600,
+                max_tokens=4000,
             )
             logger.info(f"LLM raw response (first 800 chars): {raw[:800]}")
             parsed = self._parse_json(raw)
@@ -463,17 +465,21 @@ class PlannerAgent(BaseAgent):
         return None
 
     def _parse_json(self, text: str) -> dict:
-        text = text.strip()
-        if text.startswith("```"):
-            text = re.sub(r"^```(?:json)?\s*", "", text)
-            text = re.sub(r"\s*```$", "", text)
-        start, end = text.find("{"), text.rfind("}")
-        if start >= 0 and end >= start:
-            text = text[start:end + 1]
-        result = json.loads(text)
-        if not isinstance(result, dict):
-            raise ValueError("Expected JSON object")
-        return result
+        from app.utils.llm_json import parse_safe
+
+        def llm_fix(broken: str) -> str:
+            return self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON，不要解释。"},
+                    {"role": "user", "content": broken},
+                ],
+                temperature=0,
+                max_tokens=2000,
+            )
+
+        return parse_safe(text, llm_fix_fn=llm_fix if self.llm_client else None)
+
+    # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
 
     def _normalize_path(self, path: list, planning_points: list, total_days: int) -> list[dict]:
         allowed = {
@@ -492,8 +498,11 @@ class PlannerAgent(BaseAgent):
             tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
 
             if allowed:
-                skip_check = (len(allowed) == 1 and "基础诊断与薄弱点确认" in allowed)
-                if not skip_check:
+                skip_check = (
+                    (len(allowed) == 1 and "基础诊断与薄弱点确认" in allowed)
+                    or len(allowed) <= 2  # 课程信息不足时不硬过滤
+                )
+                if not skip_check and len(allowed) >= 3:
                     text_blob = f"{title} {item.get('goal', '')} {' '.join(tasks)}"
                     if not any(term and term in text_blob for term in allowed):
                         continue
@@ -620,50 +629,24 @@ class PlannerAgent(BaseAgent):
         path = []
 
         if not groups:
-            return [
-                {
-                    "stage_id": "stage_1",
-                    "title": "基础概念与入门",
-                    "duration": f"第1-{max(1, total_days // 3)}天",
-                    "goal": "建立课程核心概念框架，掌握基本定义和术语。",
-                    "tasks": ["阅读入门讲义", "完成基础概念练习", "整理知识结构图"],
-                    "daily_tasks": self._derive_daily_tasks_from_fallback(
-                        ["阅读入门讲义", "完成基础概念练习", "整理知识结构图"],
-                        f"第1-{max(1, total_days // 3)}天", 1, 3, total_days,
-                    ),
-                    "resource_types": ["lecture", "quiz", "mindmap"],
-                    "reason": f"学习周期{total_days}天，从基础概念起步。",
+            # 尝试从 profile 推断课程名以生成内容化阶段（§8.1）
+            course_text = str(profile.get("interest_direction", {}).get("value", "") if isinstance(profile, dict) else "")
+            fallback_points = self._fallback_course_points(course_text) if course_text else []
+            if fallback_points:
+                groups = self._group_points(fallback_points, min(5, len(fallback_points)))
+            else:
+                # 无法推断课程 → 返回标记 needs_more_info 的空路径（§8.2）
+                return [{
+                    "stage_id": "stage_info_needed",
+                    "title": "需要更多信息",
+                    "duration": "待确认",
+                    "goal": "请先明确学习对象（课程名或知识点），才能生成内容化的学习阶段。",
+                    "tasks": ["告诉我你想学习的具体课程或知识点"],
+                    "daily_tasks": [{"day": 1, "tasks": ["明确学习对象"]}],
+                    "resource_types": ["lecture"],
+                    "reason": "无法从当前信息推断课程结构，需要用户明确学习对象。",
                     "source": "rule_fallback",
-                },
-                {
-                    "stage_id": "stage_2",
-                    "title": "核心技能与方法",
-                    "duration": f"第{max(1, total_days // 3) + 1}-{max(2, total_days * 2 // 3)}天",
-                    "goal": "掌握核心计算方法和解题技巧。",
-                    "tasks": ["学习核心方法讲义", "完成专项练习题", "分析典型例题"],
-                    "daily_tasks": self._derive_daily_tasks_from_fallback(
-                        ["学习核心方法讲义", "完成专项练习题", "分析典型例题"],
-                        f"第{max(1, total_days // 3) + 1}-{max(2, total_days * 2 // 3)}天", 2, 3, total_days,
-                    ),
-                    "resource_types": ["lecture", "quiz", "practice"],
-                    "reason": "在基础概念之上，深入核心技能训练。",
-                    "source": "rule_fallback",
-                },
-                {
-                    "stage_id": "stage_3",
-                    "title": "综合应用与复习",
-                    "duration": f"第{max(2, total_days * 2 // 3) + 1}-{total_days}天",
-                    "goal": "综合运用所学知识解决实际问题，查漏补缺。",
-                    "tasks": ["完成综合测试", "整理错题本", "复习薄弱环节"],
-                    "daily_tasks": self._derive_daily_tasks_from_fallback(
-                        ["完成综合测试", "整理错题本", "复习薄弱环节"],
-                        f"第{max(2, total_days * 2 // 3) + 1}-{total_days}天", 3, 3, total_days,
-                    ),
-                    "resource_types": ["quiz", "reading", "practice"],
-                    "reason": f"最后{total_days - max(2, total_days * 2 // 3)}天集中复习和综合应用。",
-                    "source": "rule_fallback",
-                },
-            ]
+                }]
 
         for i, group in enumerate(groups, 1):
             lead = group[0]

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { getCurrentLearner } from '../pages/LoginPage';
+import { getCurrentLearner } from './authStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 
 /* ===================================================================
@@ -104,3 +104,11 @@ export const useSubjectStore = create<SubjectStore>((set, get) => ({
     set({ activeSubject: subject });
   },
 }));
+
+// React to auth changes — reload subjects on login
+import { useAuthStore } from './authStore';
+useAuthStore.subscribe((state, prev) => {
+  if (state.isAuthenticated && !prev.isAuthenticated) {
+    useSubjectStore.getState().load();
+  }
+});

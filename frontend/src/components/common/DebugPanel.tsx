@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useChatStore } from '../../store/chatStore';
 import { useProfileStore } from '../../store/profileStore';
 import { useSubjectStore } from '../../store/subjectStore';
-import { getCurrentLearner } from '../../pages/LoginPage';
+import { getCurrentLearner } from '../../store/authStore';
 import { Bug, X } from 'lucide-react';
 import { createLogger } from '../../utils/logger';
 import { safeClearCache } from '../../utils/cache';
@@ -107,6 +107,30 @@ export default function DebugPanel() {
             <DebugRow label="Data Version" value={String(useChatStore.getState().dataVersion)} />
             <DebugRow label="Streaming" value={String(useChatStore.getState().isStreaming)} />
             <DebugRow label="Messages" value={`${useChatStore.getState().messages.length} 条`} />
+
+            {/* Pipeline 执行状态（§12.1, §13.2）*/}
+            {(() => {
+              const info = useChatStore.getState().lastDebugInfo;
+              if (!info) return null;
+              const statusColor = (v: unknown) => v ? 'text-green-400' : 'text-red-400';
+              return (
+                <div className="border-t border-gray-700/50 pt-3 space-y-1.5">
+                  <p className="text-[9px] text-gray-500 uppercase tracking-wider font-semibold">Agent Pipeline</p>
+                  <DebugRow label="Action" value={String(info.action || '-')} />
+                  <DebugRow label="Confidence" value={String(info.confidence ?? '-')} />
+                  <DebugRow label="Pipeline Executed" value={String(info.pipeline_executed ?? '-')} />
+                  <DebugRow label="Skip Pipeline" value={String(info.skip_pipeline ?? '-')} />
+                  {info.skip_reason ? <DebugRow label="Skip Reason" value={String(info.skip_reason)} /> : null}
+                  <DebugRow label="Agents Run" value={Array.isArray(info.agents_run) ? (info.agents_run as string[]).join(', ') || '-' : '-'} />
+                  <DebugRow label="Learning Path" value={String(info.learning_path_created ?? '-')} />
+                  <DebugRow label="Resources" value={String(info.resources_created ?? '-')} />
+                  <DebugRow label="Reply Owner" value={String(info.final_reply_owner || '-')} />
+                  <DebugRow label="Reply Source" value={String(info.reply_source || '-')} />
+                  <DebugRow label="Fallback Used" value={String(info.fallback_used ?? '-')} />
+                  <DebugRow label="LLM Retries" value={String(info.llm_retry_count ?? 0)} />
+                </div>
+              );
+            })()}
 
             {/* 数据来源 */}
             <div className="border-t border-gray-700/50 pt-3 space-y-2">

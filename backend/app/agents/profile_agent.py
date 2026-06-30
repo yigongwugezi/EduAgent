@@ -30,10 +30,10 @@ class ProfileAgent(BaseAgent):
         profile = result.get("profile")
         if not isinstance(profile, dict):
             raise AgentValidationError("profile must be a dict")
-        keys = [key for key in profile if key in self.profile_dimensions]
-        if keys != self.profile_dimensions:
-            raise AgentValidationError("profile must expose the stable 9-dimension schema")
-        for key in self.profile_dimensions:
+        # 只校验已存在的维度格式，不强制要求全部 9 个维度（§4.2）
+        for key in profile:
+            if key not in self.profile_dimensions:
+                continue
             item = profile.get(key)
             if not isinstance(item, dict):
                 raise AgentValidationError(f"{key} must be a dict")
@@ -507,13 +507,16 @@ class ProfileAgent(BaseAgent):
         return 70 if len(text) >= 4 else 58
 
     def _load_json(self, content: str) -> dict[str, Any]:
-        text = content.strip()
-        if text.startswith("```"):
-            text = text.strip("`")
-            if text.startswith("json"):
-                text = text[4:].strip()
-        start = text.find("{")
-        end = text.rfind("}") + 1
-        if start == -1 or end <= start:
-            raise ValueError("LLM response does not contain a JSON object.")
-        return json.loads(text[start:end])
+        from app.utils.llm_json import parse_safe
+
+        def llm_fix(broken: str) -> str:
+            return self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON。"},
+                    {"role": "user", "content": broken},
+                ],
+                temperature=0,
+                max_tokens=1000,
+            )
+
+        return parse_safe(content, llm_fix_fn=llm_fix if self.llm_client else None)

@@ -1,6 +1,7 @@
 """
 Agent orchestrator with per-agent error isolation and timeout handling.
-v2: 增加 ConversationAgent 做对话理解，LLM 优先，规则兜底。
+v3: ConversationAgent 提升为外层总控，Orchestrator 只负责依次执行子 Agent。
+意图判断和最终回复由外层的 ConversationAgent 统一处理。
 """
 
 from __future__ import annotations
@@ -11,7 +12,6 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeou
 from typing import Any, Callable
 
 from app.agents import (
-    ConversationAgent,
     DiagnosisAgent,
     KnowledgeAgent,
     PlannerAgent,
@@ -38,7 +38,6 @@ PLANNER_METADATA_KEYS = [
 
 AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
     "profile_agent": ["profile"],
-    "conversation_agent": ["reply", "action", "intent"],
     "knowledge_agent": ["knowledge_context"],
     "diagnosis_agent": ["diagnosis"],
     "planner_agent": ["learning_path", "estimatedDays", *PLANNER_METADATA_KEYS],
@@ -50,13 +49,16 @@ AGENT_OUTPUT_KEYS: dict[str, list[str]] = {
 class AgentOrchestrator:
     """Coordinates the multi-agent learning workflow with error resilience.
 
-    v2 流程：
+    v3 流程：
     1. ProfileAgent — 生成/更新学习画像
-    2. ConversationAgent — LLM 理解用户意图，生成自然回复 + 决策
-    3. 根据 ConversationAgent 的 action 决定是否继续后续 Agent
-    4. KnowledgeAgent → DiagnosisAgent → PlannerAgent → ResourceAgent → ReviewAgent
+    2. KnowledgeAgent — 检索课程知识
+    3. DiagnosisAgent — 诊断薄弱点
+    4. PlannerAgent — 规划学习路径
+    5. ResourceAgent — 生成学习资源
+    6. ReviewAgent — 审查质量
 
-    如果 ConversationAgent 的 action 是 "none" 或 "unsafe"，跳过后续 Agent。
+    ConversationAgent 已提升为外层总控，不在此管道中。
+    意图判断和最终回复由外层的 ConversationAgent 统一处理。
     """
 
     def __init__(self) -> None:
@@ -68,10 +70,9 @@ class AgentOrchestrator:
 
     AGENT_STAGE_MAP: dict[str, tuple[str, int]] = {
         "profile_agent":      ("profiling", 15),
-        "conversation_agent": ("understanding", 25),
-        "knowledge_agent":    ("knowledge", 35),
-        "diagnosis_agent":    ("diagnosis", 50),
-        "planner_agent":      ("planning", 65),
+        "knowledge_agent":    ("knowledge", 30),
+        "diagnosis_agent":    ("diagnosis", 45),
+        "planner_agent":      ("planning", 60),
         "resource_agent":     ("generating", 80),
         "review_agent":       ("reviewing", 90),
     }
@@ -83,8 +84,9 @@ class AgentOrchestrator:
         user_message: str,
         profile_facts: dict[str, str] | None = None,
         progress_callback: Callable | None = None,
+        agents_filter: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Execute the full multi-agent pipeline.
+        """Execute the multi-agent pipeline.
 
         Args:
             session_id: Current session identifier.
@@ -92,6 +94,8 @@ class AgentOrchestrator:
             user_message: The user's raw message (not constructed prompt).
             profile_facts: Optional pre-extracted profile facts.
             progress_callback: Optional ``(stage_key, stage_label, progress_pct) -> None``.
+            agents_filter: 指定只运行哪些 Agent（如 ["planner_agent", "resource_agent"]）。
+                          为 None 时运行全部。为 [] 时只运行 ProfileAgent 基线。
 
         Returns:
             A dict with keys: session_id, course_id, reply, profile, diagnosis,
@@ -100,7 +104,6 @@ class AgentOrchestrator:
         """
         AGENT_LABELS = {
             "profile_agent":      "正在生成画像",
-            "conversation_agent": "正在理解意图",
             "knowledge_agent":    "正在检索知识",
             "diagnosis_agent":    "正在诊断分析",
             "planner_agent":      "正在规划路径",
@@ -129,8 +132,8 @@ class AgentOrchestrator:
         any_failed = False
         overall_error_parts: list[str] = []
 
-        # ── 构建 Agent 列表 ──
-        agents = self._build_agents()
+        # ── 构建 Agent 列表，按 agents_filter 过滤 ──
+        agents = self._build_agents(agents_filter=agents_filter)
 
         # ── 判断是否跳过后续 Agent ──
         skip_pipeline = False
@@ -153,19 +156,6 @@ class AgentOrchestrator:
                     if key not in result:
                         result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
 
-            # ── ConversationAgent 决策：是否需要继续 ──
-            if agent.agent_id == "conversation_agent":
-                action = result.get("action", "none")
-                result["conversation_action"] = action
-                if action == "unsafe":
-                    skip_pipeline = True
-                    result["skip_reason"] = "conversation_action_unsafe"
-                    break
-                if action == "none" and not self._has_downstream_agents(agents, index):
-                    skip_pipeline = True
-                    result["skip_reason"] = "conversation_action_none"
-                    break  # conversation-only pipeline
-
             # ── Report progress ──
             if progress_callback:
                 stage_info = self.AGENT_STAGE_MAP.get(agent.agent_id, ("", 0))
@@ -175,15 +165,24 @@ class AgentOrchestrator:
                 if stage_key:
                     progress_callback(stage_key, label, pct)
 
-        # ── 如果跳过流水线，填充默认值 ──
+        # ── 如果跳过流水线（目前仅 unsafe 场景），填充默认值 ──
         if skip_pipeline:
             result["skip_pipeline"] = True
             result["pipeline_executed"] = False
-            self._ensure_output_defaults(result, source="conversation_only")
+            self._ensure_output_defaults(result, source="pipeline_skipped")
             result["overall_status"] = "completed"
             result["overall_error"] = None
-            result["source"] = "conversation_only"
+            result["source"] = "pipeline_skipped"
             return result
+
+        # ── 检测是否使用了 fallback ──
+        fallback_used = any(
+            step.get("source") == "rule_based_fallback"
+            or step.get("quality_status") == "fallback"
+            or step.get("status") in ("failed", "timeout")
+            for step in result.get("agent_steps", [])
+            if isinstance(step, dict)
+        )
 
         # ── 确定总体状态 ──
         if not result["agent_steps"]:
@@ -203,16 +202,12 @@ class AgentOrchestrator:
             result["source"] = "agent_pipeline"
             result["pipeline_executed"] = True
 
+        result["fallback_used"] = fallback_used
+
         # ── 确保所有输出 key 存在 ──
         self._ensure_output_defaults(result, source=result.get("source", "agent_pipeline"))
 
         return result
-
-    def _has_downstream_agents(self, agents: list, current_index: int) -> bool:
-        return any(
-            getattr(agent, "agent_id", "") not in {"conversation_agent"}
-            for agent in agents[current_index + 1:]
-        )
 
     def _ensure_output_defaults(self, result: dict[str, Any], source: str) -> None:
         for key_list in AGENT_OUTPUT_KEYS.values():
@@ -270,25 +265,36 @@ class AgentOrchestrator:
 
     # ── Agent construction ─────────────────────────────────────────────
 
-    def _build_agents(self) -> list:
-        """Build the agent pipeline.
+    def _build_agents(self, agents_filter: list[str] | None = None) -> list:
+        """构建 Agent 执行管道。
 
-        顺序：
-        1. ProfileAgent — 画像（如果已有画像会跳过）
-        2. ConversationAgent — LLM 理解意图（新增）
-        3-7. 原流水线
+        顺序：ProfileAgent → KnowledgeAgent → DiagnosisAgent → PlannerAgent → ResourceAgent → ReviewAgent
+        ConversationAgent 已提升为外层总控，不在此管道中。
+
+        agents_filter: 如果提供，只构建列表中指定的 Agent。None 表示全部。
+                      注意：ProfileAgent 总是包含（作为基线），除非显式排除。
         """
         mock_data = self._load_mock_data() if settings.enable_mock_fallback else {}
         downstream_llm = self._downstream_llm_client()
-        return [
+
+        all_agents = [
             ProfileAgent(mock_data=mock_data, llm_client=self.llm_client),
-            ConversationAgent(mock_data=mock_data, llm_client=downstream_llm),
             KnowledgeAgent(mock_data=mock_data),
             DiagnosisAgent(mock_data=mock_data, llm_client=downstream_llm),
             PlannerAgent(mock_data=mock_data, llm_client=downstream_llm),
             ResourceAgent(mock_data=mock_data, llm_client=downstream_llm),
             ReviewAgent(mock_data=mock_data),
         ]
+
+        if agents_filter is None:
+            return all_agents
+
+        filter_set = set(agents_filter)
+        # ProfileAgent 总是包含在主 Agent 调用的默认中，除非 filter 明确为空列表
+        if not filter_set:
+            return []
+
+        return [a for a in all_agents if a.agent_id in filter_set]
 
     def _downstream_llm_client(self):
         if type(self.llm_client).__name__ == "MockLLMClient":

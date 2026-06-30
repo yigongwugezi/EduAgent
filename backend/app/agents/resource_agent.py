@@ -32,17 +32,15 @@ class ResourceAgent(BaseAgent):
         knowledge_points = self._knowledge_points(context, course, stages)
         profile = context.get("profile", {})
 
+        # ── 无阶段/知识点信息时：生成通用推荐，不硬拒绝（§10.1, 补充3）──
         if not stages or not knowledge_points:
-            missing = []
-            if not stages:
-                missing.append("learning_path stages")
-            if not knowledge_points:
-                missing.append("course chapters or knowledge points")
-            return {
-                "resources": [],
-                "limitations": [f"Resource generation needs {', '.join(missing)}."],
-                "agent_step": self.agent_step(),
-            }
+            course_name = (
+                course.get("course_name")
+                or context.get("profile_facts", {}).get("target_course")
+                or context.get("course_id", "目标课程")
+            )
+            resources = self._build_generic_resources(str(course_name).strip(), context)
+            return {"resources": resources, "agent_step": self.agent_step()}
 
         # RAG 检索
         rag_evidence = self._rag_retrieve(context, stages, knowledge_points, profile)
@@ -175,7 +173,7 @@ class ResourceAgent(BaseAgent):
         ]
 
         try:
-            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=4000)
+            raw = self.llm_client.chat(messages, temperature=0.2, max_tokens=8000)
             logger.info(f"ResourceAgent LLM raw response (first 500 chars): {raw[:500]}")
             parsed = self._parse_json(raw)
         except Exception as e:
@@ -189,18 +187,21 @@ class ResourceAgent(BaseAgent):
         return self._normalize_llm_resources(resources, stages, knowledge_points, course, rag_evidence)
 
     def _parse_json(self, text: str) -> dict[str, Any]:
-        stripped = text.strip()
-        if stripped.startswith("```"):
-            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
-            stripped = re.sub(r"\s*```$", "", stripped)
-        start = stripped.find("{")
-        end = stripped.rfind("}")
-        if start >= 0 and end >= start:
-            stripped = stripped[start:end + 1]
-        parsed = json.loads(stripped)
-        if not isinstance(parsed, dict):
-            raise ValueError("Resource LLM output must be a JSON object.")
-        return parsed
+        from app.utils.llm_json import parse_safe
+
+        def llm_fix(broken: str) -> str:
+            return self.llm_client.chat(
+                messages=[
+                    {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON，不要解释。"},
+                    {"role": "user", "content": broken},
+                ],
+                temperature=0,
+                max_tokens=2000,
+            )
+
+        return parse_safe(text, llm_fix_fn=llm_fix if self.llm_client else None)
+
+    # _repair_truncated_json 已迁移到 app.utils.llm_json.repair_truncated
 
     def _normalize_llm_resources(
         self,
@@ -871,3 +872,83 @@ class ResourceAgent(BaseAgent):
     def _safe_mermaid(self, text):
         cleaned = re.sub(r"[\r\n\t]+", " ", text).strip()
         return cleaned.replace("(", "（").replace(")", "）").replace(":", "：")[:60] or "resource"
+
+    # ── 通用推荐模式（§10.1, 补充3）──
+
+    def _build_generic_resources(
+        self,
+        course_name: str,
+        context: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """在缺少学习路径和阶段信息时，生成通用推荐资源。
+        必须明确标记为通用推荐，不能伪装成阶段化推荐（补充3）。
+        """
+        if not course_name or len(course_name) < 2:
+            course_name = "目标课程"
+
+        profile = context.get("profile", {})
+        session_id = str(context.get("session_id") or "")
+
+        resources: list[dict[str, Any]] = []
+
+        # 通用讲义
+        resources.append({
+            "resource_id": f"generic_lecture_{course_name}",
+            "type": "lecture",
+            "title": f"{course_name}入门讲义",
+            "description": f"{course_name}核心概念和学习路线概述。此为通用推荐资源，待学习路径确定后可替换为阶段化资源。",
+            "content_format": "markdown",
+            "content": (
+                f"## {course_name} 学习概览\n\n"
+                f"### 课程简介\n{course_name}是重要的学习方向。以下为通用入门路线：\n\n"
+                "### 建议学习路径\n"
+                "1. 先了解核心概念和术语体系\n"
+                "2. 掌握基础方法和典型应用场景\n"
+                "3. 通过练习巩固并逐步深入\n\n"
+                "### 学习建议\n"
+                "建议先完成一次基础摸底测试，确认当前水平和薄弱点后，再制定精确的个性化学习计划。"
+            ),
+            "related_stage_id": "generic",
+            "related_chapter": course_name,
+            "related_knowledge_points": [course_name],
+            "knowledge_points": [course_name],
+            "source": "agent_generated",
+            "source_type": "agent_generated",
+            "generation_mode": "generic_fallback",
+            "quality_status": "warning",
+            "reason": f"主 Agent 要求为 {course_name} 生成通用推荐资源（当前缺少学习路径阶段信息）。",
+            "generation_reason": f"通用推荐：{course_name} 入门学习。",
+            "difficulty": "easy",
+            "fallback_reason": "缺少学习路径和阶段信息，以下为通用推荐资源，未绑定到具体学习阶段。后续补充画像信息后可生成阶段化资源。",
+            "task_id": "",
+        })
+
+        # 通用思维导图概览
+        resources.append({
+            "resource_id": f"generic_mindmap_{course_name}",
+            "type": "mindmap",
+            "title": f"{course_name}知识结构概览",
+            "description": f"{course_name}核心知识领域全景图。此为通用推荐资源。",
+            "content_format": "mermaid",
+            "content": (
+                f"mindmap\n  root(({self._safe_mermaid(course_name)}))\n"
+                "    核心概念\n      定义与术语\n      基本原理\n"
+                "    关键方法\n      常见技术\n      典型应用\n"
+                "    学习资源\n      推荐教材\n      在线课程\n      练习平台"
+            ),
+            "related_stage_id": "generic",
+            "related_chapter": course_name,
+            "related_knowledge_points": [course_name],
+            "knowledge_points": [course_name],
+            "source": "agent_generated",
+            "source_type": "agent_generated",
+            "generation_mode": "generic_fallback",
+            "quality_status": "warning",
+            "reason": f"为 {course_name} 提供通用知识结构概览。",
+            "generation_reason": f"通用推荐：{course_name} 知识结构。",
+            "difficulty": "easy",
+            "fallback_reason": "缺少学习路径和阶段信息，未绑定阶段。",
+            "task_id": "",
+        })
+
+        return self._scope_resource_ids(resources, session_id)

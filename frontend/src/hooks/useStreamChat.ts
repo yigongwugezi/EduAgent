@@ -103,6 +103,18 @@ export function useStreamChat() {
                   appendToLastAssistant(payload.content);
                 }
                 if (payload.done) {
+                  // Store debug info from final event (dev-only, §13.2)
+                  const debugFields = ['action', 'confidence', 'should_run_pipeline', 'skip_pipeline',
+                    'skip_reason', 'agents_run', 'final_reply_owner', 'reply_source', 'fallback_used',
+                    'llm_retry_count', 'pipeline_executed', 'learning_path_created', 'resources_created'];
+                  const debugInfo: Record<string, unknown> = {};
+                  for (const key of debugFields) {
+                    if (key in payload) debugInfo[key] = payload[key];
+                  }
+                  if (Object.keys(debugInfo).length > 0) {
+                    useChatStore.getState().setLastDebugInfo(debugInfo);
+                  }
+
                   // Clear pending marker — generation ended
                   writeStorageItem(runtimeStorageKeys.pendingGeneration, '');
                   if (payload.error) {

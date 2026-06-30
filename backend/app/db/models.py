@@ -28,17 +28,75 @@ class LearnerModel(Base):
 
     Each learner aggregates learning portraits across sessions, enabling
     cross-session profile tracking and personalization.
+
+    Role system: student (default), parent, teacher, admin.
+    Parents can link to children via parent_id on the child's record.
     """
 
     __tablename__ = "learners"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     nickname: Mapped[str] = mapped_column(String(128), default="学习者")
+
+    # ── Auth ─────────────────────────────────────────────────────────
+    phone: Mapped[str | None] = mapped_column(
+        String(20), nullable=True, unique=True, default=None, index=True
+    )
+    wechat_openid: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, unique=True, default=None
+    )
+    student_no: Mapped[str | None] = mapped_column(
+        String(32), nullable=True, unique=True, default=None
+    )
+    password_hash: Mapped[str | None] = mapped_column(
+        String(256), nullable=True, default=None
+    )
+
+    # ── Identity ─────────────────────────────────────────────────────
+    role: Mapped[str] = mapped_column(
+        String(16), default="student"
+    )  # student | parent | teacher | admin
+    grade: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, default=None
+    )  # 小学一年级~高中三年级 | 大一~大四
+    target_exam: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, default=None
+    )  # 中考 | 高考 | 考研 | 雅思 | 托福 | 期末
+    school: Mapped[str | None] = mapped_column(
+        String(128), nullable=True, default=None
+    )
+    avatar_url: Mapped[str | None] = mapped_column(
+        String(512), nullable=True, default=None
+    )
+
+    # ── Parent linkage ───────────────────────────────────────────────
+    parent_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("learners.id", ondelete="SET NULL"),
+        nullable=True,
+        default=None,
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
+    # ── Relationships ────────────────────────────────────────────────
     sessions: Mapped[list["SessionModel"]] = relationship(
         "SessionModel", back_populates="learner", cascade="all, delete-orphan"
+    )
+    # Children linked to this parent
+    children: Mapped[list["LearnerModel"]] = relationship(
+        "LearnerModel",
+        back_populates="parent",
+        remote_side="LearnerModel.parent_id",
+        foreign_keys="LearnerModel.parent_id",
+    )
+    parent: Mapped[Optional["LearnerModel"]] = relationship(
+        "LearnerModel",
+        back_populates="children",
+        remote_side="LearnerModel.id",
+        foreign_keys="LearnerModel.parent_id",
     )
 
 
@@ -232,3 +290,76 @@ class DailyTaskModel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
 
     session: Mapped["SessionModel"] = relationship("SessionModel", back_populates="daily_tasks")
+
+
+# ── Question Bank ─────────────────────────────────────────────────────────
+
+class QuestionModel(Base):
+    """A question in the admin-managed question bank.
+
+    Content is stored as JSON: {stem, options[], answer, explanation, hints[]}.
+    Supports choice, fill, truefalse, and shortanswer types.
+    """
+
+    __tablename__ = "questions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(64), index=True, default="")
+    knowledge_point: Mapped[str] = mapped_column(String(128), index=True, default="")
+    type: Mapped[str] = mapped_column(String(16), default="choice")  # choice|fill|truefalse|shortanswer
+    difficulty: Mapped[str] = mapped_column(String(8), default="medium")  # easy|medium|hard|challenge
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    tags: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)
+    status: Mapped[str] = mapped_column(String(16), default="draft")  # draft|published|archived
+    usage_count: Mapped[int] = mapped_column(Integer, default=0)
+    avg_score: Mapped[float] = mapped_column(default=0.0)
+    created_by: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── Knowledge Point Graph ────────────────────────────────────────────────
+
+class KnowledgePointModel(Base):
+    """A node in the subject knowledge graph (DAG).
+
+    prerequisites is a JSON list of knowledge_point IDs that must be
+    mastered before this node. This DAG drives M5's shortest-path planner.
+    """
+
+    __tablename__ = "knowledge_points"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subject: Mapped[str] = mapped_column(String(64), index=True, default="")
+    name: Mapped[str] = mapped_column(String(128), default="")
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    prerequisites: Mapped[dict | None] = mapped_column(JSON, nullable=True, default=None)  # list[str] of KP ids
+    difficulty: Mapped[str] = mapped_column(String(8), default="medium")
+    importance: Mapped[int] = mapped_column(Integer, default=5)  # 1-10
+    chapter: Mapped[str | None] = mapped_column(String(128), nullable=True, default=None)
+    grade_level: Mapped[str | None] = mapped_column(String(16), nullable=True, default=None)
+    metadata_: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)
+
+
+# ── System Config ─────────────────────────────────────────────────────────
+
+class SystemConfigModel(Base):
+    """Key-value system configuration, editable by admins via the dashboard.
+
+    Supports hot-reload for feature flags; LLM/agent settings need restart.
+    """
+
+    __tablename__ = "system_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    description: Mapped[str | None] = mapped_column(String(256), nullable=True, default=None)
+    category: Mapped[str] = mapped_column(String(32), default="general")  # general|llm|agent|feature
+    updated_by: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("learners.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_utcnow, onupdate=_utcnow)

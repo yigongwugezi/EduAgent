@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useSubjectStore } from '../store/subjectStore';
 import { useLearningAnalytics } from '../hooks/useLearningAnalytics';
 import { useProfile } from '../hooks/useProfile';
-import { getCurrentLearner } from './LoginPage';
+import { getCurrentLearner } from '../store/authStore';
 import { PlayCircle, FileText, BrainCircuit, Code2, Trophy, Flame, Clock, ChevronRight, Sparkles, Plus, Trash2 } from 'lucide-react';
 import DailyTaskPanel from '../components/tasks/DailyTaskPanel';
 import { useDailyTasks } from '../hooks/useDailyTasks';

@@ -103,6 +103,7 @@ def run_agents(
     user_message: str,
     course_id: str | None = None,
     progress_callback: Callable | None = None,
+    agents_filter: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run the multi-agent pipeline, persist results, and return them.
 
@@ -118,6 +119,7 @@ def run_agents(
         user_message: The latest user message (raw, not wrapped).
         course_id: Optional explicit course ID.  If *None*, matched from facts.
         progress_callback: Optional callback forwarded to Orchestrator.
+        agents_filter: 指定只运行哪些 Agent。None 表示全部。
 
     Returns:
         The orchestrator result dict (see ``OrchestratorResult`` schema).
@@ -162,6 +164,7 @@ def run_agents(
         user_message=user_message,
         profile_facts=facts,
         progress_callback=progress_callback,
+        agents_filter=agents_filter,
     )
 
     # Attach course metadata

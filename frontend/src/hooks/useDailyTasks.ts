@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import * as dailyTasksApi from '../api/dailyTasks';
 import type { DailyTask } from '../types/dailyTask';
-import { getCurrentLearner } from '../pages/LoginPage';
+import { getCurrentLearner } from '../store/authStore';
 import { useChatStore } from '../store/chatStore';
 
 /**

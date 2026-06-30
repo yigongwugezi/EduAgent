@@ -1,6 +1,6 @@
 import { useNavigate, useLocation } from 'react-router-dom';
 import { LayoutDashboard, User, Route, FolderOpen, MessageCircle, Settings, Sparkles, Bot, GraduationCap, History } from 'lucide-react';
-import { getCurrentLearner } from '../../pages/LoginPage';
+import { getCurrentLearner } from '../../store/authStore';
 
 const NAV = [
   { id: 'dashboard', path: '/', label: '学习中心', icon: <LayoutDashboard size={20} /> },

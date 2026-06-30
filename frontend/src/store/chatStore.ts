@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import type { ChatMessage, ChatSession, QuickCommand, GenerationProgress } from '../types/chat';
-import { getCurrentLearner } from '../pages/LoginPage';
+import { getCurrentLearner } from './authStore';
 import { useSubjectStore } from './subjectStore';
 import { readStorageItem, readStorageJson, writeStorageItem, writeStorageJson, runtimeStorageKeys } from '../utils/storageKeys';
 import { createLogger } from '../utils/logger';
@@ -74,6 +74,8 @@ interface ChatStore {
   isStreaming: boolean;
   loading: boolean;
   agentProgress: GenerationProgress | null;
+  /** SSE done 事件中的 debug 字段，仅开发模式展示 */
+  lastDebugInfo: Record<string, unknown> | null;
   dataVersion: number;
 
   setCurrentSession: (id: string) => void;
@@ -82,6 +84,7 @@ interface ChatStore {
   appendToLastAssistant: (chunk: string) => void;
   setStreaming: (v: boolean) => void;
   setAgentProgress: (p: GenerationProgress | null) => void;
+  setLastDebugInfo: (info: Record<string, unknown> | null) => void;
   setSessions: (sessions: ChatSession[]) => void;
   setQuickCommands: (cmds: QuickCommand[]) => void;
   setLoading: (v: boolean) => void;
@@ -109,6 +112,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
   isStreaming: false,
   loading: false,
   agentProgress: null,
+  lastDebugInfo: null,
   dataVersion: 0,
   dataSessionId: loadSessionId(),
 
@@ -191,6 +195,7 @@ export const useChatStore = create<ChatStore>((set, get) => ({
 
   setStreaming: (v) => set({ isStreaming: v }),
   setAgentProgress: (p) => set({ agentProgress: p }),
+  setLastDebugInfo: (info) => set({ lastDebugInfo: info }),
   setSessions: (sessions) => set({ sessions }),
   setQuickCommands: (cmds) => set({ quickCommands: cmds }),
   setLoading: (v) => set({ loading: v }),
@@ -277,6 +282,14 @@ useSubjectStore.subscribe((state) => {
   if (newId && newId !== prevSubjectId) {
     prevSubjectId = newId;
     // 同步刷新，确保 React 同一次渲染中 subjectId 和 sessionId 一致
+    useChatStore.getState().reloadSession();
+  }
+});
+
+// React to auth changes — reload sessions on login/logout
+import { useAuthStore } from './authStore';
+useAuthStore.subscribe((state, prev) => {
+  if (state.isAuthenticated !== prev.isAuthenticated) {
     useChatStore.getState().reloadSession();
   }
 });

@@ -263,19 +263,24 @@ class DiagnosisAgent(BaseAgent):
         )
 
     def _parse_llm_diagnosis(self, raw: str) -> dict | None:
-        """解析 LLM 诊断输出"""
+        """解析 LLM 诊断输出（使用统一 JSON 工具）"""
+        from app.utils.llm_json import parse_safe
+
         try:
-            text = raw.strip()
-            if text.startswith("```"):
-                text = re.sub(r"^```(?:json)?\s*", "", text)
-                text = re.sub(r"\s*```$", "", text)
-            start, end = text.find("{"), text.rfind("}")
-            if start >= 0 and end >= start:
-                text = text[start:end + 1]
-            result = json.loads(text)
+            def llm_fix(broken: str) -> str:
+                return self.llm_client.chat(
+                    messages=[
+                        {"role": "system", "content": "你是 JSON 修复器。修复以下损坏的 JSON，只输出修复后的 JSON。"},
+                        {"role": "user", "content": broken},
+                    ],
+                    temperature=0,
+                    max_tokens=1000,
+                )
+
+            result = parse_safe(raw, llm_fix_fn=llm_fix if self.llm_client else None)
             if isinstance(result, dict):
                 return result
-        except (json.JSONDecodeError, ValueError) as e:
+        except (ValueError, json.JSONDecodeError) as e:
             logger.warning(f"Failed to parse LLM diagnosis JSON: {e}")
         return None
 

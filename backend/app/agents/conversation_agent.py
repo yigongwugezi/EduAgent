@@ -1,14 +1,15 @@
 """
-对话核心智能体 — LLM 直接理解用户意图并生成自然回复。
-替代原来 IntentAgent 的规则分类 + 模板回复。
-规则引擎降级为安全检查和 LLM 失败时的兜底。
+对话核心智能体 — 最高优先级调度中心。
+负责理解用户意图、判断是否调用子 Agent、统一生成最终回复。
+规则引擎仅作为 LLM 失败时的后台兜底，不直接对用户说话。
 
-v3: LLM 输出 <facts> 标签，统一管理画像信息。
+v4: ConversationAgent 作为外层总控，Orchestrator 只做执行。
 """
 
 import json
 import logging
 import re
+import time
 from typing import Any
 
 from app.agents.base import BaseAgent
@@ -27,73 +28,103 @@ class ConversationAgent(BaseAgent):
     agent_id = "conversation_agent"
     agent_name = "对话智能体"
 
-    SYSTEM_PROMPT = """你是 EduAgent，一个专业又温暖的学习助手。你像一位有经验的私人教师——能听懂学生的各种表达方式，会自然对话，不会让学生觉得在和机器人聊天。
+    SYSTEM_PROMPT = """你是 EduAgent，一个专业又温暖的学习助手。你是系统的最高优先级调度中心——你负责理解学生、判断时机、调度子 Agent、并统一生成最终回复。
 
-## 你的能力
-- 了解学生的学习背景（专业、基础、目标、可用时间）
-- 诊断学习薄弱点（分析答题记录、行为数据、学生自述）
-- 制定个性化学习计划/路径（根据诊断结果和课程知识库）
-- 推荐学习资源（讲义、练习题、思维导图、实操案例等）
-- 解答学习困惑（概念解释、学习方法建议）
+## 你的定位
+你是学生唯一看到和对话的对象。你背后有多个子 Agent（画像分析、诊断、路径规划、资源生成），但它们不直接对学生说话——所有回复由你统一出口。
 
 ## 对话原则
-1. **自然口语化**：像老师一样说话，不要说"收到指令"、"已处理"、"请选择方向"
-2. **主动理解**：即使学生表达不完整，也从上下文推断意图，少问多行动
-3. **精准追问**：如果确实缺少关键信息，只问最需要的1-2个问题
-4. **有记忆**：理解"这个"、"那个"、"太难了"、"换一个"等指代词
+1. **自然口语化**：像老师一样说话。严禁："收到指令"、"已处理"、"请选择方向"、"画像完整度"、"当前画像信息如下"、格式化追问清单
+2. **不自动生成**：学生说"我想学XXX"只是表达意向，不是要求生成。信息足够时你可以提示"已经可以生成初版了，要开始吗？"，但必须等学生确认后才触发
+3. **精准追问**：如果确实缺关键信息，只问最需要的1-2个。同时告诉学生"还缺什么"、"下一步可以怎么做"
+4. **有记忆**：理解指代词。画像信息保守合并——新信息补充不覆盖已有，新旧冲突时向学生确认
 5. **有温度**：展现共情——"这个地方确实容易搞混"、"别着急，我帮你梳理"
-6. **不甩锅**：不要说"我无法识别"、"请重新描述"，而是主动猜测并确认
+6. **不甩锅**：不说"我无法识别"、"请重新描述"，主动猜测并确认
 7. **简短有力**：回复控制在2-4句话，不要长篇大论
-8. **主动行动**：当信息足够时，主动说"我帮你生成学习方案"，不要等学生说"开始生成"
+8. **诚实**：你只说自己真正做过的事。子 Agent 没有执行就不能说"已生成"
 
 ## 好的回复示例
 学生："我想学微积分"
 回复："好的！微积分是理工科的核心基础课。你之前有接触过吗？比如高中导数？还是完全零基础？每天大概能花多长时间？"
 
 学生："零基础，每天三小时，一个月"
-回复："明白了，零基础每天三小时，一个月很充足。我现在就帮你生成完整的微积分学习方案。<action>full_workflow</action>"
+回复："明白了，零基础每天三小时，一个月很充足。这些信息已经可以生成第一版学习方案了，要我现在开始吗？"
 
 学生："可以的"
-回复："好的，我现在就帮你生成具体的学习路径和资源。<action>full_workflow</action>"
+回复："好的，我现在就帮你生成。<action>full_workflow</action>"
+
+学生："我是大三的，学过C语言"
+回复："了解了，软件工程大三，有C语言基础。你想重点学习哪个方向？比如数据结构、算法、操作系统？"
 
 ## 差的回复示例（绝对禁止）
 - "请选择方向：生成学习画像、规划路径、推荐资源或诊断薄弱点"
 - "我无法识别你的意图，请重新描述"
 - "收到，已更新学习画像。你可以继续补充薄弱点、学习时间或资源偏好"
+- "画像完整度 2/7" 或任何 X/Y 格式的进度数字
 - 光说不练——只口头描述计划但不触发 action
+- 没有执行子 Agent 却说"已生成"、"已推荐"、"已完成诊断"
 
 ## 决策标签
-在回复末尾，如果需要调用后端智能体生成实际内容，用以下标签标注：
-<action>full_workflow</action> — 用户要求生成完整学习方案，或信息已足够（有课程名+时间+基础），或用户说"好的"、"可以"、"生成吧"
-<action>diagnose</action>   — 用户要求诊断薄弱点
-<action>plan</action>        — 用户只要求规划路径
-<action>resources</action>   — 用户只要求推荐资源
-<action>none</action>        — 纯聊天、追问信息
+<action>full_workflow</action> — 触发条件（两个硬条件必须同时满足）：
+  1. 学习对象明确（如数据结构、微积分、Python、链表、考研英语）
+  2. 学生明确要求或确认生成（如"开始生成"、"帮我制定"、"生成方案"；或你刚提示"可以生成"，学生回复"可以/好的/行"）
 
-## 何时必须触发 <action>full_workflow</action>
-1. 学生明确了课程名 + 有时间 + 有基础水平 → 直接行动
-2. 学生说"可以"、"好的"、"行"、"生成吧"等确认词 → 立刻行动
-3. 你已经口头给出了阶段计划 → 立刻触发正式生成
-4. 不要等学生说"开始生成"，你主动判断时机
+<action>diagnose</action> — 学生明确说自己哪里不会、有错题、或上传了答题结果。学生没有任何证据时不要触发
+<action>plan</action> — 学生只要求规划路径
+<action>resources</action> — 学生只要求推荐资源（明确课程或知识点即可触发）
+<action>none</action> — 纯聊天、追问信息、补充画像、表达学习意向
 
-## 画像信息标签（重要！）
-每次回复时，在末尾输出 <facts> 标签，包含你对学生当前完整画像的理解：
+## 什么时候绝对不能触发 <action>full_workflow</action>
+- 学生只是闲聊、补充画像、表达学习意向（"我想学XXX"只是意向，不是生成请求）
+- 连学习对象都不知道
+- 没有学生明确确认——不要自己替学生做决定
+
+## 画像信息标签
+每次回复末尾输出 <facts> 标签：
 <facts>
 {"target_course": "微积分", "knowledge_base": "零基础", "time_budget": "1个月，每天3小时", "learning_goal": "期末考试拿高分", "background": "软件工程大一学生", "preference": "喜欢做题"}
 </facts>
 
-规则：
-- 只包含学生明确说过的信息，不要推测，不要编造
-- 课程名必须是完整准确的，如"微积分"、"数据结构"、"Python"，绝对不要提取"的是什么"这种无效值
-- 如果某个维度没有信息，就不要包含这个字段
-- 每次输出完整的当前画像（包括之前已确认的 + 本轮新增的），不只是增量
-- 这是给后端系统用的，用 JSON 格式"""
+规则：只包含学生明确说过的信息；课程名必须完整准确；没信息的维度不要包含；每次输出完整画像；用 JSON 格式"""
+
+    FINAL_REPLY_PROMPT = """
+## final_reply 模式
+你现在处于"最终回复"模式。后端子 Agent 已经执行完毕，你需要基于真实执行结果生成统一回复。
+
+## 规则
+1. 你必须基于 <pipeline_result> 中列出的真实执行结果说话
+2. Planner 没跑 → 不能说"学习路径已生成"
+3. Resource 没跑 → 不能说"资源已推荐"
+4. Diagnosis 没跑 → 不能说"已完成诊断"
+5. Pipeline 执行失败 → 诚实告知失败原因，不假装成功
+6. 回复风格与你的自然对话风格完全一致——不要因为后面有数据就突然变成表格式汇报
+7. 做自然总结：阶段分布、资源配套、关键建议——用对话语气，不要用 bullet list 模板
+
+## 循环规则
+- 每一步执行后必须产生新的有效状态
+- 连续两次没有新增状态 → 停止并向学生说明当前卡点
+- 同一子 Agent 重复失败 → 停止并向学生说明
+- 最多执行 5 次循环
+"""
 
     def __init__(self, mock_data=None, llm_client=None):
         super().__init__(mock_data=mock_data, llm_client=llm_client)
         self._history: list[dict[str, str]] = []
 
     def run(self, context: dict[str, Any]) -> dict[str, Any]:
+        """主入口。支持两种模式：
+        - mode="intent"（默认）：判断意图，返回 action + 自然语言回复
+        - mode="final_reply"：读取 pipeline 执行结果，生成统一最终回复
+        """
+        mode = str(context.get("mode", "intent"))
+
+        if mode == "final_reply":
+            return self._run_final_reply(context)
+
+        return self._run_intent(context)
+
+    def _run_intent(self, context: dict[str, Any]) -> dict[str, Any]:
+        """意图判断模式：理解用户、决定 action。"""
         profile_facts = context.get("profile_facts", {})
         if isinstance(profile_facts, dict) and profile_facts.get("_raw_user_message"):
             user_message = str(profile_facts["_raw_user_message"]).strip()
@@ -112,20 +143,151 @@ class ConversationAgent(BaseAgent):
 
         self._load_history(context)
 
-        try:
-            messages = self._build_llm_messages(user_message, context)
-            raw_response = self._call_llm(messages)
-            reply, action, facts = self._parse_response(raw_response)
-        except LLMClientError:
+        # ── LLM 调用（最多重试 5 次）──
+        MAX_RETRIES = 5
+        last_error = None
+        llm_retry_count = 0
+        fallback = None
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                messages = self._build_llm_messages(user_message, context)
+                raw_response = self._call_llm(messages)
+                reply, action, facts = self._parse_response(raw_response)
+                if reply or action != "none":
+                    break  # 有效输出
+            except LLMClientError as e:
+                last_error = e
+                llm_retry_count = attempt + 1
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(0.5 * (attempt + 1))
+                    continue
+            except json.JSONDecodeError:
+                llm_retry_count = attempt + 1
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+        else:
+            # 全部重试失败 → 走规则 fallback
+            logger.warning("LLM failed after %d retries, using rule fallback", MAX_RETRIES)
             fallback = self._rule_fallback(user_message, context)
             reply = fallback.pop("reply", "")
             action = fallback.pop("action", "none")
             facts = {}
-            logger.warning("LLM failed, using rule fallback for conversation")
+
+        self._save_history(user_message, reply or "", context)
+
+        result = self._make_result(reply=reply or "", action=action, facts=facts or {},
+                                   extra=fallback)
+        result["llm_retry_count"] = llm_retry_count
+        if fallback:
+            result["fallback_used"] = True
+        return result
+
+    def _run_final_reply(self, context: dict[str, Any]) -> dict[str, Any]:
+        """最终回复模式：读取 pipeline 真实执行结果，生成统一自然语言回复。"""
+        pipeline_result = context.get("pipeline_result", {})
+        user_message = str(context.get("user_message", "")).strip()
+        if not user_message:
+            profile_facts = context.get("profile_facts", {})
+            if isinstance(profile_facts, dict):
+                user_message = str(profile_facts.get("_raw_user_message", "")).strip()
+
+        self._load_history(context)
+
+        # ── 如果 pipeline 根本没执行，不走 LLM，直接返回事实陈述 ──
+        if not pipeline_result.get("pipeline_executed"):
+            skip_reason = pipeline_result.get("skip_reason", "未知原因")
+            return self._make_result(
+                reply=f"生成流程未完整执行（{skip_reason}）。你可以稍后重试或告诉我更具体的学习需求。",
+                action="none", facts={}
+            )
+
+        # ── 构建 final_reply 上下文 ──
+        pipeline_text = self._format_pipeline_result(pipeline_result)
+
+        # ── LLM 调用（最多 3 次重试）──
+        MAX_RETRIES = 3
+        llm_retry_count = 0
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                messages = [
+                    {"role": "system", "content": self.SYSTEM_PROMPT + self.FINAL_REPLY_PROMPT},
+                ]
+                for m in self._history[-20:]:
+                    messages.append(m)
+                messages.append({
+                    "role": "system",
+                    "content": f"以下是后端智能体真实执行结果：\n{pipeline_text}",
+                })
+                messages.append({
+                    "role": "user",
+                    "content": f"学生最后说：{user_message}\n\n请根据以上真实执行结果，用自然对话语气告知学生结果。",
+                })
+                raw_response = self._call_llm(messages)
+                reply, _, facts = self._parse_response(raw_response)
+                if reply:
+                    break
+            except (LLMClientError, json.JSONDecodeError):
+                llm_retry_count = attempt + 1
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(0.3 * (attempt + 1))
+                    continue
+        else:
+            # LLM 失败 → 极简事实兜底
+            reply = self._minimal_fact_reply(pipeline_result)
+            facts = {}
 
         self._save_history(user_message, reply, context)
 
-        return self._make_result(reply=reply, action=action, facts=facts, extra=fallback if "fallback" in locals() else None)
+        result = self._make_result(reply=reply, action="none", facts=facts or {})
+        result["llm_retry_count"] = llm_retry_count
+        result["final_reply_owner"] = "conversation_agent"
+        return result
+
+    def _format_pipeline_result(self, pr: dict) -> str:
+        """将 pipeline 执行结果格式化为 LLM 可读的文本摘要。"""
+        lines = []
+        agents_run = pr.get("agents_run", [])
+        lines.append(f"已执行 Agent: {', '.join(agents_run) if agents_run else '无'}")
+        lines.append(f"Pipeline 完整执行: {'是' if pr.get('pipeline_executed') else '否'}")
+        lines.append(f"学习路径已生成: {'是' if pr.get('learning_path_created') else '否'}")
+        lines.append(f"学习路径阶段数: {pr.get('stage_count', 0)}")
+        if pr.get("stage_titles"):
+            lines.append(f"阶段标题: {', '.join(str(t) for t in pr['stage_titles'][:8])}")
+        lines.append(f"资源已生成: {'是' if pr.get('resources_created') else '否'}")
+        lines.append(f"资源数量: {pr.get('resource_count', 0)}")
+        if pr.get("estimated_days"):
+            lines.append(f"预估学习天数: {pr['estimated_days']}")
+        lines.append(f"诊断已执行: {'是' if pr.get('diagnosis_created') else '否'}")
+        if pr.get("planner_metadata"):
+            meta = pr["planner_metadata"]
+            if isinstance(meta, dict):
+                risk = meta.get("risk_flags", [])
+                if risk:
+                    lines.append(f"风险标记: {', '.join(str(r) for r in risk)}")
+        skip_reason = pr.get("skip_reason", "")
+        if skip_reason:
+            lines.append(f"跳过原因: {skip_reason}")
+        fallback_used = pr.get("fallback_used", False)
+        if fallback_used:
+            lines.append("注意: 部分 Agent 使用了规则兜底而非 LLM 生成")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _minimal_fact_reply(pipeline_result: dict) -> str:
+        """极简事实兜底——仅在 LLM 完全不可用时使用。"""
+        parts = []
+        if pipeline_result.get("learning_path_created"):
+            parts.append(f"已生成 {pipeline_result.get('stage_count', 0)} 个学习阶段")
+        if pipeline_result.get("resources_created"):
+            parts.append(f"已生成 {pipeline_result.get('resource_count', 0)} 个学习资源")
+        if pipeline_result.get("diagnosis_created"):
+            parts.append("已完成诊断分析")
+        if not parts:
+            return "生成流程已完成。你可以到学习路径和资源库页面查看结果。"
+        return "、".join(parts) + "。你可以到对应页面查看详细内容。"
 
     def load_history(self, history):
         self._history = history
@@ -342,6 +504,10 @@ class ConversationAgent(BaseAgent):
             "needs_clarification": False,
             "confidence": 0.85 if action != "none" else 0.9,
             "conversation_history": list(self._history),
+            "reply_source": "conversation_agent",
+            "final_reply_owner": "conversation_agent",
+            "fallback_used": False,
+            "llm_retry_count": 0,
             "agent_step": {
                 "agent_id": self.agent_id,
                 "agent_name": self.agent_name,

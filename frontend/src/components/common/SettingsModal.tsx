@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { useSubjectStore } from '../../store/subjectStore';
-import { getCurrentLearner, logoutLearner } from '../../pages/LoginPage';
+import { getCurrentLearner, useAuthStore } from '../../store/authStore';
 import { readStorageJson, writeStorageJson, runtimeStorageKeys } from '../../utils/storageKeys';
 import { safeClearCache, exportAllData, importAllData, getCacheSize, formatBytes } from '../../utils/cache';
 import {
@@ -288,7 +288,7 @@ export default function SettingsModal({ open, onClose }: {
               <p className="text-xs text-gray-400 font-semibold uppercase tracking-wider pt-2">账户</p>
 
               <SettingRow label="切换学习者" description="切换到其他账号">
-                <button type="button" onClick={() => { logoutLearner(); window.location.href = '/login'; }}
+                <button type="button" onClick={() => { useAuthStore.getState().logout(); window.location.href = '/login'; }}
                   className="px-2.5 py-1.5 bg-gray-50 border border-gray-200 rounded-lg text-[10px] font-medium text-gray-600 hover:bg-gray-100 transition-colors">
                   切换
                 </button>

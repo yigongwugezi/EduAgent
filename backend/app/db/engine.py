@@ -71,6 +71,18 @@ def init_db() -> None:
 
     # SQLite does not auto-add new columns to existing tables.
     migrations = {
+        "learners": {
+            "phone": "VARCHAR(20)",
+            "wechat_openid": "VARCHAR(64)",
+            "student_no": "VARCHAR(32)",
+            "password_hash": "VARCHAR(256)",
+            "role": "VARCHAR(16) DEFAULT 'student'",
+            "grade": "VARCHAR(16)",
+            "target_exam": "VARCHAR(64)",
+            "school": "VARCHAR(128)",
+            "avatar_url": "VARCHAR(512)",
+            "parent_id": "VARCHAR(64)",
+        },
         "sessions": {
             "learner_id": "VARCHAR(64)",
             "subject_id": "VARCHAR(64)",
@@ -94,6 +106,38 @@ def init_db() -> None:
             "related_stage_id": "VARCHAR(64)",
             "task_id": "VARCHAR(64)",
             "completed_at": "DATETIME",
+            "updated_at": "DATETIME",
+        },
+        "questions": {
+            "subject": "VARCHAR(64)",
+            "knowledge_point": "VARCHAR(128)",
+            "type": "VARCHAR(16) DEFAULT 'choice'",
+            "difficulty": "VARCHAR(8) DEFAULT 'medium'",
+            "content": "JSON",
+            "tags": "JSON",
+            "status": "VARCHAR(16) DEFAULT 'draft'",
+            "usage_count": "INTEGER DEFAULT 0",
+            "avg_score": "FLOAT DEFAULT 0.0",
+            "created_by": "VARCHAR(64)",
+            "updated_at": "DATETIME",
+        },
+        "knowledge_points": {
+            "subject": "VARCHAR(64)",
+            "name": "VARCHAR(128)",
+            "description": "TEXT",
+            "prerequisites": "JSON",
+            "difficulty": "VARCHAR(8) DEFAULT 'medium'",
+            "importance": "INTEGER DEFAULT 5",
+            "chapter": "VARCHAR(128)",
+            "grade_level": "VARCHAR(16)",
+            "metadata": "JSON",
+            "updated_at": "DATETIME",
+        },
+        "system_config": {
+            "value": "TEXT",
+            "description": "VARCHAR(256)",
+            "category": "VARCHAR(32) DEFAULT 'general'",
+            "updated_by": "VARCHAR(64)",
             "updated_at": "DATETIME",
         },
     }
