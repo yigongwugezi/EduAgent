@@ -169,6 +169,71 @@ def test_daily_hour_budget_marks_plan_as_time_limited() -> None:
     assert_true("每天学习时间有限" in str(result["stage_rationales"]), "rationale should mention limited daily time")
 
 
+def test_monthly_calculus_plan_uses_course_stage_titles() -> None:
+    result = PlannerAgent().run(
+        {
+            "session_id": "planner_calculus_boundary_test",
+            "course_id": "custom_calculus",
+            "user_message": "开始生成学习方案",
+            "profile": {
+                "interest_direction": {"value": "微积分"},
+                "learning_rhythm": {"value": "一个月；每天三小时；周末休息"},
+                "learning_goal": {"value": "目标期末高分"},
+                "knowledge_base": {"value": "高中导数学过，极限没学"},
+            },
+            "profile_facts": {
+                "target_course": "微积分",
+                "time_budget": "一个月；每天三小时；周末休息",
+                "learning_goal": "目标期末高分",
+                "weak_points": "极限：不会/不熟",
+            },
+            "diagnosis": {
+                "weak_knowledge_points": [{"name": "极限", "priority": "high"}],
+                "evidence_chain": [{"source": "user_message", "related_knowledge_point": "极限"}],
+                "needs_more_evidence": False,
+            },
+        }
+    )
+
+    titles = [stage["title"] for stage in result["learning_path"]]
+    joined = " ".join(titles)
+    assert_true("time_budget" in result["priority_basis"], "monthly budget should affect priority")
+    assert_true("time_budget_tight" not in result["risk_flags"], "one-month plan should not be marked extremely tight")
+    assert_true("极限" in joined, "calculus plan should include limits")
+    assert_true("导数" in joined, "calculus plan should include derivatives")
+    assert_true("积分" in joined, "calculus plan should include integrals")
+    assert_true("综合" in joined and "复盘" in joined, "calculus plan should include final review")
+    assert_true(not any("目标期末高分" in title or title == "期末高分" for title in titles), "learning goal must not become a stage title")
+    assert_true("每天学习时间有限" in str(result["stage_rationales"]), "daily rhythm should appear in rationale")
+    assert_true("周末休息" in str(result["stage_rationales"]), "schedule constraint should appear in rationale")
+
+
+def test_custom_data_structure_plan_uses_course_stage_titles() -> None:
+    result = PlannerAgent().run(
+        {
+            "session_id": "planner_custom_ds_boundary_test",
+            "course_id": "custom_ds",
+            "user_message": "开始生成学习方案",
+            "profile": {
+                "interest_direction": {"value": "数据结构"},
+                "learning_rhythm": {"value": "两周"},
+                "learning_goal": {"value": "课程实验和考试"},
+            },
+            "profile_facts": {
+                "target_course": "数据结构",
+                "time_budget": "两周",
+                "learning_goal": "课程实验和考试",
+            },
+            "diagnosis": {"weak_knowledge_points": []},
+        }
+    )
+
+    text = " ".join(stage["title"] for stage in result["learning_path"])
+    assert_true("复杂度" in text and "链表" in text, "data structure fallback should include complexity/list")
+    assert_true("栈" in text and "队列" in text and "递归" in text, "data structure fallback should include stack/queue/recursion")
+    assert_true("树" in text and "图" in text, "data structure fallback should include tree/graph")
+
+
 def _visible_text(result: dict) -> str:
     return str(
         {
@@ -381,6 +446,8 @@ if __name__ == "__main__":
     test_insufficient_diagnosis_starts_with_probe_stage()
     test_tight_time_budget_changes_priority_basis()
     test_daily_hour_budget_marks_plan_as_time_limited()
+    test_monthly_calculus_plan_uses_course_stage_titles()
+    test_custom_data_structure_plan_uses_course_stage_titles()
     test_one_month_time_budget_is_not_default_14_days()
     test_chinese_one_month_time_budget_is_30_days()
     test_placeholder_weak_point_is_filtered_from_learning_content()

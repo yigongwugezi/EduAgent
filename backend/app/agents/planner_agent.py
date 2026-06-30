@@ -30,9 +30,9 @@ class PlannerAgent(BaseAgent):
         time_text = self._collect_time_text(context)
         total_days = self._infer_days(time_text, profile)
 
-        diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile)
+        diag_meta = self._build_diagnosis_meta(diagnosis, weak_points, total_days, profile, time_text)
 
-        if diag_meta["needs_more_diagnosis"] and not weak_points:
+        if diag_meta["needs_more_diagnosis"] and not weak_points and not planning_points:
             planning_points = [self._make_probe_point(diagnosis)]
 
         if not planning_points:
@@ -91,8 +91,11 @@ class PlannerAgent(BaseAgent):
         if self.llm_client:
             llm_days = self._llm_infer_days(time_text, profile)
             if llm_days:
-                return llm_days
-        return self._rule_infer_days(time_text, profile)
+                return self._clamp_days(llm_days)
+        return self._clamp_days(self._rule_infer_days(time_text, profile))
+
+    def _clamp_days(self, days: int) -> int:
+        return max(1, min(60, int(days)))
 
     def _llm_infer_days(self, time_text: str, profile: dict) -> int | None:
         profile_text = self._compact_profile_text(profile)
@@ -220,7 +223,7 @@ class PlannerAgent(BaseAgent):
             else:
                 name = str(item).strip()
                 point = {}
-            if not name or self._is_placeholder(name):
+            if not name or self._is_placeholder(name) or self._is_goal_like_title(name):
                 continue
             point["name"] = name
             point.setdefault("title", name)
@@ -242,6 +245,7 @@ class PlannerAgent(BaseAgent):
     def _get_planning_points(self, context: dict, weak_points: list[dict]) -> list[dict]:
         course_id = str(context.get("course_id") or "")
         course = course_catalog.get_course(course_id) or {}
+        course_name = self._course_name_from_context(context)
         chapters = [
             {
                 "point_id": f"{course_id}_{ch.get('chapter_id', i)}",
@@ -262,15 +266,69 @@ class PlannerAgent(BaseAgent):
         if chapters and self._is_whole_course(text):
             return chapters
 
+        course_points = self._fallback_course_points(course_name or text)
+        if course_points:
+            return self._prioritize_points(course_points, weak_points)
+
         return weak_points or chapters
 
     def _is_whole_course(self, text: str) -> bool:
         return any(w in text for w in ["考试", "复习", "完整", "系统", "整门", "全", "通过"])
 
+    def _course_name_from_context(self, context: dict) -> str:
+        profile_facts = context.get("profile_facts", {}) if isinstance(context.get("profile_facts"), dict) else {}
+        if profile_facts.get("target_course"):
+            return str(profile_facts.get("target_course"))
+        course = context.get("course") if isinstance(context.get("course"), dict) else {}
+        if course.get("course_name"):
+            return str(course.get("course_name"))
+        profile = context.get("profile") if isinstance(context.get("profile"), dict) else {}
+        for key in ("interest_direction", "learning_goal"):
+            item = profile.get(key, {})
+            value = item.get("value", "") if isinstance(item, dict) else item
+            if value:
+                return str(value)
+        return ""
+
+    def _fallback_course_points(self, text: str) -> list[dict]:
+        lowered = text.lower()
+        if any(word in text for word in ["微积分", "高等数学"]) or "calculus" in lowered:
+            names = ["函数、极限与连续", "导数与微分", "导数应用", "积分基础", "综合题型与期末复盘"]
+        elif "数据结构" in text or "data structure" in lowered:
+            names = ["复杂度、数组与链表", "栈、队列与递归", "树、二叉树与遍历", "图、查找与排序", "综合练习与错题复盘"]
+        else:
+            return []
+        return [
+            {
+                "point_id": f"course_outline_{i}",
+                "name": name,
+                "title": name,
+                "priority": "high" if i <= 2 else "medium",
+                "difficulty": "medium",
+                "prerequisites": [],
+            }
+            for i, name in enumerate(names, 1)
+        ]
+
+    def _prioritize_points(self, course_points: list[dict], weak_points: list[dict]) -> list[dict]:
+        weak_names = [str(point.get("name", "")) for point in weak_points if point.get("name")]
+        if not weak_names:
+            return course_points
+        matched, rest = [], []
+        for point in course_points:
+            name = str(point.get("name", ""))
+            if any(weak and weak in name for weak in weak_names):
+                copied = dict(point)
+                copied["priority"] = "high"
+                matched.append(copied)
+            else:
+                rest.append(point)
+        return matched + rest
+
     # ── 诊断元信息 ──
 
     def _build_diagnosis_meta(self, diagnosis: dict, weak_points: list[dict],
-                               total_days: int, profile: dict) -> dict:
+                               total_days: int, profile: dict, time_text: str = "") -> dict:
         weak_names = [p.get("name", "") for p in weak_points if p.get("name")]
         needs_more = diagnosis.get("needs_more_evidence", False) or (
             bool(diagnosis) and not weak_points
@@ -278,18 +336,41 @@ class PlannerAgent(BaseAgent):
         flags = list(diagnosis.get("risk_flags", []))
         if needs_more and "evidence_insufficient" not in flags:
             flags.append("evidence_insufficient")
+        time_basis = self._time_basis(time_text, profile, total_days)
+        if time_basis["tight"] and "time_budget_tight" not in flags:
+            flags.append("time_budget_tight")
+        evidence_sources = [
+            self._clean_evidence_source(e.get("source", "unknown"))
+            for e in (diagnosis.get("evidence_chain") or [])[:5]
+            if isinstance(e, dict) and not self._is_placeholder(str(e.get("source", "")))
+        ]
+        if time_basis["has_time_budget"] and "time_budget" not in evidence_sources:
+            evidence_sources.append("time_budget")
 
         return {
             "diagnosis_used": bool(diagnosis),
             "weak_topic_names": weak_names,
             "needs_more_diagnosis": needs_more,
-            "evidence_sources": [
-                e.get("source", "unknown") for e in (diagnosis.get("evidence_chain") or [])[:5]
-                if isinstance(e, dict)
-            ],
+            "evidence_sources": evidence_sources,
             "risk_flags": flags,
             "total_days": total_days,
+            "time_basis": time_basis,
         }
+
+    def _time_basis(self, time_text: str, profile: dict, total_days: int) -> dict:
+        combined = " ".join([time_text, self._compact_profile_text(profile)])
+        has_time = bool(re.search(r"\d+\s*(?:天|日|周|星期|月|个月|小时|分钟)|[一二两三四五六七八九十半]+(?:天|周|星期|个月|小时)|每天|周末", combined))
+        daily_limited = bool(re.search(r"每天\s*(?:\d+|[一二两三四五六七八九十半]+)\s*(?:个)?小时", combined))
+        schedule_limited = "周末休息" in combined
+        return {
+            "has_time_budget": has_time,
+            "daily_limited": daily_limited,
+            "schedule_limited": schedule_limited,
+            "tight": total_days <= 7 or (daily_limited and total_days == 14),
+        }
+
+    def _clean_evidence_source(self, source: str) -> str:
+        return {"fallback_rule": "规则兜底", "unknown": ""}.get(source, source)
 
     def _make_probe_point(self, diagnosis: dict) -> dict:
         actions = diagnosis.get("recommended_next_actions") or []
@@ -406,6 +487,8 @@ class PlannerAgent(BaseAgent):
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title", f"第{i}阶段")).strip()
+            if self._is_goal_like_title(title):
+                continue
             tasks = [str(t).strip() for t in item.get("tasks", []) if str(t).strip()]
 
             if allowed:
@@ -614,7 +697,7 @@ class PlannerAgent(BaseAgent):
                     self._calc_duration(i, n_stages, total_days), i, n_stages, total_days,
                 ),
                 "resource_types": self._make_resource_types(profile, i),
-                "reason": self._make_reason(group, profile, total_days),
+                "reason": self._make_reason(group, profile, total_days, diag_meta),
                 "source": "rule_fallback",
             })
 
@@ -632,6 +715,7 @@ class PlannerAgent(BaseAgent):
         return groups
 
     def _make_title(self, i, names):
+        names = [name for name in names if not self._is_goal_like_title(str(name))]
         name_str = "、".join(names[:2])
         if not name_str or name_str == "重点知识点":
             return f"第{i}阶段"
@@ -665,14 +749,29 @@ class PlannerAgent(BaseAgent):
             tasks.append("复盘上一阶段错题")
         return tasks
 
-    def _make_reason(self, group, profile, total_days):
+    def _make_reason(self, group, profile, total_days, diag_meta=None):
         names = "、".join(p.get("name", "") for p in group if p.get("name"))
         goal = str(profile.get("learning_goal", {}).get("value", ""))
+        time_basis = (diag_meta or {}).get("time_basis", {})
+        notes = []
+        if time_basis.get("daily_limited"):
+            notes.append("每天学习时间有限")
+        if time_basis.get("schedule_limited"):
+            notes.append("周末休息")
+        suffix = f"（{ '，'.join(notes) }）" if notes else ""
         if total_days <= 3:
-            return f"学习周期仅{total_days}天，优先安排{names}等核心内容。"
-        if "考试" in goal:
-            return f"目标偏考试通过，{names}是高频模块。"
-        return f"根据课程先修关系，当前阶段适合集中处理{names}。"
+            return f"学习周期仅{total_days}天，优先安排{names}等核心内容。{suffix}"
+        if any(word in goal for word in ["考试", "期末", "高分"]):
+            return f"目标偏考试/高分，{names}是需要优先稳住的课程内容。{suffix}"
+        return f"根据课程先修关系，当前阶段适合集中处理{names}。{suffix}"
+
+    def _is_goal_like_title(self, title: str) -> bool:
+        text = title.strip()
+        if not text:
+            return True
+        if any(course_word in text for course_word in ["极限", "导数", "微分", "积分", "函数", "连续", "综合", "题型", "复盘", "复杂度", "数组", "链表", "栈", "队列", "递归", "树", "图", "查找", "排序", "练习"]):
+            return False
+        return any(word in text for word in ["目标", "高分", "入门", "掌握", "复习", "考试", "期末"])
 
     def _make_resource_types(self, profile, i):
         types = ["lecture", "quiz"]
