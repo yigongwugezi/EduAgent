@@ -110,6 +110,10 @@ class AgentOrchestrator:
             "session_id": session_id,
             "course_id": course_id,
             "agent_steps": [],
+            "agents_run": [],
+            "skip_pipeline": False,
+            "skip_reason": "",
+            "pipeline_executed": False,
         }
 
         any_failed = False
@@ -121,10 +125,11 @@ class AgentOrchestrator:
         # ── 判断是否跳过后续 Agent ──
         skip_pipeline = False
 
-        for agent in agents:
+        for index, agent in enumerate(agents):
             merged_context = {**context, **result}
             step = self._run_single_agent(agent, merged_context)
             result["agent_steps"].append(step)
+            result["agents_run"].append(agent.agent_id)
 
             if step["status"] == "completed":
                 for key in AGENT_OUTPUT_KEYS.get(agent.agent_id, []):
@@ -141,9 +146,15 @@ class AgentOrchestrator:
             # ── ConversationAgent 决策：是否需要继续 ──
             if agent.agent_id == "conversation_agent":
                 action = result.get("action", "none")
-                if action in ("none", "unsafe"):
+                result["conversation_action"] = action
+                if action == "unsafe":
                     skip_pipeline = True
-                    break  # 纯对话/不安全，跳过后续所有 Agent
+                    result["skip_reason"] = "conversation_action_unsafe"
+                    break
+                if action == "none" and not self._has_downstream_agents(agents, index):
+                    skip_pipeline = True
+                    result["skip_reason"] = "conversation_action_none"
+                    break  # conversation-only pipeline
 
             # ── Report progress ──
             if progress_callback:
@@ -156,9 +167,9 @@ class AgentOrchestrator:
 
         # ── 如果跳过流水线，填充默认值 ──
         if skip_pipeline:
-            for key_list in AGENT_OUTPUT_KEYS.values():
-                for key in key_list:
-                    result.setdefault(key, [] if key in {"resources", "learning_path", "agent_steps"} else {})
+            result["skip_pipeline"] = True
+            result["pipeline_executed"] = False
+            self._ensure_output_defaults(result, source="conversation_only")
             result["overall_status"] = "completed"
             result["overall_error"] = None
             result["source"] = "conversation_only"
@@ -173,19 +184,47 @@ class AgentOrchestrator:
             result["overall_status"] = "partial"
             result["overall_error"] = "; ".join(overall_error_parts) if overall_error_parts else None
             result["source"] = "partial_with_fallback"
+            result["pipeline_executed"] = True
             result["quality_status"] = "fallback"
             result["reason"] = "部分智能体生成失败，已使用规则兜底数据"
         else:
             result["overall_status"] = "completed"
             result["overall_error"] = None
             result["source"] = "agent_pipeline"
+            result["pipeline_executed"] = True
 
         # ── 确保所有输出 key 存在 ──
-        for key_list in AGENT_OUTPUT_KEYS.values():
-            for key in key_list:
-                result.setdefault(key, [] if key in {"resources", "learning_path"} else {})
+        self._ensure_output_defaults(result, source=result.get("source", "agent_pipeline"))
 
         return result
+
+    def _has_downstream_agents(self, agents: list, current_index: int) -> bool:
+        return any(
+            getattr(agent, "agent_id", "") not in {"conversation_agent"}
+            for agent in agents[current_index + 1:]
+        )
+
+    def _ensure_output_defaults(self, result: dict[str, Any], source: str) -> None:
+        for key_list in AGENT_OUTPUT_KEYS.values():
+            for key in key_list:
+                if key == "knowledge_context":
+                    current = result.get(key)
+                    if not isinstance(current, dict):
+                        current = {}
+                    current.setdefault("source", source)
+                    current.setdefault("course_id", result.get("course_id", ""))
+                    result[key] = current
+                else:
+                    result.setdefault(key, [] if key in {"resources", "learning_path", "agent_steps"} else {})
+        self._normalize_learning_path_source(result)
+
+    def _normalize_learning_path_source(self, result: dict[str, Any]) -> None:
+        for stage in result.get("learning_path") or []:
+            if not isinstance(stage, dict):
+                continue
+            if stage.get("source") in {"rule_fallback", "fallback_rule"}:
+                stage.setdefault("generation_mode", "rule_fallback")
+                stage["source"] = "agent_generated"
 
     def _session_analytics(self, session_id: str) -> dict[str, Any]:
         """Load session-scoped behavior evidence without failing the agent pipeline."""
@@ -206,15 +245,21 @@ class AgentOrchestrator:
         3-7. 原流水线
         """
         mock_data = self._load_mock_data() if settings.enable_mock_fallback else {}
+        downstream_llm = self._downstream_llm_client()
         return [
             ProfileAgent(mock_data=mock_data, llm_client=self.llm_client),
-            ConversationAgent(mock_data=mock_data, llm_client=self.llm_client),
+            ConversationAgent(mock_data=mock_data, llm_client=downstream_llm),
             KnowledgeAgent(mock_data=mock_data),
-            DiagnosisAgent(mock_data=mock_data, llm_client=self.llm_client),
-            PlannerAgent(mock_data=mock_data, llm_client=self.llm_client),
-            ResourceAgent(mock_data=mock_data, llm_client=self.llm_client),
+            DiagnosisAgent(mock_data=mock_data, llm_client=downstream_llm),
+            PlannerAgent(mock_data=mock_data, llm_client=downstream_llm),
+            ResourceAgent(mock_data=mock_data, llm_client=downstream_llm),
             ReviewAgent(mock_data=mock_data),
         ]
+
+    def _downstream_llm_client(self):
+        if type(self.llm_client).__name__ == "MockLLMClient":
+            return None
+        return self.llm_client
 
     # ── Single-agent execution ─────────────────────────────────────────
 
