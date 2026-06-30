@@ -87,7 +87,13 @@ BACKGROUND_VALUE_HINTS = {
 }
 COURSE_STOPWORDS = {
     "方案", "学习方案", "路径", "学习路径", "计划", "学习计划",
+    "复习", "入门", "掌握", "高分", "期末", "考试", "目标", "核心题型", "开始",
 }
+COURSE_KEYWORDS = (
+    "微积分", "高等数学", "线性代数", "数据结构", "机器学习", "人工智能导论",
+    "人工智能", "深度学习", "操作系统", "计算机网络", "Python", "python",
+    "考研英语",
+)
 
 
 def _estimated_path_days(stages: list[dict[str, Any]]) -> int:
@@ -525,19 +531,7 @@ class ConversationStore:
             value = str(updates.get(llm_key, "")).strip()
             if not value or value in invalid_values or len(value) <= 1:
                 continue
-            old_value = state.facts.get(fact_key, "")
-            if old_value != value:
-                if old_value:
-                    state.last_conflicts.append({
-                        "key": fact_key,
-                        "label": PROFILE_FIELD_DEFS.get(fact_key, {}).get("label", fact_key),
-                        "old": old_value,
-                        "new": value,
-                        "reason": "信息更新",
-                    })
-                state.facts[fact_key] = value
-                if fact_key not in state.last_updated_fields:
-                    state.last_updated_fields.append(fact_key)
+            self._set_fact(state, fact_key, value, source_text=message)
 
         if not state.last_updated_fields:
             self.extract_facts(state, message)
@@ -552,22 +546,8 @@ class ConversationStore:
 
         lower = text.lower()
 
-        def set_fact(key: str, value: str) -> None:
-            cleaned = self._clean_time_value(value) if key == "time_budget" else self._clean_fact_value(value)
-            if not cleaned:
-                return
-            old_value = state.facts.get(key, "")
-            if old_value != cleaned:
-                conflict_reason = self._fact_conflict_reason(key, old_value, cleaned)
-                if conflict_reason:
-                    state.last_conflicts.append({
-                        "key": key,
-                        "label": PROFILE_FIELD_DEFS.get(key, {}).get("label", key),
-                        "old": old_value, "new": cleaned,
-                        "reason": conflict_reason,
-                    })
-                state.facts[key] = cleaned
-                state.last_updated_fields.append(key)
+        def set_fact(key: str, value: str, *, force: bool = False) -> None:
+            self._set_fact(state, key, value, source_text=text, force=force)
 
         def add_supplemental(key: str, value: str) -> None:
             cleaned = self._clean_fact_value(value)
@@ -602,12 +582,20 @@ class ConversationStore:
             if interest_match and "学习" not in interest_match.group(1):
                 add_supplemental("interest_note", interest_match.group(1))
 
-        course_match = re.search(
-            r"(?:想学习|想学|想系统学习|我要学|希望学|准备学|要学习|要学|入门|复习|掌握|了解)([^，。,.!?！？]{2,30})",
-            text,
-        )
-        if course_match:
-            set_fact("target_course", course_match.group(1))
+        course_override = self._explicit_course_override(text)
+        if course_override:
+            set_fact("target_course", course_override, force=True)
+        else:
+            known_course = self._known_course_from_text(text)
+            if known_course and any(word in text for word in ["想", "学", "学习", "复习", "准备", "考研", "入门", "掌握"]):
+                set_fact("target_course", known_course)
+
+            course_match = re.search(
+                r"(?:想学习|想学|想系统学习|我要学|希望学|准备学|要学习|要学|准备考)([^，。,.!?！？]{2,30})",
+                text,
+            )
+            if course_match:
+                set_fact("target_course", course_match.group(1))
 
         goal_course_match = re.search(r"学懂([^，。,.!?！？]{2,30})", text)
         if goal_course_match:
@@ -637,7 +625,7 @@ class ConversationStore:
             else:
                 set_fact("weak_points", text)
 
-        _goal_words = {"考试", "考研", "项目", "竞赛", "作业", "就业", "入门", "提升", "查漏补缺", "学懂", "掌握"}
+        _goal_words = {"考试", "考研", "项目", "竞赛", "作业", "就业", "入门", "提升", "查漏补缺", "学懂", "掌握", "目标", "期末", "高分", "复习"}
         if any(word in text for word in _goal_words):
             segments = re.split(r"[，。,.!?！？；;]", text)
             goal_segment = ""
@@ -655,15 +643,30 @@ class ConversationStore:
             text,
         )
 
-        time_match = re.search(
-            r"(\d+\s*个?\s*(天|日|周|星期|个月|小时|分钟)|"
-            r"[一二两三四五六七八九十半]+(?:个)?(?:天|星期)|"
-            r"一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)"
+        daily_match = re.search(r"每天\s*(?:\d+|[一二两三四五六七八九十半]+)\s*(?:个)?小时", text)
+        original_time_match = re.search(
+            r"(\d+\s*个?\s*(天|日|周|星期|个月|分钟)|"
+            r"[一二两三四五六七八九十半]+(?:个)?(?:天|周|星期|个月)|"
+            r"一周|两周|半个月|一个月|30天|14天|两天)"
             r"(内|左右|以内|以上|完成)?",
-            time_text,
+            text,
         )
-        if time_match:
-            set_fact("time_budget", time_match.group(0))
+        if original_time_match:
+            set_fact("time_budget", original_time_match.group(0))
+        if daily_match:
+            set_fact("time_budget", daily_match.group(0))
+        elif not original_time_match:
+            time_match = re.search(
+                r"(\d+\s*个?\s*(天|日|周|星期|个月|小时|分钟)|"
+                r"[一二两三四五六七八九十半]+(?:个)?(?:天|星期)|"
+                r"一周|两周|半个月|一个月|半小时|一个半小时|两个小时|两小时)"
+                r"(内|左右|以内|以上|完成)?",
+                time_text,
+            )
+            if time_match:
+                set_fact("time_budget", time_match.group(0))
+        if "周末休息" in text:
+            set_fact("time_budget", "周末休息")
 
         if any(word in lower for word in ["视频", "图解", "动画", "代码", "实操", "练习", "题", "ppt", "markdown"]):
             formats = []
@@ -688,6 +691,110 @@ class ConversationStore:
         for key, values in extracted_profile_facts.supplemental.items():
             for value in values:
                 add_supplemental(key, value)
+
+    def _set_fact(
+        self,
+        state: ConversationState,
+        key: str,
+        value: str,
+        *,
+        source_text: str = "",
+        force: bool = False,
+    ) -> None:
+        if key == "target_course":
+            cleaned = self._clean_course_value(value)
+            if not cleaned:
+                return
+            old_value = state.facts.get(key, "")
+            if old_value and old_value != cleaned and not force and not self._explicit_course_override(source_text):
+                return
+        elif key == "time_budget":
+            cleaned = self._clean_time_value(value)
+            if not cleaned:
+                return
+            old_value = state.facts.get(key, "")
+            cleaned = self._merge_time_budget(old_value, cleaned)
+        elif key == "weak_points":
+            cleaned = self._clean_fact_value(value)
+            if not cleaned:
+                return
+            old_value = state.facts.get(key, "")
+            cleaned = self._merge_list_fact(old_value, cleaned)
+        else:
+            cleaned = self._clean_fact_value(value)
+            if not cleaned:
+                return
+            old_value = state.facts.get(key, "")
+
+        if old_value == cleaned:
+            return
+
+        conflict_reason = self._fact_conflict_reason(key, old_value, cleaned)
+        if conflict_reason:
+            state.last_conflicts.append({
+                "key": key,
+                "label": PROFILE_FIELD_DEFS.get(key, {}).get("label", key),
+                "old": old_value,
+                "new": cleaned,
+                "reason": conflict_reason,
+            })
+        state.facts[key] = cleaned
+        if key not in state.last_updated_fields:
+            state.last_updated_fields.append(key)
+
+    def _merge_time_budget(self, old_value: str, new_value: str) -> str:
+        if not old_value:
+            return new_value
+        parts = [part.strip() for part in re.split(r"[；;]", old_value) if part.strip()]
+        if any(new_value == part or new_value in part or part in new_value for part in parts):
+            return old_value
+        return f"{old_value}；{new_value}"
+
+    def _merge_list_fact(self, old_value: str, new_value: str) -> str:
+        if not old_value:
+            return new_value
+        parts = [part.strip() for part in re.split(r"[；;、,，]", old_value) if part.strip()]
+        if any(new_value == part or new_value in part or part in new_value for part in parts):
+            return old_value
+        return f"{old_value}；{new_value}"
+
+    def _explicit_course_override(self, text: str) -> str:
+        patterns = [
+            r"(?:不是学|不学|不要学)[^，。,.!?！？；;]{0,30}(?:改成|换成|改学)\s*([^，。,.!?！？；;]{2,30})",
+            r"(?:现在|后面|接下来)?\s*改学\s*([^，。,.!?！？；;]{2,30})",
+            r"(?:改成|换成)\s*([^，。,.!?！？；;]{2,30})",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text)
+            if match:
+                return self._clean_course_value(match.group(1))
+        return ""
+
+    def _known_course_from_text(self, text: str) -> str:
+        for course in sorted(COURSE_KEYWORDS, key=len, reverse=True):
+            if course in text:
+                return "Python" if course.lower() == "python" else course
+        return ""
+
+    def _clean_course_value(self, value: str) -> str:
+        cleaned = self._clean_fact_value(value)
+        known = self._known_course_from_text(cleaned)
+        if known:
+            return known
+        cleaned = re.sub(
+            r"^(?:我(?:想|要|准备)?|想|要|准备|希望|打算|系统)?"
+            r"(?:用|在)?(?:一|两|二|三|四|五|六|七|八|九|十|半|\d+)"
+            r"(?:个)?(?:天|周|星期|月|个月|小时|分钟)?(?:内|左右|以内|以上)?",
+            "",
+            cleaned,
+        ).strip()
+        cleaned = re.sub(r"^(?:学|学习|复习|入门|掌握|了解|准备考|考)", "", cleaned).strip()
+        cleaned = re.sub(r"^(?:从|主要是|目标|为了)", "", cleaned).strip()
+        if cleaned in COURSE_STOPWORDS:
+            return ""
+        if any(word in cleaned for word in ["高分", "期末", "考试", "目标", "核心题型"]):
+            return ""
+        return cleaned
 
     def merge_result_profile(self, state: ConversationState, result: dict[str, Any]) -> None:
         profile = result.get("profile", {})
@@ -834,6 +941,10 @@ class ConversationStore:
         weaknesses: list[str] = []
         segments = [segment.strip() for segment in re.split(r"[，。,.!?！？；;、]", text) if segment.strip()]
         for segment in segments:
+            front_missing_match = re.search(r"([A-Za-z+#一-鿿]{1,20})(?:没学过|没有学过|没学|不会|不太懂|不懂|不太会|不熟)", segment)
+            if front_missing_match:
+                weaknesses.append(f"{front_missing_match.group(1)}：不会/不熟")
+                continue
             weak_match = re.search(r"(?:不会|不懂|没学过|没有学过|不太会|不熟)([A-Za-z+#一-鿿]{2,20})", segment)
             if weak_match:
                 weaknesses.append(f"{weak_match.group(1)}：不会/不熟")
