@@ -1342,6 +1342,7 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             t.start()
 
             # ── 从队列读取实时进度事件 ──
+            last_keepalive = time.monotonic()
             while t.is_alive() or not progress_q.empty():
                 try:
                     msg = progress_q.get(timeout=0.5)
@@ -1360,6 +1361,22 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
                         yield 'data: {"done":true}\n\n'
                         return
                 except Empty:
+                    # ponytail: low-rate keepalive prevents long resource generation from looking stuck at 80%.
+                    if time.monotonic() - last_keepalive >= 10:
+                        st = conversation_store.get(session_id)
+                        progress = st.current_progress or {
+                            "stage": "正在生成资源",
+                            "agentName": "generating",
+                            "progress": 80,
+                        }
+                        yield _to_event(
+                            progress.get("stage", "正在生成资源"),
+                            progress.get("agentName", "generating"),
+                            int(progress.get("progress", 80) or 80),
+                            keepalive=True,
+                            detail=progress.get("detail"),
+                        )
+                        last_keepalive = time.monotonic()
                     # 仍在等待中 — 可发心跳保持连接活跃
                     continue
 
@@ -1400,9 +1417,19 @@ def stream_chat(payload: dict[str, Any]) -> StreamingResponse:
             for chunk in reply.splitlines(keepends=True):
                 yield f"data: {json.dumps({'content': chunk, 'done': False}, ensure_ascii=False)}\n\n"
 
-        final_event: dict[str, Any] = {"done": True}
+        result = conversation_store.get(session_id).last_result or {}
+        stages = result.get("learning_path", []) if isinstance(result, dict) else []
+        final_event: dict[str, Any] = {
+            "event": "done",
+            "done": True,
+            "sessionId": session_id,
+            "pipeline_executed": bool(result.get("pipeline_executed")) if isinstance(result, dict) else False,
+            "agents_run": result.get("agents_run", []) if isinstance(result, dict) else [],
+            "learning_path_created": bool(stages),
+            "stage_count": len(stages),
+            "planner_metadata": result.get("planner_metadata", {}) if isinstance(result, dict) else {},
+        }
         if intent.get("action") == "diagnose" or intent.get("intent") == "diagnosis":
-            result = conversation_store.get(session_id).last_result or {}
             final_event["diagnosis"] = result.get("diagnosis", {})
         yield f"data: {json.dumps(final_event, ensure_ascii=False)}\n\n"
 

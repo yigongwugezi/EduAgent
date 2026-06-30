@@ -1,4 +1,7 @@
 import sys
+import asyncio
+import json
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -73,6 +76,53 @@ class AgentPatch:
 
     def __exit__(self, exc_type, exc, tb):
         product.ag_run_agents = self.original
+
+
+class AttrPatch:
+    def __init__(self, target, **replacements):
+        self.target = target
+        self.replacements = replacements
+        self.originals = {}
+
+    def __enter__(self):
+        for name, value in self.replacements.items():
+            self.originals[name] = getattr(self.target, name)
+            setattr(self.target, name, value)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        for name, value in self.originals.items():
+            setattr(self.target, name, value)
+
+
+def stream_events(payload: dict) -> list[dict]:
+    async def collect():
+        response = product.stream_chat(payload)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+        return chunks
+
+    events = []
+    for block in "".join(asyncio.run(collect())).split("\n\n"):
+        if block.startswith("data: "):
+            events.append(json.loads(block[6:]))
+    return events
+
+
+def stream_patch(reply_factory):
+    def classify(_message: str, _session_id: str | None = None) -> dict:
+        return {"action": "full_workflow", "intent": "full_workflow"}
+
+    def will_run(_intent: dict, _session_id: str) -> bool:
+        return True
+
+    return AttrPatch(
+        product,
+        _classify_intent=classify,
+        _will_run_agents=will_run,
+        _reply_for_intent=reply_factory,
+    )
 
 
 def assert_no_old_template(reply: str) -> None:
@@ -207,10 +257,55 @@ def test_tight_two_day_reply_mentions_focus() -> None:
     assert_no_old_template(reply)
 
 
+def test_chat_stream_sends_keepalive_final_and_done_metadata() -> None:
+    sid = "product_stream_final"
+    conversation_store.reset(sid)
+
+    def reply_factory(_message, _intent, session_id, progress_callback=None):
+        if progress_callback:
+            progress_callback("generating", zh(r"\u6b63\u5728\u751f\u6210\u8d44\u6e90"), 80)
+        time.sleep(11)
+        conversation_store.get(session_id).last_result = fake_result(
+            session_id,
+            "data_structures",
+            14,
+            [zh(r"\u590d\u6742\u5ea6"), zh(r"\u94fe\u8868"), zh(r"\u67e5\u627e\u4e0e\u6392\u5e8f")],
+        )
+        return zh(r"\u5df2\u751f\u6210\uff1a\u590d\u6742\u5ea6\u3001\u94fe\u8868\u3001\u6392\u5e8f"), True
+
+    with stream_patch(reply_factory):
+        events = stream_events({"sessionId": sid, "message": zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848")})
+
+    assert_true(any(event.get("keepalive") for event in events), "stream should keep the SSE connection alive while resources run")
+    assert_true(any(zh(r"\u590d\u6742\u5ea6") in event.get("content", "") for event in events), "stream should emit final user-visible content")
+    done = events[-1]
+    assert_true(done.get("done") is True, "stream should end with done")
+    assert_true(done.get("event") == "done", "done event should be explicit")
+    assert_true(done.get("pipeline_executed") is True, "done should expose pipeline status")
+    assert_true(done.get("learning_path_created") is True, "done should expose learning path creation")
+    assert_true(done.get("stage_count") == 3, "done should expose stage count")
+
+
+def test_chat_stream_error_still_sends_done() -> None:
+    sid = "product_stream_error"
+    conversation_store.reset(sid)
+
+    def reply_factory(*_args, **_kwargs):
+        raise RuntimeError("boom")
+
+    with stream_patch(reply_factory):
+        events = stream_events({"sessionId": sid, "message": zh(r"\u5f00\u59cb\u751f\u6210\u5b66\u4e60\u65b9\u6848")})
+
+    assert_true(any(event.get("error") for event in events), "stream should emit an error event")
+    assert_true(events[-1].get("done") is True, "stream should end even when pipeline fails")
+
+
 if __name__ == "__main__":
     test_target_only_explicit_generation_runs_pipeline()
     test_calculus_reply_uses_real_stages_and_time()
     test_bare_confirmation_asks_clarification()
     test_generate_without_subject_asks_subject_only()
     test_tight_two_day_reply_mentions_focus()
+    test_chat_stream_sends_keepalive_final_and_done_metadata()
+    test_chat_stream_error_still_sends_done()
     print("PASS product_chat_boundary_test")
